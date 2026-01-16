@@ -219,28 +219,35 @@ def get_remote_urls():
     try:
         resp = requests.get(REMOTE_SOURCE_URL, timeout=10)
         resp.raise_for_status()
-        
-        # 1. Ищем блок URLS = [ ... ]
-        # Находим текст между квадратными скобками после переменной URLS
         urls_block = re.search(r'URLS\s*=\s*\[(.*?)\]', resp.text, re.DOTALL)
-        
         if urls_block:
             content = urls_block.group(1)
-            # 2. Извлекаем всё, что похоже на ссылку внутри кавычек
             found = re.findall(r'https?://[^\s"\',]+', content)
-            
-            # Убираем дубликаты и пустые значения
             urls = list(set([u.strip() for u in found]))
             print(f"🔗 Успешно подтянуто источников: {len(urls)}")
             return urls
-        else:
-            print("⚠️ Блок URLS не найден в исходном коде.")
-            return []
-            
+        return []
     except Exception as e:
         print(f"⚠️ Ошибка при чтении мастер-файла: {e}")
         return []
 
+def fetch_and_filter(url):
+    """ФУНКЦИЯ ФИЛЬТРАЦИИ (которой не было)"""
+    try:
+        resp = requests.get(url, timeout=15, verify=False)
+        resp.raise_for_status()
+        # Добавляем переносы строк перед протоколами на случай, если всё в куче
+        text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
+        valid = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith(EXCLUDE_PROTOCOLS):
+                continue
+            if sni_regex.search(line):
+                valid.append(line)
+        return valid
+    except:
+        return []
 
 def update_readme(count):
     content = f"# VPN Configs (Synced)\n\nОбновлено (МСК): **{offset}**\nКонфигов: **{count}**\n\n### Файл:\n`https://github.com/{REPO_NAME}/raw/refs/heads/main/githubmirror/vlm`"
@@ -251,20 +258,19 @@ def update_readme(count):
         REPO.create_file("README.md", "🆕 Create README", content)
 
 def main():
-    # 1. Получаем свежий список источников из "мастер-кода"
     remote_urls = get_remote_urls()
     print(f"🔗 Найдено источников: {len(remote_urls)}")
 
-    # 2. Сбор данных
     all_configs = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        # Теперь fetch_and_filter существует и доступна
         futures = [executor.submit(fetch_and_filter, url) for url in remote_urls]
         for f in concurrent.futures.as_completed(futures):
             all_configs.extend(f.result())
 
-    unique_data = "\n".join(list(set(all_configs)))
+    unique_configs = list(set(all_configs))
+    unique_data = "\n".join(unique_configs)
     
-    # 3. Загрузка в GitHub
     path = f"githubmirror/{FINAL_FILENAME}"
     try:
         try:
@@ -272,12 +278,11 @@ def main():
             REPO.update_file(path, f"🚀 Sync vlm | {offset}", unique_data, curr.sha)
         except:
             REPO.create_file(path, f"🆕 Create vlm | {offset}", unique_data)
-        print(f"✅ Готово.")
+        print(f"✅ Готово. Сохранено конфигов: {len(unique_configs)}")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка сохранения: {e}")
 
-    update_readme(len(all_configs))
+    update_readme(len(unique_configs))
 
 if __name__ == "__main__":
     main()
-    
