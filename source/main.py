@@ -232,19 +232,31 @@ def get_remote_urls():
         return []
 
 def fetch_and_filter(url):
-    """ФУНКЦИЯ ФИЛЬТРАЦИИ (которой не было)"""
+    """Сбор конфигов с фильтрацией по SNI и исключение RU-локаций"""
+    # Список запрещенных слов в названиях (после знака #)
+    BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺"]
     try:
         resp = requests.get(url, timeout=15, verify=False)
         resp.raise_for_status()
-        # Добавляем переносы строк перед протоколами на случай, если всё в куче
+        
+        # Разделяем слипшиеся ссылки
         text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
+        
         valid = []
         for line in text.splitlines():
             line = line.strip()
             if not line or line.lower().startswith(EXCLUDE_PROTOCOLS):
                 continue
-            if sni_regex.search(line):
-                valid.append(line)
+            # 1. Проверка на SNI
+            if not sni_regex.search(line):
+                continue
+            # 2. Проверка названия (всё, что после #)
+            if "#" in line:
+                name_part = line.split("#")[-1].upper()
+                # Если хоть одно запрещенное слово есть в названии — пропускаем
+                if any(word.upper() in name_part for word in BANNED_WORDS):
+                    continue
+            valid.append(line)
         return valid
     except:
         return []
