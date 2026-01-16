@@ -233,13 +233,11 @@ def get_remote_urls():
 
 def fetch_and_filter(url):
     """Сбор конфигов с фильтрацией по SNI и исключение RU-локаций"""
-    # Список запрещенных слов в названиях (после знака #)
     BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺"]
     try:
         resp = requests.get(url, timeout=15, verify=False)
         resp.raise_for_status()
         
-        # Разделяем слипшиеся ссылки
         text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
         
         valid = []
@@ -247,13 +245,10 @@ def fetch_and_filter(url):
             line = line.strip()
             if not line or line.lower().startswith(EXCLUDE_PROTOCOLS):
                 continue
-            # 1. Проверка на SNI
             if not sni_regex.search(line):
                 continue
-            # 2. Проверка названия (всё, что после #)
             if "#" in line:
                 name_part = line.split("#")[-1].upper()
-                # Если хоть одно запрещенное слово есть в названии — пропускаем
                 if any(word.upper() in name_part for word in BANNED_WORDS):
                     continue
             valid.append(line)
@@ -275,12 +270,17 @@ def main():
 
     all_configs = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        # Теперь fetch_and_filter существует и доступна
         futures = [executor.submit(fetch_and_filter, url) for url in remote_urls]
         for f in concurrent.futures.as_completed(futures):
             all_configs.extend(f.result())
 
     unique_configs = list(set(all_configs))
+    
+    # Ограничение до 450 штук
+    if len(unique_configs) > 450:
+        print(f"✂️ Найдено {len(unique_configs)} конфигов. Обрезаем до 450.")
+        unique_configs = unique_configs[:450]
+
     unique_data = "\n".join(unique_configs)
     
     path = f"githubmirror/{FINAL_FILENAME}"
