@@ -2,8 +2,9 @@ name: Frequent Update
 
 on:
   schedule:
-    - cron: "*/9 * * * *"
-  workflow_dispatch:
+    # Запуск в начале каждого третьего часа (00:00, 03:00, 06:00 и т.д.)
+    - cron: "0 */3 * * *"
+  workflow_dispatch: # Кнопка для ручного запуска
 
 jobs:
   update-files:
@@ -16,13 +17,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.x
-
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: cd source && pip install --no-cache-dir -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir requests PyGithub
 
       - name: Run script
         env:
