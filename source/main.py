@@ -277,9 +277,9 @@ def main():
     unique_configs = list(set(all_configs))
     
     # Ограничение до 400 штук
-    if len(unique_configs) > 400:
-        print(f"✂️ Найдено {len(unique_configs)} конфигов. Обрезаем до 400.")
-        unique_configs = unique_configs[:400]
+    if len(unique_configs) > 300:
+        print(f"✂️ Найдено {len(unique_configs)} конфигов. Обрезаем до 300.")
+        unique_configs = unique_configs[:300]
 
     unique_data = "\n".join(unique_configs)
     
