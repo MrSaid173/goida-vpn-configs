@@ -1,6 +1,8 @@
 import os
 import re
 import requests
+import json
+import base64
 import urllib3
 import concurrent.futures
 from datetime import datetime
@@ -11,11 +13,10 @@ from github import Github, Auth
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/goida-vpn-configs"
 FINAL_FILENAME = "vlm"
-# Ссылка на (raw) файл исходного репозитория для синхронизации списка URL
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
 
-# Список SNI доменов
+# --- ПОЛНЫЙ СПИСОК SNI ---
 SNI_DOMAINS = [
     "00.img.avito.st", "01.img.avito.st", "02.img.avito.st", "03.img.avito.st",
     "04.img.avito.st", "05.img.avito.st", "06.img.avito.st", "07.img.avito.st",
@@ -215,29 +216,56 @@ sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in SNI_DOMAINS) + r"
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
+def extract_ip(link):
+    """Извлекает IP или домен сервера из ссылки любого типа"""
+    try:
+        if link.startswith("vmess://"):
+            data = json.loads(base64.b64decode(link[8:]).decode('utf-8'))
+            return data.get("add")
+        else:
+            # vless, hysteria2, tuic и др.
+            match = re.search(r"@(.*?)(?::|/|\?|#|$)", link)
+            if match:
+                return match.group(1)
+    except:
+        return None
+    return None
+
+def get_countries_batch(ips):
+    """Массовая проверка стран (Batch) через ip-api.com"""
+    results = {}
+    unique_ips = list(set(ips))
+    # Лимит Batch API - 100 за раз
+    for i in range(0, len(unique_ips), 100):
+        batch = unique_ips[i:i+100]
+        try:
+            resp = requests.post("http://ip-api.com/batch?fields=status,countryCode,query", 
+                                 json=[{"query": ip} for ip in batch], timeout=15)
+            for item in resp.json():
+                if item.get('status') == 'success':
+                    results[item['query']] = item.get('countryCode')
+        except:
+            continue
+    return results
+
 def get_remote_urls():
+    """Синхронизация списка источников"""
     try:
         resp = requests.get(REMOTE_SOURCE_URL, timeout=10)
         resp.raise_for_status()
         urls_block = re.search(r'URLS\s*=\s*\[(.*?)\]', resp.text, re.DOTALL)
         if urls_block:
-            content = urls_block.group(1)
-            found = re.findall(r'https?://[^\s"\',]+', content)
-            urls = list(set([u.strip() for u in found]))
-            print(f"🔗 Успешно подтянуто источников: {len(urls)}")
-            return urls
+            found = re.findall(r'https?://[^\s"\',]+', urls_block.group(1))
+            return list(set([u.strip() for u in found]))
         return []
-    except Exception as e:
-        print(f"⚠️ Ошибка при чтении мастер-файла: {e}")
+    except:
         return []
 
 def fetch_and_filter(url):
-    """Сбор конфигов с фильтрацией по SNI и исключение RU-локаций вместе с Hungary"""
-    BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺", "HUNGARY"]
+    """Сбор и фильтрация по протоколам и SNI"""
     try:
         resp = requests.get(url, timeout=15, verify=False)
         resp.raise_for_status()
-        
         text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
         
         valid = []
@@ -247,54 +275,101 @@ def fetch_and_filter(url):
                 continue
             if not sni_regex.search(line):
                 continue
-            if "#" in line:
-                name_part = line.split("#")[-1].upper()
-                if any(word.upper() in name_part for word in BANNED_WORDS):
-                    continue
             valid.append(line)
         return valid
     except:
         return []
 
-def update_readme(count):
-    content = f"# VPN Configs (Synced)\n\nОбновлено (МСК): **{offset}**\nКонфигов: **{count}**\n\n### Файл:\n`https://github.com/{REPO_NAME}/raw/refs/heads/main/githubmirror/vlm`"
-    try:
-        readme = REPO.get_contents("README.md")
-        REPO.update_file(readme.path, "📝 Sync README", content, readme.sha)
-    except:
-        REPO.create_file("README.md", "🆕 Create README", content)
-
 def main():
     remote_urls = get_remote_urls()
     print(f"🔗 Найдено источников: {len(remote_urls)}")
 
-    all_configs = []
+    all_raw_configs = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = [executor.submit(fetch_and_filter, url) for url in remote_urls]
         for f in concurrent.futures.as_completed(futures):
-            all_configs.extend(f.result())
+            all_raw_configs.extend(f.result())
 
-    unique_configs = list(set(all_configs))
+    # 1. Извлекаем IP для дедупликации и проверки
+    unique_links = list(set(all_raw_configs))
+    candidates = []
+    ips_to_check = []
     
-    # Ограничение до 300 штук
-    if len(unique_configs) > 300:
-        print(f"✂️ Найдено {len(unique_configs)} конфигов. Обрезаем до 300.")
-        unique_configs = unique_configs[:300]
+    for link in unique_links:
+        ip = extract_ip(link)
+        if ip:
+            candidates.append({'link': link, 'ip': ip})
+            ips_to_check.append(ip)
 
-    unique_data = "\n".join(unique_configs)
-    
+    # 2. Массовая проверка стран
+    print(f"🌍 Проверяем геолокацию для {len(ips_to_check)} серверов...")
+    ip_map = get_countries_batch(ips_to_check)
+
+    # 3. Фильтрация по странам и дедупликация по IP
+    final_list = []
+    seen_ips = set()
+    counts = {"HU": 0, "LV": 0}
+
+    for item in candidates:
+        link = item['link']
+        ip = item['ip']
+        
+        # Убираем дубликаты серверов
+        if ip in seen_ips:
+            continue
+            
+        country = ip_map.get(ip, "Unknown")
+
+        # ПОЛНОСТЬЮ блокируем Россию (RU) на уровне IP
+        if country == "RU":
+            continue
+
+        # Лимит Венгрии до 5
+        if country == "HU":
+            if counts["HU"] < 5:
+                final_list.append(link)
+                counts["HU"] += 1
+                seen_ips.add(ip)
+            continue
+
+        # Лимит Латвии до 5
+        if country == "LV":
+            if counts["LV"] < 5:
+                final_list.append(link)
+                counts["LV"] += 1
+                seen_ips.add(ip)
+            continue
+
+        # Все остальные страны добавляем в список
+        final_list.append(link)
+        seen_ips.add(ip)
+
+    # 4. Обрезка финального списка
+    if len(final_list) > 300:
+        final_list = final_list[:300]
+
+    unique_data = "\n".join(final_list)
     path = f"githubmirror/{FINAL_FILENAME}"
+
+    # 5. Сохранение в GitHub
     try:
         try:
             curr = REPO.get_contents(path)
             REPO.update_file(path, f"🚀 Sync vlm | {offset}", unique_data, curr.sha)
         except:
             REPO.create_file(path, f"🆕 Create vlm | {offset}", unique_data)
-        print(f"✅ Готово. Сохранено конфигов: {len(unique_configs)}")
+        print(f"✅ Успех. Конфигов: {len(final_list)} (HU: {counts['HU']}, LV: {counts['LV']})")
     except Exception as e:
         print(f"❌ Ошибка сохранения: {e}")
 
-    update_readme(len(unique_configs))
+    # Обновление README
+    readme_content = f"# VPN Configs (Synced)\n\nОбновлено (МСК): **{offset}**\nКонфигов: **{len(final_list)}**\n\n### Файл:\n`https://github.com/{REPO_NAME}/raw/refs/heads/main/githubmirror/vlm`"
+    try:
+        readme = REPO.get_contents("README.md")
+        REPO.update_file(readme.path, "📝 Sync README", readme_content, readme.sha)
+    except:
+        REPO.create_file("README.md", "🆕 Create README", readme_content)
 
 if __name__ == "__main__":
     main()
+    
