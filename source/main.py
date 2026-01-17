@@ -232,8 +232,8 @@ def get_remote_urls():
         return []
 
 def fetch_and_filter(url):
-    """Сбор конфигов с фильтрацией по SNI и исключение RU-локаций"""
-    BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺"]
+    """Сбор конфигов с фильтрацией по SNI и исключение RU-локаций вместе с Hungary"""
+    BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺", "HUNGARY"]
     try:
         resp = requests.get(url, timeout=15, verify=False)
         resp.raise_for_status()
@@ -276,7 +276,7 @@ def main():
 
     unique_configs = list(set(all_configs))
     
-    # Ограничение до 400 штук
+    # Ограничение до 300 штук
     if len(unique_configs) > 300:
         print(f"✂️ Найдено {len(unique_configs)} конфигов. Обрезаем до 300.")
         unique_configs = unique_configs[:300]
