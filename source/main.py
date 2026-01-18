@@ -14,7 +14,7 @@ FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
 
-# --- ПОЛНЫЙ СПИСОК SNI ---
+# --- ТВОЙ ПОЛНЫЙ СПИСОК SNI ---
 SNI_DOMAINS = [
     "00.img.avito.st", "01.img.avito.st", "02.img.avito.st", "03.img.avito.st",
     "04.img.avito.st", "05.img.avito.st", "06.img.avito.st", "07.img.avito.st",
@@ -214,13 +214,19 @@ sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in SNI_DOMAINS) + r"
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
-def get_config_identity(link):
+def get_server_identity(link):
     """
-    Создает уникальный 'отпечаток' конфига, отрезая имя после #.
-    Это предотвращает добавление одного и того же сервера с разными названиями.
+    УЛУЧШЕННАЯ ПРОВЕРКА: извлекает строго 'адрес:порт'.
+    Для ссылки 'vless://uuid@95.163.249.239:443?sni=max.ru#name' 
+    результатом будет '95.163.249.239:443'.
+    Это убирает дубли с разными sid, sni и именами.
     """
     try:
-        return link.split('#')[0].strip()
+        # Регулярка ищет часть после '@' до первого символа '/', '?' или '#'
+        match = re.search(r'@([^/?#\s]+)', link)
+        if match:
+            return match.group(1).strip()
+        return link
     except:
         return link
 
@@ -234,7 +240,8 @@ def get_remote_urls():
             found = re.findall(r'https?://[^\s"\',]+', content)
             return list(set([u.strip() for u in found]))
         return []
-    except: return []
+    except:
+        return []
 
 def fetch_and_filter(url):
     BANNED_WORDS = ["RU", "RUSSIA", "РОССИЯ", "🇷🇺", "HUNGARY"]
@@ -246,19 +253,22 @@ def fetch_and_filter(url):
         valid = []
         for line in text.splitlines():
             line = line.strip()
-            if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): continue
-            if not sni_regex.search(line): continue
-            
+            if not line or line.lower().startswith(EXCLUDE_PROTOCOLS):
+                continue
+            if not sni_regex.search(line):
+                continue
             if "#" in line:
                 name_part = line.split("#")[-1].upper()
-                if any(word in name_part for word in BANNED_WORDS): continue
+                if any(word in name_part for word in BANNED_WORDS):
+                    continue
             valid.append(line)
         return valid
-    except: return []
+    except:
+        return []
 
 def main():
     remote_urls = get_remote_urls()
-    print(f"🔗 Ссылок найдено: {len(remote_urls)}")
+    print(f"🔗 Ссылок-источников: {len(remote_urls)}")
 
     all_raw_configs = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
@@ -266,17 +276,18 @@ def main():
         for f in concurrent.futures.as_completed(futures):
             all_raw_configs.extend(f.result())
 
-    # --- ФИЛЬТРАЦИЯ ДУБЛИКАТОВ СЕРВЕРОВ ---
+    # --- ЖЕСТКАЯ ФИЛЬТРАЦИЯ ПО IP:PORT ---
     final_unique_list = []
-    seen_identities = set()
+    seen_servers = set()
 
     for config in all_raw_configs:
-        identity = get_config_identity(config)
+        server_id = get_server_identity(config)
         
-        # Если такого технического адреса еще не было
-        if identity not in seen_identities:
-            seen_identities.add(identity)
+        # Если такой сервер (IP:порт) еще не попадался
+        if server_id not in seen_servers:
+            seen_servers.add(server_id)
             final_unique_list.append(config)
+        # Если IP уже был — игнорируем (даже если sid или sni другие)
 
     # Ограничение до 300
     if len(final_unique_list) > 300:
@@ -285,19 +296,18 @@ def main():
     unique_data = "\n".join(final_unique_list)
     path = f"githubmirror/{FINAL_FILENAME}"
 
-    # Сохранение в GitHub
     try:
         try:
             curr = REPO.get_contents(path)
             REPO.update_file(path, f"🚀 Sync | {offset}", unique_data, curr.sha)
         except:
             REPO.create_file(path, f"🆕 Create | {offset}", unique_data)
-        print(f"✅ Финиш. Уникальных серверов сохранено: {len(final_unique_list)}")
+        print(f"✅ Готово. Уникальных IP в списке: {len(final_unique_list)}")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка GitHub: {e}")
 
     # README
-    readme_content = f"# VPN Configs (Synced)\n\nОбновлено (МСК): **{offset}**\nКонфигов: **{len(final_unique_list)}**\n\n### Файл:\n`https://github.com/{REPO_NAME}/raw/refs/heads/main/githubmirror/vlm`"
+    readme_content = f"# VPN Configs (Synced)\n\nОбновлено: **{offset}**\nУникальных серверов: **{len(final_unique_list)}**\n\n### Файл:\n`https://github.com/{REPO_NAME}/raw/refs/heads/main/githubmirror/vlm`"
     try:
         readme = REPO.get_contents("README.md")
         REPO.update_file(readme.path, "📝 Sync README", readme_content, readme.sha)
