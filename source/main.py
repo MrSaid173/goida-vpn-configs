@@ -18,7 +18,7 @@ FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
 MAX_CONFIGS = 300
-MAX_PER_SUBNET = 3 
+MAX_PER_SUBNET = 5 
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -28,41 +28,46 @@ offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
-# --- ПАРСИНГ ДАННЫХ ---
-
+# --- ПАРСИНГ ---
 def get_remote_data():
     try:
         resp = requests.get(REMOTE_SOURCE_URL, timeout=15)
         resp.raise_for_status()
         code = resp.text
-        
-        # Ищем списки, игнорируя регистр букв в названии переменной
         all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL | re.IGNORECASE)
         
         std_urls, extra_urls, raw_sni_list = [], [], []
         for var_name, content in all_lists:
             v_upper = var_name.upper()
             items = re.findall(r'["\']([^"\']+)["\']', content)
-            
             if v_upper == "URLS": std_urls = items
             elif v_upper == "EXTRA_URLS_FOR_26": extra_urls = items
             elif v_upper == "SNI_DOMAINS": raw_sni_list = items
             elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
-        # Фильтр VK (всегда в нижнем регистре для точности)
         filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
-        
-        if filtered_sni:
-            sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE)
-        else:
-            # Если список пуст, разрешаем всё (твое пожелание)
-            sni_regex = re.compile(r".*")
-
-        return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex, len(filtered_sni)
+        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE) if filtered_sni else re.compile(r".*")
+        return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex
     except Exception as e:
         print(f"❌ Ошибка парсинга: {e}")
-        return [], [], re.compile(r".*"), 0
+        return [], [], re.compile(r".*")
 
+# --- GEOIP ---
+def is_russian_subnet(subnet, subnet_geo_cache):
+    if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
+    try:
+        time.sleep(1.5) # Лимит ip-api.com
+        url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org"
+        r = requests.get(url, timeout=5).json()
+        if r.get("status") == "success":
+            info = (r.get("isp", "") + " " + r.get("org", "")).lower()
+            is_ru = (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia"])
+            subnet_geo_cache[subnet] = is_ru
+            return is_ru
+        return False
+    except: return False
+
+# --- ОБРАБОТКА ---
 def get_server_host(link):
     try:
         if link.startswith("vmess://"):
@@ -81,16 +86,6 @@ def is_literal_ip(host):
         return True
     except: return False
 
-def is_russian_subnet(subnet, subnet_geo_cache):
-    if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
-    try:
-        time.sleep(1.4)
-        r = requests.get(f"http://ip-api.com/json/{subnet}.1?fields=countryCode", timeout=5).json()
-        is_ru = (r.get("countryCode") == "RU")
-        subnet_geo_cache[subnet] = is_ru
-        return is_ru
-    except: return False
-
 def fetch_and_filter(url, sni_regex):
     try:
         resp = requests.get(url, timeout=15, verify=False)
@@ -99,68 +94,57 @@ def fetch_and_filter(url, sni_regex):
         for line in text.splitlines():
             line = line.strip()
             if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): continue
-            
-            # Твои фильтры исключений
-            low_line = line.lower()
-            if "openproxy" in low_line or "vk" in low_line: continue
-            
-            if sni_regex.search(line):
-                valid.append(line)
+            if "openproxy" in line.lower() or "vk" in line.lower(): continue
+            if sni_regex.search(line): valid.append(line)
         return valid
     except: return []
 
+# --- MAIN ---
 def main():
-    extra_src, std_src, sni_regex, sni_count = get_remote_data()
-    print(f"✅ SNI загружено: {sni_count}. Ссылок: {len(extra_src)} приор., {len(std_src)} обыч.")
+    extra_src, std_src, sni_regex = get_remote_data()
+    final_list, seen_hosts, subnet_counts, subnet_geo_cache = [], set(), {}, {}
 
-    final_list = []
-    seen_hosts = set()
-    subnet_counts = {}
-    subnet_geo_cache = {}
+    def add_configs(configs):
+        for config in configs:
+            if len(final_list) >= MAX_CONFIGS: return
+            host = get_server_host(config)
+            if not host or not is_literal_ip(host) or host in seen_hosts: continue
+            subnet = ".".join(host.split(".")[:3])
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+            if is_russian_subnet(subnet, subnet_geo_cache): continue
+            
+            seen_hosts.add(host)
+            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+            final_list.append(config)
 
-    def process_pool(urls, limit):
-        added = 0
-        pool_results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(fetch_and_filter, u, sni_regex) for u in urls]
-            for f in concurrent.futures.as_completed(futures):
-                for config in f.result():
-                    if added >= limit: break
-                    host = get_server_host(config)
-                    if not host or not is_literal_ip(host) or host in seen_hosts: continue
-                    
-                    subnet = ".".join(host.split(".")[:3])
-                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
-                    if is_russian_subnet(subnet, subnet_geo_cache): continue
-                    
-                    seen_hosts.add(host)
-                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                    pool_results.append(config)
-                    added += 1
-                    print(f"✅ [{len(final_list)+added}] Добавлен: {host}")
-        return pool_results
+    print("📡 Сбор данных...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        # Сначала приоритетные
+        f_extra = [executor.submit(fetch_and_filter, u, sni_regex) for u in extra_src]
+        for f in concurrent.futures.as_completed(f_extra): add_configs(f.result())
+        
+        # Если не набрали - обычные
+        if len(final_list) < MAX_CONFIGS:
+            f_std = [executor.submit(fetch_and_filter, u, sni_regex) for u in std_src]
+            for f in concurrent.futures.as_completed(f_std): add_configs(f.result())
 
-    # 150 из приоритетных
-    final_list.extend(process_pool(extra_src, MAX_CONFIGS // 2))
-
-    # Добор до 300
-    remaining = MAX_CONFIGS - len(final_list)
-    if remaining > 0:
-        final_list.extend(process_pool(std_src, remaining))
-
-    # Сохранение
+    # --- СОХРАНЕНИЕ ---
+    actual_count = len(final_list)
     unique_data = "\n".join(final_list)
     path = f"githubmirror/{FINAL_FILENAME}"
+    
     try:
         try:
             curr = REPO.get_contents(path)
             REPO.update_file(path, f"🚀 Sync | {offset}", unique_data, curr.sha)
         except:
             REPO.create_file(path, f"🆕 Create | {offset}", unique_data)
-        print(f"🏁 Финиш! Итого сохранено: {len(final_list)}")
-    except Exception as e:
-        print(f"❌ Ошибка GitHub: {e}")
+        
+        readme_text = f"# VPN Configs\n\nОбновлено: {offset} (МСК)\nКонфигов: {actual_count}\n\n[Скачать VLM](https://github.com/{REPO_NAME}/raw/main/{path})"
+        rm = REPO.get_contents("README.md")
+        REPO.update_file("README.md", "📝 Update README", readme_text, rm.sha)
+        print(f"🏁 Финиш! Сохранено: {actual_count}")
+    except Exception as e: print(f"❌ Ошибка GitHub: {e}")
 
 if __name__ == "__main__":
     main()
-    
