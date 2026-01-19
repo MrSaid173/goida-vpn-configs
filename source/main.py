@@ -95,7 +95,7 @@ def is_literal_ip(host):
         return True
     except: return False
 
-def fetch_and_filter(url, sni_rege:
+def fetch_and_filter(url, sni_regex):
     try:
         resp = session.get(url, timeout=15, verify=False)
         text = PROTO_RE.sub(r'\n\1://', resp.text)
