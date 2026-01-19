@@ -61,7 +61,7 @@ def get_remote_data():
 def is_russian_subnet(subnet, subnet_geo_cache):
     if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
     try:
-        time.sleep(1.4)
+        time.sleep(1.5)
         url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org,asname"
         r = session.get(url, timeout=5).json()
         if r.get("status") == "success":
