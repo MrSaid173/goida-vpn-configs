@@ -18,6 +18,7 @@ FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
 MAX_CONFIGS = 300
+MAX_PER_SUBNET = 5 
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -27,50 +28,31 @@ offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
-# --- УМНЫЙ ПАРСИНГ ДАННЫХ ---
+# --- ПАРСИНГ ДАННЫХ ---
 
 def get_remote_data():
-    """Парсит ссылки и SNI, подстраиваясь под изменения в исходном коде."""
     try:
         resp = requests.get(REMOTE_SOURCE_URL, timeout=15)
         resp.raise_for_status()
         code = resp.text
-
         all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL)
         
-        std_urls = []
-        extra_urls = []
-        raw_sni_list = []
-
+        std_urls, extra_urls, raw_sni_list = [], [], []
         for var_name, content in all_lists:
             items = re.findall(r'["\']([^"\']+)["\']', content)
-            
-            if var_name == "URLS":
-                std_urls = items
-            elif var_name == "EXTRA_URLS_FOR_26":
-                extra_urls = items
-            elif var_name == "SNI_DOMAINS":
-                raw_sni_list = items
-            elif not extra_urls and any("github" in item for item in items):
-                extra_urls = items
+            if var_name == "URLS": std_urls = items
+            elif var_name == "EXTRA_URLS_FOR_26": extra_urls = items
+            elif var_name == "SNI_DOMAINS": raw_sni_list = items
+            elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
-        # Глубокая очистка SNI от всего, что связано с VK
         filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
-        
-        if filtered_sni:
-            sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")")
-        else:
-            sni_regex = re.compile(r".*")
-
+        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")") if filtered_sni else re.compile(r".*")
         return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex, len(filtered_sni)
     except Exception as e:
         print(f"❌ Ошибка парсинга: {e}")
         return [], [], re.compile(r".*"), 0
 
-# --- ПРОВЕРКИ ---
-
 def get_server_host(link):
-    """Извлекает хост из конфига."""
     try:
         if link.startswith("vmess://"):
             payload = link[8:]
@@ -79,68 +61,56 @@ def get_server_host(link):
             return data.get('add')
         match = re.search(r'@([^:/?#\s]+)', link)
         return match.group(1) if match else None
-    except:
-        return None
+    except: return None
 
 def is_literal_ip(host):
-    """Проверяет, является ли строка чистым IP-адресом."""
     if not host: return False
     try:
         ipaddress.ip_address(host)
         return True
+    except: return False
+
+# --- ОПТИМИЗИРОВАННЫЙ GEOIP ---
+
+def is_russian_subnet(subnet, subnet_geo_cache):
+    """Проверяет подсеть /24 целиком для экономии времени."""
+    if subnet in subnet_geo_cache:
+        return subnet_geo_cache[subnet]
+    
+    try:
+        test_ip = f"{subnet}.1"
+        time.sleep(1.4) # Задержка только для новых подсетей (лимит API)
+        r = requests.get(f"http://ip-api.com/json/{test_ip}?fields=countryCode", timeout=5).json()
+        is_ru = (r.get("countryCode") == "RU")
+        subnet_geo_cache[subnet] = is_ru
+        return is_ru
     except:
         return False
 
-def is_russian_ip(ip, ru_cache, ok_cache):
-    """GeoIP проверка с задержкой 1.4с."""
-    if ip in ru_cache: return True
-    if ip in ok_cache: return False
-    try:
-        time.sleep(1.4)
-        r = requests.get(f"http://ip-api.com/json/{ip}?fields=countryCode", timeout=5).json()
-        if r.get("countryCode") == "RU":
-            ru_cache.add(ip)
-            return True
-        ok_cache.add(ip)
-    except:
-        pass
-    return False
-
 def fetch_and_filter(url, sni_regex):
-    """Скачивает конфиги и фильтрует по SNI + исключениям."""
     try:
         resp = requests.get(url, timeout=15, verify=False)
         text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
         valid = []
         for line in text.splitlines():
             line = line.strip()
-            if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): 
-                continue
-            
-            # --- ИСКЛЮЧЕНИЯ (OpenProxy и VK) ---
+            if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): continue
             low_line = line.lower()
-            if "openproxy" in low_line: 
-                continue
-            if "vk" in low_line: 
-                continue
-                
-            # Проверка по списку SNI
-            if sni_regex.search(line):
-                valid.append(line)
+            if "openproxy" in low_line or "vk" in low_line: continue
+            if sni_regex.search(line): valid.append(line)
         return valid
-    except:
-        return []
+    except: return []
 
-# --- ОСНОВНОЙ ЦИКЛ ---
+# --- MAIN ---
 
 def main():
     extra_src, std_src, sni_regex, sni_count = get_remote_data()
-    print(f"✅ SNI загружено: {sni_count} (без VK)")
-    print(f"🔗 Ссылки: {len(extra_src)} приоритетных, {len(std_src)} обычных")
+    print(f"✅ SNI: {sni_count}. Ссылки: {len(extra_src)} приор., {len(std_src)} обыч.")
 
-    ru_ips, ok_ips = set(), set()
     final_list = []
     seen_hosts = set()
+    subnet_counts = {}
+    subnet_geo_cache = {} # Хранит результат проверки подсети
 
     def process_pool(urls, limit):
         added = 0
@@ -155,19 +125,28 @@ def main():
                     if not host or not is_literal_ip(host) or host in seen_hosts:
                         continue
                     
-                    if is_russian_ip(host, ru_ips, ok_ips):
-                        print(f"📍 RU IP пропущен: {host}")
+                    subnet = ".".join(host.split(".")[:3])
+                    
+                    # 1. Лимит на подсеть
+                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
+                        continue
+
+                    # 2. GeoIP (один запрос на подсеть)
+                    if is_russian_subnet(subnet, subnet_geo_cache):
                         continue
                     
+                    # 3. Сохранение
                     seen_hosts.add(host)
+                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                     pool_results.append(config)
                     added += 1
+                    print(f"✅ [{len(final_list)+added}] Добавлен: {host}")
+                    
         return pool_results
 
     # Сбор 50/50
-    half = MAX_CONFIGS // 2
-    print(f"📡 Сбор приоритетных...")
-    final_list.extend(process_pool(extra_src, half))
+    print("📡 Сбор из приоритетных источников...")
+    final_list.extend(process_pool(extra_src, MAX_CONFIGS // 2))
 
     remaining = MAX_CONFIGS - len(final_list)
     if remaining > 0:
@@ -186,7 +165,7 @@ def main():
             REPO.create_file(path, f"🆕 Create | {offset}", unique_data)
         
         # Обновление README
-        readme_text = f"# VPN Configs\n\nОбновлено: {offset} (МСК)\nКонфигов: {len(final_list)}\n\n[Ссылка на vlm](https://github.com/{REPO_NAME}/raw/main/{path})"
+        readme_text = f"# VPN Configs\n\nОбновлено: {offset} (МСК)\nКонфигов: {len(final_list)}\n\n[Скачать VLM](https://github.com/{REPO_NAME}/raw/main/{path})"
         try:
             rm = REPO.get_contents("README.md")
             REPO.update_file("README.md", "📝 Update README", readme_text, rm.sha)
@@ -199,4 +178,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
