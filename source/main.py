@@ -50,13 +50,14 @@ def get_remote_data():
             elif v_upper == "SNI_DOMAINS": raw_sni_list = items
             elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
-        filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
+        # filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
+        filtered_sni = raw_sni_list
         sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE) if filtered_sni else re.compile(r".*")
         return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex
     except Exception as e:
         print(f"❌ Error: {e}")
         return [], [], re.compile(r".*")
-
+#
 # --- GEOIP ---
 def is_russian_subnet(subnet, subnet_geo_cache):
     if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
@@ -94,7 +95,7 @@ def is_literal_ip(host):
         return True
     except: return False
 
-def fetch_and_filter(url, sni_regex):
+def fetch_and_filter(url, sni_rege:
     try:
         resp = session.get(url, timeout=15, verify=False)
         text = PROTO_RE.sub(r'\n\1://', resp.text)
