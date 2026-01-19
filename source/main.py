@@ -69,7 +69,7 @@ def is_russian_subnet(subnet, subnet_geo_cache):
             country = r.get("countryCode", "")
             info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
             ru_keywords = ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia", "iot", "miran", "selectel"]
-            is_ru = (country == "RU") or ("ru-" in info) or any(k in info for k in ru_keywords)
+            is_ru = (country == "RU") or ("ru-" in info) or ("vk" in info) or any(k in info for k in ru_keywords)
             if is_ru: print(f"🚩 Blocked RU: {subnet}.x | {info}")
             subnet_geo_cache[subnet] = is_ru
             return is_ru
