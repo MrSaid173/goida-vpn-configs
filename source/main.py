@@ -13,7 +13,7 @@ from github import Github, Auth
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
-REPO_NAME = "MrSaid173/goida-vpn-configs"
+REPO_NAME = "MrSaid173/golden-paths_configs"
 FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
