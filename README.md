@@ -1,7 +1,7 @@
 # VPN Configs (Synced)
 
-Обновлено: **03:51 | 19.01.2026**
-Уникальных серверов: **272**
+Обновлено: **06:29 | 19.01.2026**
+Уникальных серверов: **273**
 
 ### Файл:
 `https://github.com/MrSaid173/goida-vpn-configs/raw/refs/heads/main/githubmirror/vlm`
