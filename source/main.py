@@ -18,7 +18,7 @@ FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
 MAX_CONFIGS = 300
-MAX_PER_SUBNET = 5 
+MAX_PER_SUBNET = 3 
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -102,7 +102,7 @@ def fetch_and_filter(url, sni_regex):
         for line in text.splitlines():
             line = line.strip()
             if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): continue
-            if "openproxy" in line.lower() or "vk" in line.lower(): continue
+            if "openproxy" in line.lower() or "russia" in line.lower(): continue
             if sni_regex.search(line): valid.append(line)
         return valid
     except: return []
