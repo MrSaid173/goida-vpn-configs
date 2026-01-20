@@ -6,10 +6,12 @@ from github import Github, Auth
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
-FINAL_FILENAME = "vlm"
+FILENAME_VLM = "vlm"
+FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
-MAX_CONFIGS = 150
+EXCLUDE_KEYWORDS = ("openproxy", "type=ws")
+MAX_CONFIGS = 150 # Цель для каждого файла
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 5
 MAX_RU_CONFIGS = 5
@@ -22,11 +24,10 @@ offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
-# Глобальный кэш и счетчики
 last_geoip_time = 0
 subnet_geo_cache = {}
 
-# --- ФУНКЦИИ ПРОВЕРКИ ---
+# --- ФУНКЦИИ ---
 
 def is_server_alive(host, port, timeout=1.5):
     try:
@@ -37,12 +38,9 @@ def is_server_alive(host, port, timeout=1.5):
 def check_is_ru(subnet):
     global last_geoip_time
     if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
-    
-    # Rate Limiter для ip-api (45/min)
     now = time.time()
     wait = 1.35 - (now - last_geoip_time)
     if wait > 0: time.sleep(wait)
-    
     try:
         url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org,asname"
         r = session.get(url, timeout=5).json()
@@ -56,37 +54,30 @@ def check_is_ru(subnet):
     return False
 
 def get_config_details(link):
-    """Извлекает хост, порт и SNI."""
     try:
         if link.startswith("vmess://"):
             p = link[8:]; p += "=" * ((4 - len(p) % 4) % 4)
             data = json.loads(base64.b64decode(p).decode('utf-8'))
-            return data.get('add'), int(data.get('port', 443)), data.get('sni') or data.get('host') or "no-sni"
-        host_match = re.search(r'@([^:/?#\s]+):(\d+)', link)
-        sni_match = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
-        if host_match:
-            host = host_match.group(1)
-            port = int(host_match.group(2))
-            sni = sni_match.group(1).lower() if sni_match else "no-sni"
-            return host, port, sni
+            return data.get('add'), int(data.get('port', 443)), (data.get('sni') or data.get('host') or "no-sni").lower()
+        h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
+        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
+        if h_m:
+            return h_m.group(1), int(h_m.group(2)), (s_m.group(1).lower() if s_m else "no-sni")
     except: pass
     return None, None, None
-
-# --- ПАРСИНГ ИСТОЧНИКОВ ---
 
 def get_remote_data():
     try:
         resp = session.get(REMOTE_SOURCE_URL, timeout=15)
-        resp.raise_for_status()
         code = resp.text
         all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL | re.IGNORECASE)
-        std_src, extra_src, raw_sni_list = [], [], []
-        for var_name, content in all_lists:
+        std_src, extra_src, sni_list = [], [], []
+        for var, content in all_lists:
             items = re.findall(r'["\']([^"\']+)["\']', content)
-            if var_name.upper() == "URLS": std_src = items
-            elif var_name.upper() == "EXTRA_URLS_FOR_26": extra_src = items
-            elif var_name.upper() == "SNI_DOMAINS": raw_sni_list = items
-        return extra_src, std_src, raw_sni_list
+            if var.upper() == "URLS": std_src = items
+            elif var.upper() == "EXTRA_URLS_FOR_26": extra_src = items
+            elif var.upper() == "SNI_DOMAINS": sni_list = items
+        return extra_src, std_src, sni_list
     except: return [], [], []
 
 def fetch_raw_configs(url):
@@ -100,81 +91,88 @@ def fetch_raw_configs(url):
 
 def main():
     extra_urls, std_urls, sni_domains = get_remote_data()
-    final_list, seen_hosts = [], set()
+    vlm_list, vlm2_list = [], []
+    seen_hosts = set()
+    # Счетчики общие, чтобы соблюдать MAX_PER_SNI и т.д.
     sni_counts, subnet_counts = {}, {}
     ru_count = 0
 
     def process_pool(urls, use_sni_filter=True):
         nonlocal ru_count
         with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
-            # Загружаем все сырые конфиги из пачки URL
             future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
             for future in concurrent.futures.as_completed(future_to_url):
                 configs = future.result()
                 for config in configs:
-                    if len(final_list) >= MAX_CONFIGS: return
+                    # Останавливаемся, только когда ОБА файла полные
+                    if len(vlm_list) >= MAX_CONFIGS and len(vlm2_list) >= MAX_CONFIGS: return
 
-                    # 2-3. Фильтр протоколов, текста и SNI (базовый)
-                    if config.lower().startswith(EXCLUDE_PROTOCOLS) or "openproxy" in config.lower(): continue
+                    low_config = config.lower()
+                    if low_config.startswith(EXCLUDE_PROTOCOLS) or any(k in low_config for k in EXCLUDE_KEYWORDS):
+                        continue
                     
                     host, port, sni = get_config_details(config)
                     if not host or host in seen_hosts: continue
                     
-                    # 2 (продолжение). Фильтр по списку разрешенных SNI
                     if use_sni_filter and sni_domains:
                         if not any(d in sni for d in sni_domains): continue
 
-                    # 5. Расширенный фильтр SNI (лимит на одинаковые)
+                    # Лимиты на SNI и подсети
                     if sni_counts.get(sni, 0) >= MAX_PER_SNI: continue
-
-                    # 6. Фильтр по подсетям
                     try: ipaddress.ip_address(host)
                     except: continue
                     subnet = ".".join(host.split(".")[:3])
                     if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
-                    # 7. ПИНГ
+                    # Пинг и страна
                     if not is_server_alive(host, port): continue
-
-                    # 8. GeoIP (Русские vs Зарубежные)
                     is_ru = check_is_ru(subnet)
+                    
                     if is_ru:
                         if ru_count >= MAX_RU_CONFIGS: continue
                         ru_count += 1
-                    else:
-                        # Если это зарубежный, проверяем, не превышен ли общий лимит за вычетом RU
-                        if (len(final_list) - ru_count) >= (MAX_CONFIGS - MAX_RU_CONFIGS): continue
 
-                    # Добавление
-                    seen_hosts.add(host)
-                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                    final_list.append(config)
-                    print(f"✅ [{'RU' if is_ru else 'INT'}] {host} | SNI: {sni}")
+                    # ОПРЕДЕЛЯЕМ СУДЬБУ КОНФИГА
+                    added = False
+                    is_xhttp = "xhttp" in low_config
 
-    # Исполнение плана:
-    print("🚀 Этап 1: EXTRA_URLS")
-    process_pool(extra_urls, use_sni_filter=True)
+                    # Попытка добавить в vlm2 (всегда, если не xhttp или если xhttp разрешен)
+                    if len(vlm2_list) < MAX_CONFIGS:
+                        vlm2_list.append(config)
+                        added = True
+                    
+                    # Попытка добавить в vlm (только если НЕ xhttp)
+                    if not is_xhttp and len(vlm_list) < MAX_CONFIGS:
+                        vlm_list.append(config)
+                        added = True
 
-    if len(final_list) < MAX_CONFIGS:
-        print("🚀 Этап 2: STD_URLS")
-        process_pool(std_urls, use_sni_filter=True)
+                    if added:
+                        seen_hosts.add(host)
+                        sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                        subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                        print(f"✅ Добавлен {host} (vlm:{len(vlm_list)}, vlm2:{len(vlm2_list)})")
 
-    if len(final_list) < MAX_CONFIGS:
-        print("🚀 Этап 3: Отмена фильтра по SNI (добор)")
-        process_pool(extra_urls + std_urls, use_sni_filter=False)
+    # Исполнение этапов
+    process_pool(extra_urls, True)
+    if len(vlm_list) < MAX_CONFIGS or len(vlm2_list) < MAX_CONFIGS:
+        process_pool(std_urls, True)
+    if len(vlm_list) < MAX_CONFIGS or len(vlm2_list) < MAX_CONFIGS:
+        process_pool(extra_urls + std_urls, False)
 
-    # Сохранение (GitHub блок оставить как был)
-    actual_count = len(final_list)
-    if actual_count > 0:
-        data = "\n".join(final_list)
-        path = f"githubmirror/{FINAL_FILENAME}"
+    # Сохранение
+    def save(filename, lst):
+        if not lst: return
+        data = "\n".join(lst)
+        path = f"githubmirror/{filename}"
+        msg = f"🚀 {filename} | Total: {len(lst)} | RU: {ru_count} | {offset}"
         try:
             curr = REPO.get_contents(path)
-            REPO.update_file(path, f"🚀 Sync | RU:{ru_count} | Total:{actual_count}", data, curr.sha)
-            print(f"🏁 Финиш! Собрано {actual_count} (RU: {ru_count})")
-        except:
-            REPO.create_file(path, f"🆕 Init", data)
+            REPO.update_file(path, msg, data, curr.sha)
+        except: REPO.create_file(path, msg, data)
+        print(f"🏁 {filename} сохранен ({len(lst)} шт.)")
+
+    save(FILENAME_VLM, vlm_list)
+    save(FILENAME_VLM2, vlm2_list)
 
 if __name__ == "__main__":
     main()
