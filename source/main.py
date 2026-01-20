@@ -21,7 +21,9 @@ FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 MAX_CONFIGS = 150
 MAX_PER_SUBNET = 3
-DB_PATH = "dbip-country-lite.mmdb"
+# Переносим базу в папку data
+DB_DIR = "data"
+DB_PATH = os.path.join(DB_DIR, "dbip-country-lite.mmdb")
 DB_URL = "https://download.db-ip.com/free/dbip-country-lite-{year}-{month}.mmdb.gz"
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
@@ -35,20 +37,22 @@ REPO = g.get_repo(REPO_NAME)
 
 # --- 1. ЛОГИКА ОБНОВЛЕНИЯ И ХРАНЕНИЯ БАЗЫ ---
 def sync_geoip_db():
-    """Проверяет базу в репо, скачивает новую раз в месяц и пушит обратно"""
+    if not os.path.exists(DB_DIR):
+        os.makedirs(DB_DIR)
+
     now = datetime.now()
-    # Пытаемся получить базу из репозитория, если её нет локально (в папке Actions)
+    
+    # 1. Пытаемся взять базу из репозитория
     if not os.path.exists(DB_PATH):
         try:
             content = REPO.get_contents(DB_PATH)
             with open(DB_PATH, "wb") as f:
                 f.write(content.decoded_content)
-            print("📦 База загружена из репозитория.")
+            print("📦 База скачана из репозитория в папку data/.")
         except:
-            print("🐣 Базы в репо нет, будет создана новая.")
+            print("🐣 Базы в репозитории пока нет.")
 
-    # Проверяем, нужно ли обновиться (если сегодня 1-е число или базы вообще нет)
-    # Или если текущая база старше 32 дней
+    # 2. Проверяем нужно ли обновить (1-е число месяца или файл отсутствует)
     need_update = False
     if not os.path.exists(DB_PATH):
         need_update = True
@@ -58,31 +62,32 @@ def sync_geoip_db():
             need_update = True
 
     if need_update:
-        print("🌐 Поиск новой версии базы на текущий месяц...")
+        print("🌐 Пытаемся скачать свежую базу...")
         url = DB_URL.format(year=now.year, month=f"{now.month:02d}")
         try:
-            r = session.get(url, timeout=15)
-            if r.status_code != 200: # Если еще не выложили, пробуем прошлый месяц
+            r = session.get(url, timeout=20)
+            if r.status_code != 200:
                 prev_m = now.month - 1 if now.month > 1 else 12
                 prev_y = now.year if now.month > 1 else now.year - 1
                 url = DB_URL.format(year=prev_y, month=f"{prev_m:02d}")
-                r = session.get(url, timeout=15)
+                r = session.get(url, timeout=20)
 
             if r.status_code == 200:
-                with open(DB_PATH + ".gz", "wb") as f:
+                gz_path = DB_PATH + ".gz"
+                with open(gz_path, "wb") as f:
                     f.write(r.content)
-                with gzip.open(DB_PATH + ".gz", "rb") as f_in:
+                with gzip.open(gz_path, "rb") as f_in:
                     with open(DB_PATH, "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
-                os.remove(DB_PATH + ".gz")
+                os.remove(gz_path)
                 
-                # Пушим обновленную базу в репозиторий
+                # Загружаем обновленную базу обратно в GitHub
                 with open(DB_PATH, "rb") as f:
                     db_data = f.read()
                 update_gh(DB_PATH, f"🔄 Update GeoIP DB {now.month}/{now.year}", db_data)
-                print("✅ База обновлена и сохранена в репозиторий.")
+                print("✅ База обновлена и запушена в репо.")
         except Exception as e:
-            print(f"⚠️ Не удалось обновить базу, работаем на старой: {e}")
+            print(f"⚠️ Ошибка обновления: {e}. Работаем на чем есть.")
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def update_gh(path, msg, data):
@@ -126,14 +131,14 @@ def fetch_and_filter(url, sni_regex):
         return [l.strip() for l in text.splitlines() if l.strip() and not l.strip().lower().startswith(("ss://", "trojan://")) and sni_regex.search(l)]
     except: return []
 
-# --- ГЛАВНЫЙ ПРОЦЕСС ---
+# --- MAIN ---
 def main():
-    sync_geoip_db() # Синхронизируем базу с репозиторием
+    sync_geoip_db()
     
     sources, sni_regex = get_remote_data()
     if not sources: return
 
-    print(f"📥 Сбор конфигов...")
+    print(f"📥 Сбор данных...")
     all_raw = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=50) as ex:
         futures = [ex.submit(fetch_and_filter, u, sni_regex) for u in sources]
@@ -154,25 +159,23 @@ def main():
     final_list = []
     waiting_list = []
 
-    # ПЛАН А: Локальная база (которая теперь всегда под рукой)
-    print(f"🌍 GEO-фильтр (локально)...")
+    # ПЛАН А: Локально
     if os.path.exists(DB_PATH):
         try:
             with maxminddb.open_database(DB_PATH) as reader:
                 for c in candidates:
                     res = reader.get(c["ip"])
-                    if res and 'country' in res:
-                        if res['country'] != "RU":
-                            final_list.append(c["config"])
-                            if len(final_list) >= MAX_CONFIGS: break
-                    else:
+                    if res and res.get('country') != "RU":
+                        final_list.append(c["config"])
+                        if len(final_list) >= MAX_CONFIGS: break
+                    elif not res or 'country' not in res:
                         waiting_list.append(c)
         except: waiting_list = candidates
     else: waiting_list = candidates
 
-    # ПЛАН Б: Внешнее API (если не хватило локальных данных)
+    # ПЛАН Б: API
     if len(final_list) < MAX_CONFIGS and waiting_list:
-        print(f"🔎 Добор через API (нужно еще {MAX_CONFIGS - len(final_list)})...")
+        print(f"🔎 Добор через API ({MAX_CONFIGS - len(final_list)} шт)...")
         for i in range(0, len(waiting_list), 50):
             if len(final_list) >= MAX_CONFIGS: break
             batch = waiting_list[i : i + 50]
@@ -180,21 +183,22 @@ def main():
                 payload = [{"query": c["ip"], "fields": "status,countryCode"} for c in batch]
                 resp = session.post("http://ip-api.com/batch", json=payload, timeout=10)
                 if resp.status_code == 200:
-                    results = {item.get("query"): item.get("countryCode") for item in resp.json()}
-                    for c in batch:
-                        if results.get(c["ip"]) != "RU":
-                            final_list.append(c["config"])
-                            if len(final_list) >= MAX_CONFIGS: break
+                    for item in resp.json():
+                        if item.get("countryCode") != "RU":
+                            # Находим конфиг для этого IP
+                            cfg = next((x["config"] for x in batch if x["ip"] == item.get("query")), None)
+                            if cfg:
+                                final_list.append(cfg)
+                                if len(final_list) >= MAX_CONFIGS: break
                 time.sleep(2)
             except:
                 for c in batch:
                     final_list.append(c["config"])
                     if len(final_list) >= MAX_CONFIGS: break
 
-    # СОХРАНЕНИЕ КОНФИГОВ
     if final_list:
-        print(f"📤 Публикация результатов...")
-        readme = f"# VPN Configs\n\n**Update:** {offset}\n**Total:** {len(final_list)}"
+        print(f"📤 Публикация...")
+        readme = f"# VPN\n\n**Update:** {offset}\n**Total:** {len(final_list)}"
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
             ex.submit(update_gh, f"githubmirror/{FINAL_FILENAME}", f"🚀 Sync {offset}", "\n".join(final_list))
             ex.submit(update_gh, "README.md", "📝 Update", readme)
