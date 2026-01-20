@@ -45,8 +45,8 @@ def get_remote_data():
             elif v_upper == "SNI_DOMAINS": raw_sni_list = items
             elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
-        filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
-        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE) if filtered_sni else re.compile(r".*")
+        # filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
+        sni_regex = filtered_sni
         return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex
     except Exception as e:
         print(f"❌ Ошибка парсинга: {e}")
