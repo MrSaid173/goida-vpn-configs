@@ -50,31 +50,38 @@ def get_remote_data():
             elif v_upper == "SNI_DOMAINS": raw_sni_list = items
             elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
-        # filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
-        filtered_sni = raw_sni_list
-        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE) if filtered_sni else re.compile(r".*")
-        return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex
+        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in raw_sni_list) + r")", re.IGNORECASE) if raw_sni_list else re.compile(r".*")
+        return list(dict.fromkeys(extra_urls + std_urls)), sni_regex
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return [], [], re.compile(r".*")
-#
-# --- GEOIP ---
-def is_russian_subnet(subnet, subnet_geo_cache):
-    if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
-    try:
-        time.sleep(1.5)
-        url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org,asname"
-        r = session.get(url, timeout=5).json()
-        if r.get("status") == "success":
-            country = r.get("countryCode", "")
-            info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
-            ru_keywords = ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia", "iot", "miran", "selectel"]
-            is_ru = (country == "RU") or ("ru-" in info) or ("vk" in info) or any(k in info for k in ru_keywords)
-            if is_ru: print(f"🚩 Blocked RU: {subnet}.x | {info}")
-            subnet_geo_cache[subnet] = is_ru
-            return is_ru
-        return False
-    except: return False
+        print(f"❌ Error getting remote data: {e}")
+        return [], re.compile(r".*")
+
+# --- GEOIP BATCH ---
+def check_ips_batch(ips):
+    """Проверяет список IP пачками по 100 штук через batch эндпоинт ip-api"""
+    results = {}
+    if not ips: return results
+    
+    # ip-api batch принимает до 100 объектов за раз
+    for i in range(0, len(ips), 100):
+        batch = ips[i:i+100]
+        try:
+            # Формируем список запросов для batch
+            payload = [{"query": ip, "fields": "status,countryCode,isp,org,asname"} for ip in batch]
+            resp = session.post("http://ip-api.com/batch", json=payload, timeout=20)
+            if resp.status_code == 200:
+                for item in resp.json():
+                    ip = item.get("query")
+                    country = item.get("countryCode", "")
+                    info = (item.get("isp", "") + " " + item.get("org", "") + " " + item.get("asname", "")).lower()
+                    ru_keywords = ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia", "iot", "miran", "selectel"]
+                    is_ru = (country == "RU") or any(k in info for k in ru_keywords)
+                    results[ip] = is_ru
+            else:
+                print(f"⚠️ Batch API returned status {resp.status_code}")
+        except Exception as e:
+            print(f"⚠️ Batch Error: {e}")
+    return results
 
 # --- ОБРАБОТКА ---
 def get_server_host(link):
@@ -97,65 +104,91 @@ def is_literal_ip(host):
 
 def fetch_and_filter(url, sni_regex):
     try:
-        resp = session.get(url, timeout=15, verify=False)
+        resp = session.get(url, timeout=12, verify=False)
         text = PROTO_RE.sub(r'\n\1://', resp.text)
         valid = []
         for line in text.splitlines():
             line = line.strip()
             if not line or line.lower().startswith(EXCLUDE_PROTOCOLS): continue
-            if "openproxy" in line.lower() or "russia" in line.lower(): continue
-            if sni_regex.search(line): valid.append(line)
+            if any(k in line.lower() for k in ["openproxy", "russia"]): continue
+            if sni_regex.search(line): 
+                valid.append(line)
         return valid
     except: return []
 
 # --- MAIN ---
 def main():
-    extra_src, std_src, sni_regex = get_remote_data()
-    final_list, seen_hosts, subnet_counts, subnet_geo_cache = [], set(), {}, {}
+    all_sources, sni_regex = get_remote_data()
+    if not all_sources: return
 
-    def process_links(urls):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(fetch_and_filter, u, sni_regex) for u in urls]
-            for f in concurrent.futures.as_completed(futures):
-                for config in f.result():
-                    if len(final_list) >= MAX_CONFIGS: return
-                    host = get_server_host(config)
-                    if not host or not is_literal_ip(host) or host in seen_hosts: continue
-                    subnet = ".".join(host.split(".")[:3])
-                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
-                    if is_russian_subnet(subnet, subnet_geo_cache): continue
-                    seen_hosts.add(host)
-                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                    final_list.append(config)
+    # 1. Сбор всех сырых конфигов (Многопоточно)
+    print(f"📥 Скачивание из {len(all_sources)} источников...")
+    all_raw_configs = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(fetch_and_filter, u, sni_regex) for u in all_sources]
+        for f in concurrent.futures.as_completed(futures):
+            all_raw_configs.extend(f.result())
 
-    print("📡 Processing...")
-    process_links(extra_src)
-    if len(final_list) < MAX_CONFIGS:
-        process_links(std_src)
+    # 2. Первичная фильтрация (Текстовая + Подсети)
+    print(f"🔍 Фильтрация кандидатов ({len(all_raw_configs)} шт)...")
+    candidates = []
+    seen_hosts = set()
+    subnet_counts = {}
+
+    for config in all_raw_configs:
+        host = get_server_host(config)
+        if not host or not is_literal_ip(host) or host in seen_hosts:
+            continue
+        
+        subnet = ".".join(host.split(".")[:3])
+        if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
+            continue
+            
+        seen_hosts.add(host)
+        subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+        candidates.append({"config": config, "ip": host})
+        
+        # Набираем с запасом (500), чтобы после GEO-фильтра точно осталось MAX_CONFIGS
+        if len(candidates) >= 500: break
+
+    # 3. Массовая проверка стран (Batch)
+    print(f"🌍 Проверка GEO для {len(candidates)} IP...")
+    unique_ips = [c["ip"] for c in candidates]
+    geo_results = check_ips_batch(unique_ips)
+
+    # 4. Финальный отбор
+    final_list = []
+    for c in candidates:
+        is_ru = geo_results.get(c["ip"], False)
+        if not is_ru:
+            final_list.append(c["config"])
+        if len(final_list) >= MAX_CONFIGS:
+            break
 
     actual_count = len(final_list)
     unique_data = "\n".join(final_list)
     
-    # --- УМНОЕ СОХРАНЕНИЕ (Force Push) ---
+    # --- СОХРАНЕНИЕ ---
+    if not final_list:
+        print("⚠ No configs found. Skip upload.")
+        return
+
     try:
         path = f"githubmirror/{FINAL_FILENAME}"
-        commit_msg = f"🚀 Latest Sync | {offset} | {actual_count} configs"
+        commit_msg = f"🚀 Sync | {offset} | {actual_count} configs"
         
-        # Обновляем файл конфигов
         try:
             curr_file = REPO.get_contents(path)
             REPO.update_file(path, commit_msg, unique_data, curr_file.sha)
         except:
             REPO.create_file(path, commit_msg, unique_data)
         
-        # Обновляем README
-        readme_path = "README.md"
         readme_content = f"# VPN Configs\n\n**Last Update:** {offset} (MSK)\n**Total Configs:** {actual_count}\n\n[Download VLM](https://github.com/{REPO_NAME}/raw/main/{path})"
         try:
-            curr_readme = REPO.get_contents(readme_path)
-            REPO.update_file(readme_path, "📝 Update Stats", readme_content, curr_readme.sha)
+            curr_readme = REPO.get_contents("README.md")
+            REPO.update_file("README.md", "📝 Update Stats", readme_content, curr_readme.sha)
         except:
-            REPO.create_file(readme_path, "🆕 Create README", readme_content)
+            REPO.create_file("README.md", "🆕 Create README", readme_content)
             
         print(f"🏁 Successfully synced {actual_count} configs.")
     except Exception as e:
@@ -163,3 +196,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
