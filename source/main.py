@@ -22,19 +22,24 @@ MAX_PER_SUBNET = 3
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
+VAR_RE = re.compile(r'(\w+)\s*=\s*\[(.*?)\]', re.DOTALL | re.IGNORECASE)
+PROTO_RE = re.compile(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://')
+HOST_RE = re.compile(r'@([^:/?#\s]+)')
+
 # --- ПАРСИНГ ---
 def get_remote_data():
     try:
-        resp = requests.get(REMOTE_SOURCE_URL, timeout=15)
+        resp = session.get(REMOTE_SOURCE_URL, timeout=15)
         resp.raise_for_status()
         code = resp.text
-        all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL | re.IGNORECASE)
+        all_lists = VAR_RE.findall(code)
         
         std_urls, extra_urls, raw_sni_list = [], [], []
         for var_name, content in all_lists:
@@ -46,22 +51,26 @@ def get_remote_data():
             elif not extra_urls and any("github" in item for item in items): extra_urls = items
 
         # filtered_sni = [s for s in raw_sni_list if "vk" not in s.lower()]
-        sni_regex = raw_sni_list
+        filtered_sni = raw_sni_list
+        sni_regex = re.compile(r"(?:" + "|".join(re.escape(d) for d in filtered_sni) + r")", re.IGNORECASE) if filtered_sni else re.compile(r".*")
         return list(dict.fromkeys(extra_urls)), list(dict.fromkeys(std_urls)), sni_regex
     except Exception as e:
-        print(f"❌ Ошибка парсинга: {e}")
+        print(f"❌ Error: {e}")
         return [], [], re.compile(r".*")
-
+#
 # --- GEOIP ---
 def is_russian_subnet(subnet, subnet_geo_cache):
     if subnet in subnet_geo_cache: return subnet_geo_cache[subnet]
     try:
-        time.sleep(1.5) # Лимит ip-api.com
-        url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org"
-        r = requests.get(url, timeout=5).json()
+        time.sleep(1.5)
+        url = f"http://ip-api.com/json/{subnet}.1?fields=status,countryCode,isp,org,asname"
+        r = session.get(url, timeout=5).json()
         if r.get("status") == "success":
-            info = (r.get("isp", "") + " " + r.get("org", "")).lower()
-            is_ru = (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia"])
+            country = r.get("countryCode", "")
+            info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
+            ru_keywords = ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia", "iot", "miran", "selectel"]
+            is_ru = (country == "RU") or ("ru-" in info) or ("vk" in info) or any(k in info for k in ru_keywords)
+            if is_ru: print(f"🚩 Blocked RU: {subnet}.x | {info}")
             subnet_geo_cache[subnet] = is_ru
             return is_ru
         return False
@@ -75,7 +84,7 @@ def get_server_host(link):
             payload += "=" * ((4 - len(payload) % 4) % 4)
             data = json.loads(base64.b64decode(payload).decode('utf-8'))
             return data.get('add')
-        match = re.search(r'@([^:/?#\s]+)', link)
+        match = HOST_RE.search(link)
         return match.group(1) if match else None
     except: return None
 
@@ -88,8 +97,8 @@ def is_literal_ip(host):
 
 def fetch_and_filter(url, sni_regex):
     try:
-        resp = requests.get(url, timeout=15, verify=False)
-        text = re.sub(r'(vmess|vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
+        resp = session.get(url, timeout=15, verify=False)
+        text = PROTO_RE.sub(r'\n\1://', resp.text)
         valid = []
         for line in text.splitlines():
             line = line.strip()
@@ -104,47 +113,53 @@ def main():
     extra_src, std_src, sni_regex = get_remote_data()
     final_list, seen_hosts, subnet_counts, subnet_geo_cache = [], set(), {}, {}
 
-    def add_configs(configs):
-        for config in configs:
-            if len(final_list) >= MAX_CONFIGS: return
-            host = get_server_host(config)
-            if not host or not is_literal_ip(host) or host in seen_hosts: continue
-            subnet = ".".join(host.split(".")[:3])
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
-            if is_russian_subnet(subnet, subnet_geo_cache): continue
-            
-            seen_hosts.add(host)
-            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            final_list.append(config)
+    def process_links(urls):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(fetch_and_filter, u, sni_regex) for u in urls]
+            for f in concurrent.futures.as_completed(futures):
+                for config in f.result():
+                    if len(final_list) >= MAX_CONFIGS: return
+                    host = get_server_host(config)
+                    if not host or not is_literal_ip(host) or host in seen_hosts: continue
+                    subnet = ".".join(host.split(".")[:3])
+                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+                    if is_russian_subnet(subnet, subnet_geo_cache): continue
+                    seen_hosts.add(host)
+                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                    final_list.append(config)
 
-    print("📡 Сбор данных...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        # Сначала приоритетные
-        f_extra = [executor.submit(fetch_and_filter, u, sni_regex) for u in extra_src]
-        for f in concurrent.futures.as_completed(f_extra): add_configs(f.result())
-        
-        # Если не набрали - обычные
-        if len(final_list) < MAX_CONFIGS:
-            f_std = [executor.submit(fetch_and_filter, u, sni_regex) for u in std_src]
-            for f in concurrent.futures.as_completed(f_std): add_configs(f.result())
+    print("📡 Processing...")
+    process_links(extra_src)
+    if len(final_list) < MAX_CONFIGS:
+        process_links(std_src)
 
-    # --- СОХРАНЕНИЕ ---
     actual_count = len(final_list)
     unique_data = "\n".join(final_list)
-    path = f"githubmirror/{FINAL_FILENAME}"
     
+    # --- УМНОЕ СОХРАНЕНИЕ (Force Push) ---
     try:
-        try:
-            curr = REPO.get_contents(path)
-            REPO.update_file(path, f"🚀 Sync | {offset}", unique_data, curr.sha)
-        except:
-            REPO.create_file(path, f"🆕 Create | {offset}", unique_data)
+        path = f"githubmirror/{FINAL_FILENAME}"
+        commit_msg = f"🚀 Latest Sync | {offset} | {actual_count} configs"
         
-        readme_text = f"# VPN Configs\n\nОбновлено: {offset} (МСК)\nКонфигов: {actual_count}\n\n[Скачать VLM](https://github.com/{REPO_NAME}/raw/main/{path})"
-        rm = REPO.get_contents("README.md")
-        REPO.update_file("README.md", "📝 Update README", readme_text, rm.sha)
-        print(f"🏁 Финиш! Сохранено: {actual_count}")
-    except Exception as e: print(f"❌ Ошибка GitHub: {e}")
+        # Обновляем файл конфигов
+        try:
+            curr_file = REPO.get_contents(path)
+            REPO.update_file(path, commit_msg, unique_data, curr_file.sha)
+        except:
+            REPO.create_file(path, commit_msg, unique_data)
+        
+        # Обновляем README
+        readme_path = "README.md"
+        readme_content = f"# VPN Configs\n\n**Last Update:** {offset} (MSK)\n**Total Configs:** {actual_count}\n\n[Download VLM](https://github.com/{REPO_NAME}/raw/main/{path})"
+        try:
+            curr_readme = REPO.get_contents(readme_path)
+            REPO.update_file(readme_path, "📝 Update Stats", readme_content, curr_readme.sha)
+        except:
+            REPO.create_file(readme_path, "🆕 Create README", readme_content)
+            
+        print(f"🏁 Successfully synced {actual_count} configs.")
+    except Exception as e:
+        print(f"❌ GitHub Error: {e}")
 
 if __name__ == "__main__":
     main()
