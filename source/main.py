@@ -17,9 +17,9 @@ REPO_NAME = "MrSaid173/golden-paths_configs"
 FINAL_FILENAME = "vlm"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://")
-MAX_CONFIGS = 150
-MAX_PER_SUBNET = 3 
-MAX_PER_SNI = 5  # <--- НОВЫЙ ЛИМИТ
+MAX_CONFIGS = 200
+MAX_PER_SUBNET = 5 
+MAX_PER_SNI = 8  # <--- НОВЫЙ ЛИМИТ
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
