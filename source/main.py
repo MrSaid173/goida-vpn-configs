@@ -129,8 +129,8 @@ def main():
 
     def process_links(urls):
         nonlocal ru_count
-        # Используем 10 потоков для быстрой проверки портов (TCP Ping)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Используем 25 потоков для быстрой проверки портов (TCP Ping)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
             futures = [executor.submit(fetch_and_filter, u, sni_regex) for u in urls]
             for f in concurrent.futures.as_completed(futures):
                 for config in f.result():
