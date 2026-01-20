@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --no-cache-dir requests PyGithub maxminddb
+          pip install --no-cache-dir requests PyGithub
 
       - name: Run script
         env:
