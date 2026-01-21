@@ -15,12 +15,12 @@ MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
-EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
+EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://") # П.5: Бан vmess
 EXCLUDE_KEYWORDS = ("openproxy", "type=ws")
 MAX_CONFIGS = 150 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
-MAX_PER_ID = 3       # Лимит на одинаковые ID
+MAX_PER_ID = 3       # Лимит на одинаковые ID (до @)
 MAX_RU_CONFIGS = 6
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
@@ -34,23 +34,25 @@ REPO = g.get_repo(REPO_NAME)
 geo_cache = {} 
 last_online_geoip_time = 0
 
-# --- ФУНКЦИИ ---
+# --- ФУНКЦИИ ГЕОЛОКАЦИИ ---
 
 def update_mmdb():
+    """П.1: Автообновление БД каждые 3 дня"""
     if os.path.exists(MMDB_PATH):
         file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH))
         if file_age < timedelta(days=3):
             print(f"✅ База актуальна (возраст: {file_age.days} дн.)")
             return
+    print(f"📥 Загрузка свежей БД GeoLite2...")
     try:
         r = requests.get(MMDB_URL, timeout=60)
         with open(MMDB_PATH, "wb") as f:
             f.write(r.content)
-        print("✅ База GeoLite2 обновлена.")
     except Exception as e:
-        print(f"❌ Ошибка БД: {e}")
+        print(f"❌ Ошибка обновления БД: {e}")
 
 def is_ru_ip(ip_str):
+    """Логика: БД -> ip-api.com -> Кэш"""
     global last_online_geoip_time
     if ip_str in geo_cache: return geo_cache[ip_str]
     
@@ -68,7 +70,7 @@ def is_ru_ip(ip_str):
         geo_cache[ip_str] = is_ru
         return is_ru
 
-    # Онлайн проверка если в БД нет
+    # Резервная онлайн проверка (П.1)
     now = time.time()
     wait = 1.35 - (now - last_online_geoip_time)
     if wait > 0: time.sleep(wait)
@@ -84,11 +86,14 @@ def is_ru_ip(ip_str):
     except: pass
     return False
 
+# --- ПАРСИНГ И ФИЛЬТРАЦИЯ ---
+
 def get_config_details(link):
+    """П.3: SNI, П.5: VMess, П.6: IPv6 + Буквенные IP"""
     try:
         if link.startswith("vmess://"): return None, None, None, None
         
-        # Извлекаем ID (между протоколом и @)
+        # Извлекаем ID (часть до @)
         id_match = re.search(r'://([^@]+)@', link)
         config_id = id_match.group(1) if id_match else None
         
@@ -102,13 +107,12 @@ def get_config_details(link):
 
             if not sni: return None, None, None, "missing_sni"
             
-            # Фильтр "буквенных" IP и IPv6
+            # Фильтр IPv6 и буквенных доменов (П.6)
             try:
                 ip_obj = ipaddress.ip_address(host)
                 if ip_obj.version == 6: return None, None, None, "ipv6"
             except ValueError:
-                # Если это домен (буквы), а не IP — отсекаем
-                return None, None, None, "domain_not_ip"
+                return None, None, None, "domain_not_ip" # Буквенный IP (домен)
                 
             return host, port, sni, config_id
     except: pass
@@ -161,36 +165,46 @@ def main():
                     
                     host, port, sni, config_id = get_config_details(config)
                     
-                    # Проверки фильтров
+                    # П.2: Оптимизация (уже видели или не прошел базовый фильтр)
                     if not host or host in seen_hosts: continue
                     if sni in ("missing_sni", "ipv6", "domain_not_ip"): continue
                     
-                    # Лимит на одинаковые ID (Пункт про ID до @)
-                    if config_id:
-                        if id_counts.get(config_id, 0) >= MAX_PER_ID: continue
+                    # Лимит на одинаковые ID
+                    if config_id and id_counts.get(config_id, 0) >= MAX_PER_ID: continue
                     
+                    # Фильтр по SNI списку
                     if use_sni_filter and sni_domains:
                         if not any(d in sni for d in sni_domains): continue
 
                     if sni_counts.get(sni, 0) >= MAX_PER_SNI: continue
                     
-                    # Получаем подсеть (уже точно имеем IP)
+                    # Лимит на подсеть
                     subnet = ".".join(host.split(".")[:3])
                     if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
-                    # Проверка жизни порта
-                    if not socket.create_connection((host, port), timeout=1.8): continue
+                    # П.4: Безопасная проверка пинга (Исправлено!)
+                    is_alive = False
+                    try:
+                        with socket.create_connection((host, port), timeout=1.8):
+                            is_alive = True
+                    except (socket.timeout, OSError, ConnectionRefusedError):
+                        is_alive = False
                     
-                    # Гео
-                    if is_ru_ip(host):
+                    if not is_alive: continue
+                    
+                    # П.1: Проверка ГЕО (БД + API)
+                    current_is_ru = is_ru_ip(host)
+                    if current_is_ru:
                         if ru_count >= MAX_RU_CONFIGS: continue
                         ru_count += 1
 
+                    # Распределение по файлам
                     added = False
+                    low_config = config.lower()
                     if len(vlm2_list) < MAX_CONFIGS:
                         vlm2_list.append(config)
                         added = True
-                    if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
+                    if "xhttp" not in low_config and len(vlm_list) < MAX_CONFIGS:
                         vlm_list.append(config)
                         added = True
 
@@ -199,12 +213,14 @@ def main():
                         sni_counts[sni] = sni_counts.get(sni, 0) + 1
                         subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                         if config_id: id_counts[config_id] = id_counts.get(config_id, 0) + 1
-                        print(f" [+] {host} | ID: {config_id[:8]}... | RU: {is_ru_ip(host)}")
+                        print(f" [+] {host} | ID: {config_id[:8]}... | RU: {current_is_ru}")
 
+    # Запуск этапов фильтрации
     process_pool(extra_urls, True, "EXTRA")
     process_pool(std_urls, True, "STD")
     process_pool(extra_urls + std_urls, False, "RESERVE")
 
+    # Сохранение в GitHub
     def save(filename, lst):
         if not lst: return
         data = "\n".join(lst)
@@ -217,7 +233,7 @@ def main():
 
     save(FILENAME_VLM, vlm_list)
     save(FILENAME_VLM2, vlm2_list)
-    print(f"\n🏁 Готово. VLM: {len(vlm_list)}, VLM2: {len(vlm2_list)}")
+    print(f"\n🏁 Готово. Файлы обновлены. VLM: {len(vlm_list)}, VLM2: {len(vlm2_list)}")
 
 if __name__ == "__main__":
     main()
