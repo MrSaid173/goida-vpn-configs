@@ -12,7 +12,7 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 
-# Определяем путь к базе данных в той же папке, где лежит скрипт
+# Пути для работы внутри GitHub Actions
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
@@ -31,46 +31,95 @@ offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
-geo_cache = {}
+# Кэширование
+geo_cache = {} 
+last_online_geoip_time = 0
 
-# --- ФУНКЦИИ ---
+# --- ФУНКЦИИ ГЕОЛОКАЦИИ ---
 
 def update_mmdb():
+    """Скачивание и проверка актуальности локальной базы GeoLite2"""
+    print("--- [GEO БД] Проверка состояния ---")
     if os.path.exists(MMDB_PATH):
         file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH))
         if file_age < timedelta(days=3):
-            print(f"✅ База GeoIP актуальна: {MMDB_PATH}")
+            print(f"✅ База актуальна (возраст: {file_age.days} дн.). Путь: {MMDB_PATH}")
             return
-    print("📥 Обновление базы данных GeoLite...")
+    
+    print(f"📥 База устарела или отсутствует. Скачивание с {MMDB_URL}...")
     try:
-        r = requests.get(MMDB_URL, timeout=30)
+        r = requests.get(MMDB_URL, timeout=60)
         with open(MMDB_PATH, "wb") as f:
             f.write(r.content)
+        print("✅ База GeoLite2 успешно обновлена.")
     except Exception as e:
-        print(f"⚠️ Ошибка загрузки базы: {e}")
+        print(f"❌ Критическая ошибка при скачивании БД: {e}")
 
 def is_ru_ip(ip_str):
-    if ip_str in geo_cache: return geo_cache[ip_str]
+    """Логика: Кэш -> MMDB -> ip-api.com -> Кэш"""
+    global last_online_geoip_time
+    
+    if ip_str in geo_cache: 
+        return geo_cache[ip_str]
+    
+    # 1. Проверка через локальную MMDB
+    is_ru = False
+    found_in_db = False
     try:
         with maxminddb.open_database(MMDB_PATH) as reader:
             record = reader.get(ip_str)
             if record and 'country' in record:
                 is_ru = record['country'].get('iso_code') == 'RU'
-                geo_cache[ip_str] = is_ru
-                return is_ru
-    except Exception as e:
+                found_in_db = True
+    except:
         pass
+
+    if found_in_db:
+        geo_cache[ip_str] = is_ru
+        return is_ru
+
+    # 2. Fallback: Проверка через ip-api.com, если в БД пусто
+    print(f"🌐 {ip_str} не найден в БД. Запрос к ip-api.com...")
+    
+    # Лимит для бесплатного API (45 зап/мин)
+    now = time.time()
+    wait = 1.35 - (now - last_online_geoip_time)
+    if wait > 0: time.sleep(wait)
+    
+    try:
+        url = f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,asname"
+        r = session.get(url, timeout=5).json()
+        last_online_geoip_time = time.time()
+        
+        if r.get("status") == "success":
+            info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
+            is_ru = (r.get("countryCode") == "RU") or any(
+                k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia"]
+            )
+            print(f"   ∟ Ответ API: {r.get('countryCode')} | RU={is_ru}")
+            geo_cache[ip_str] = is_ru
+            return is_ru
+    except Exception as e:
+        print(f"   ⚠️ Ошибка API для {ip_str}: {e}")
+    
     return False
 
-def is_server_alive(host, port, timeout=1.5):
+# --- ФУНКЦИИ ПРОВЕРКИ ---
+
+def is_server_alive(host, port, timeout=1.8):
+    """Проверка доступности TCP порта"""
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except: return False
 
 def get_config_details(link):
+    """
+    Парсинг конфига. 
+    П.3: Бан без SNI. П.5: Бан vmess. П.6: Бан IPv6.
+    """
     try:
-        if link.startswith("vmess://"): return None, None, None
+        if link.startswith("vmess://"): return None, None, None # П.5
         
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
         s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
@@ -80,10 +129,14 @@ def get_config_details(link):
             port = int(h_m.group(2))
             sni = (s_m.group(1).lower() if s_m else None)
 
-            if not sni: return None, None, None
+            # П.3: Если нет SNI — отсекаем
+            if not sni: return None, None, "missing_sni"
             
+            # П.6: Проверка на IPv6 (строковая)
+            if ":" in host and not host.startswith("["): # Простая проверка на вхождение двоеточия
+                if host.count(":") > 1: return None, None, "ipv6"
             try:
-                if ipaddress.ip_address(host).version == 6: return None, None, None
+                if ipaddress.ip_address(host).version == 6: return None, None, "ipv6"
             except: pass
                 
             return host, port, sni
@@ -91,7 +144,8 @@ def get_config_details(link):
     return None, None, None
 
 def get_remote_data():
-    """Получает данные из внешнего репозитория AvenCores"""
+    """Сбор источников из репозитория-донора"""
+    print("📡 Получение списка источников...")
     try:
         resp = session.get(REMOTE_SOURCE_URL, timeout=15)
         code = resp.text
@@ -102,8 +156,11 @@ def get_remote_data():
             if var.upper() == "URLS": std_src = items
             elif var.upper() == "EXTRA_URLS_FOR_26": extra_src = items
             elif var.upper() == "SNI_DOMAINS": sni_list = items
+        print(f"✅ Получено: {len(std_src)} осн. источников, {len(extra_src)} доп. источников.")
         return extra_src, std_src, sni_list
-    except: return [], [], []
+    except Exception as e:
+        print(f"❌ Ошибка получения источников: {e}")
+        return [], [], []
 
 def fetch_raw_configs(url):
     try:
@@ -116,8 +173,6 @@ def fetch_raw_configs(url):
 
 def main():
     update_mmdb()
-    
-    # Теперь вызываем функцию напрямую без лишних импортов
     extra_urls, std_urls, sni_domains = get_remote_data()
     
     vlm_list, vlm2_list = [], []
@@ -125,8 +180,10 @@ def main():
     sni_counts, subnet_counts = {}, {}
     ru_count = 0
 
-    def process_pool(urls, use_sni_filter=True):
+    def process_pool(urls, use_sni_filter=True, stage_name=""):
         nonlocal ru_count
+        print(f"\n--- [ЭТАП: {stage_name}] Обработка {len(urls)} ссылок ---")
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
             future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
             for future in concurrent.futures.as_completed(future_to_url):
@@ -135,11 +192,19 @@ def main():
                     if len(vlm_list) >= MAX_CONFIGS and len(vlm2_list) >= MAX_CONFIGS: return
 
                     low_config = config.lower()
-                    if low_config.startswith(EXCLUDE_PROTOCOLS) or any(k in low_config for k in EXCLUDE_KEYWORDS):
-                        continue
+                    
+                    # Базовая фильтрация
+                    if low_config.startswith(EXCLUDE_PROTOCOLS): continue
+                    if any(k in low_config for k in EXCLUDE_KEYWORDS): continue
                     
                     host, port, sni = get_config_details(config)
+                    
+                    # П.2: Оптимизация (не проверять дважды)
                     if not host or host in seen_hosts: continue
+                    
+                    # Логирование причин отказа
+                    if sni == "missing_sni": continue
+                    if sni == "ipv6": continue
                     
                     if use_sni_filter and sni_domains:
                         if not any(d in sni for d in sni_domains): continue
@@ -154,12 +219,17 @@ def main():
 
                     if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
+                    # П.4: Проверка жизни
                     if not is_server_alive(host, port): continue
                     
-                    if is_ru_ip(ip_addr):
-                        if ru_count >= MAX_RU_CONFIGS: continue
+                    # П.1: Проверка ГЕО (БД + API)
+                    is_ru = is_ru_ip(ip_addr)
+                    if is_ru:
+                        if ru_count >= MAX_RU_CONFIGS: 
+                            continue
                         ru_count += 1
 
+                    # Добавление в финальные списки
                     added = False
                     is_xhttp = "xhttp" in low_config
                     if len(vlm2_list) < MAX_CONFIGS:
@@ -173,28 +243,34 @@ def main():
                         seen_hosts.add(host)
                         sni_counts[sni] = sni_counts.get(sni, 0) + 1
                         subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                        print(f"✅ OK: {host}")
+                        print(f" [+] Добавлен: {host} | SNI: {sni} | RU: {is_ru}")
 
-    process_pool(extra_urls, True)
+    # Запуск этапов
+    process_pool(extra_urls, True, "EXTRA_URLS + SNI_FILTER")
     if len(vlm_list) < MAX_CONFIGS or len(vlm2_list) < MAX_CONFIGS:
-        process_pool(std_urls, True)
+        process_pool(std_urls, True, "STD_URLS + SNI_FILTER")
     if len(vlm_list) < MAX_CONFIGS or len(vlm2_list) < MAX_CONFIGS:
-        process_pool(extra_urls + std_urls, False)
+        process_pool(extra_urls + std_urls, False, "NO_SNI_FILTER_RESERVE")
 
+    # Сохранение результатов
     def save(filename, lst):
-        if not lst: return
+        if not lst: 
+            print(f"⚠️ Список {filename} пуст, сохранение отменено.")
+            return
         data = "\n".join(lst)
         path = f"githubmirror/{filename}"
-        msg = f"🚀 {filename} | T: {len(lst)} | RU: {ru_count} | {offset}"
+        msg = f"🚀 {filename} | Total: {len(lst)} | RU: {ru_count} | {offset}"
         try:
             curr = REPO.get_contents(path)
             REPO.update_file(path, msg, data, curr.sha)
-        except: REPO.create_file(path, msg, data)
-        print(f"🏁 {filename} сохранен.")
+            print(f"✅ {filename} успешно обновлен в репозитории.")
+        except: 
+            REPO.create_file(path, msg, data)
+            print(f"✅ {filename} успешно создан в репозитории.")
 
+    print("\n--- [ФИНАЛИЗАЦИЯ] ---")
     save(FILENAME_VLM, vlm_list)
     save(FILENAME_VLM2, vlm2_list)
 
 if __name__ == "__main__":
     main()
-    
