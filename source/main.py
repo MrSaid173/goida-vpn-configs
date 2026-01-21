@@ -83,7 +83,7 @@ def is_ru_ip(ip_str):
     
     # Лимит для бесплатного API (45 зап/мин)
     now = time.time()
-    wait = 1.35 - (now - last_online_geoip_time)
+    wait = 1.4 - (now - last_online_geoip_time)
     if wait > 0: time.sleep(wait)
     
     try:
