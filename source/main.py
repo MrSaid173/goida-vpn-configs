@@ -17,11 +17,11 @@ MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
 EXCLUDE_KEYWORDS = ("type=ws") #("openproxy", "type=ws")
-MAX_CONFIGS = 300 
-MAX_PER_SUBNET = 3 
-MAX_PER_SNI = 15
-MAX_PER_ID = 3
-MAX_RU_CONFIGS = 6
+MAX_CONFIGS = 100 
+MAX_PER_SUBNET = 2 
+MAX_PER_SNI = 5
+MAX_PER_ID = 2
+MAX_RU_CONFIGS = 5
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
