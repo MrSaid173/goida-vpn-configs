@@ -27,7 +27,8 @@ MAX_RU_CONFIGS = 6
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
-offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
+start_time = datetime.now(zone)
+offset = start_time.strftime("%H:%M | %d.%m.%Y")
 g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
 REPO = g.get_repo(REPO_NAME)
 
@@ -93,7 +94,6 @@ def fetch_raw_configs(url):
     except: return []
 
 def is_ru_online(ip_str):
-    """Только онлайн проверка через API с лимитами"""
     global last_online_geoip_time
     now = time.time()
     wait = 1.35 - (now - last_online_geoip_time)
@@ -119,7 +119,6 @@ def main():
     sni_counts, subnet_counts, id_counts = {}, {}, {}
     ru_count = 0
 
-    # Открываем БД один раз для всего процесса
     with maxminddb.open_database(MMDB_PATH) as mmdb_reader:
 
         def process_pool(urls, use_sni_filter=True, stage_name=""):
@@ -145,11 +144,10 @@ def main():
                         subnet = ".".join(host.split(".")[:3])
                         if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
-                        # --- ОПТИМИЗАЦИЯ СКОРОСТИ (ГЕО ПЕРЕД ПИНГОМ) ---
+                        # ГЕО ПЕРЕД ПИНГОМ
                         is_ru = False
                         found_in_db = False
                         
-                        # 1. Быстрая проверка через локальную БД
                         if host in geo_cache:
                             is_ru = geo_cache[host]
                             found_in_db = True
@@ -160,20 +158,17 @@ def main():
                                 geo_cache[host] = is_ru
                                 found_in_db = True
 
-                        # Если это RU и лимит исчерпан — выходим СРАЗУ (не пингуем)
                         if is_ru and ru_count >= MAX_RU_CONFIGS: continue
 
-                        # 2. Если в БД нет, и это потенциальный RU (пока не знаем), или просто идем дальше
-                        # Но пингуем только если прошли фильтр RU лимита
+                        # ПИНГ
                         is_alive = False
                         try:
-                            with socket.create_connection((host, port), timeout=1.2): # Уменьшен таймаут
+                            with socket.create_connection((host, port), timeout=1.2):
                                 is_alive = True
                         except: pass
                         
                         if not is_alive: continue
 
-                        # 3. Если сервер живой, но его не было в БД — проверяем онлайн (редкий случай)
                         if not found_in_db and host not in geo_cache:
                             is_ru = is_ru_online(host)
                             geo_cache[host] = is_ru
@@ -181,7 +176,6 @@ def main():
 
                         if is_ru: ru_count += 1
 
-                        # Добавление
                         added = False
                         if len(vlm2_list) < MAX_CONFIGS:
                             vlm2_list.append(config)
@@ -201,19 +195,24 @@ def main():
         process_pool(std_urls, True, "STD")
         process_pool(extra_urls + std_urls, False, "RESERVE")
 
-    # Сохранение
+    # Сохранение (Исправлено content вместо data)
     def save(filename, lst):
         if not lst: return
+        file_content = "\n".join(lst)
         path = f"githubmirror/{filename}"
         msg = f"🚀 {filename} | T: {len(lst)} | RU: {ru_count} | {offset}"
         try:
             curr = REPO.get_contents(path)
-            REPO.update_file(path, msg, data="\n".join(lst), sha=curr.sha)
-        except: REPO.create_file(path, msg, data="\n".join(lst))
+            REPO.update_file(path, msg, content=file_content, sha=curr.sha)
+        except: 
+            REPO.create_file(path, msg, content=file_content)
 
     save(FILENAME_VLM, vlm_list)
     save(FILENAME_VLM2, vlm2_list)
-    print(f"\n🏁 Готово за {(datetime.now(zone)).strftime('%M:%S')} мин.")
+    
+    end_time = datetime.now(zone)
+    duration = end_time - start_time
+    print(f"\n🏁 Готово. Время выполнения: {str(duration).split('.')[0]}")
 
 if __name__ == "__main__":
     main()
