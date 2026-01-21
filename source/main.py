@@ -17,7 +17,7 @@ MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
 EXCLUDE_KEYWORDS = ("type=ws") #("openproxy", "type=ws")
-MAX_CONFIGS = 1000 
+MAX_CONFIGS = 400 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 3
 MAX_PER_ID = 3
