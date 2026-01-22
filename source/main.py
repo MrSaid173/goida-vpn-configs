@@ -22,13 +22,17 @@ MAX_PER_SUBNET = 3
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
+# Твои лимиты по пингу
+MIN_RU_PING = 90.0
+MAX_ALLOWED_PING = 400.0
+SOCKET_TIMEOUT = 0.5  # Порог отсечки (500мс)
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 start_time = datetime.now(zone)
 offset = start_time.strftime("%H:%M | %d.%m.%Y")
 
-# Список ключевых слов и флаг РФ
 RU_FLAG_EMOJI = "🇷🇺"
 COUNTRY_MAP = {
     "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
@@ -42,25 +46,16 @@ COUNTRY_MAP = {
 }
 
 def get_cloudflare_networks():
-    need_update = True
     if os.path.exists(CF_IPS_PATH):
         file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH))
-        if file_age < timedelta(days=3): need_update = False
-    
-    if need_update:
-        try:
-            resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
-            with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
-        except: pass
-
-    networks = []
-    if os.path.exists(CF_IPS_PATH):
-        with open(CF_IPS_PATH, "r") as f:
-            for line in f:
-                if line.strip(): 
-                    try: networks.append(ipaddress.ip_network(line.strip()))
-                    except: continue
-    return networks
+        if file_age < timedelta(days=3):
+            with open(CF_IPS_PATH, "r") as f:
+                return [ipaddress.ip_network(l.strip()) for l in f if l.strip()]
+    try:
+        resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
+        with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
+        return [ipaddress.ip_network(l.strip()) for l in resp.text.splitlines() if l.strip()]
+    except: return []
 
 def is_ip_in_networks(ip_str, networks):
     try:
@@ -69,6 +64,30 @@ def is_ip_in_networks(ip_str, networks):
             if ip_obj in net: return True
     except: pass
     return False
+
+# --- ТРОЙНОЙ ПИНГ С ПАУЗОЙ И ЛИМИТОМ 400МС ---
+def get_triple_ping(host, port, sni):
+    latencies = []
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        for i in range(3):
+            start = time.perf_counter()
+            # Таймаут 0.5с для быстрой отсечки безнадежных серверов
+            with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT) as sock:
+                with context.wrap_socket(sock, server_hostname=sni) as ssock:
+                    latencies.append((time.perf_counter() - start) * 1000)
+            
+            if i < 2:
+                time.sleep(1.1) # Пауза минимум секунда
+        
+        avg = sum(latencies) / 3
+        # Если средний пинг выше 400мс — сервер не подходит
+        if avg > MAX_ALLOWED_PING: return None
+        return avg
+    except:
+        return None
 
 def check_ru_isp_online(ip_str):
     try:
@@ -80,20 +99,8 @@ def check_ru_isp_online(ip_str):
     except: pass
     return False
 
-def smart_ping(host, port, sni):
-    try:
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.1) as sock:
-            with context.wrap_socket(sock, server_hostname=sni) as ssock:
-                return True
-    except: return False
-
 def get_config_details(link):
     try:
-        # Название не переводим в upper сразу, чтобы не сломать эмодзи флага, 
-        # но для поиска текста используем upper_name
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         id_match = re.search(r'://([^@]+)@', clean_link)
@@ -162,39 +169,28 @@ def main():
                             geo = reader.get(ip)
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             
-                            # --- НОВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ RU ---
                             name_upper = name.upper()
                             is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                             is_ru_by_ip = (ip_country == 'RU')
-                            
-                            # Итоговый статус: РУ, если либо по имени, либо по IP
                             is_ru_final = is_ru_by_name or is_ru_by_ip
 
-                            # Если в имени указана ДРУГАЯ страна, а по IP - Россия, 
-                            # или наоборот, проверяем на конфликт (кроме исключений)
-                            found_other_country = False
-                            for code, aliases in COUNTRY_MAP.items():
-                                if code == "RU": continue
-                                if any(alias in name_upper for alias in aliases):
-                                    found_other_country = True
-                                    if ip_country and ip_country != code:
-                                        # Если имя говорит "US", а IP "DE" - в мусор
-                                        break
-                            
-                            if found_other_country and ip_country and ip_country not in [c for c, a in COUNTRY_MAP.items() if any(al in name_upper for al in a)]:
-                                if not is_ru_by_name: continue # Если это не явный RU-флаг, то несовпадение критично
-
+                            # Фильтр RU лимитов
                             if is_ru_final and ru_count >= MAX_RU_CONFIGS: continue
 
-                            if smart_ping(ip, port, sni):
-                                # Доп. проверка провайдера для подозрительных IP
+                            # ТРОЙНОЙ ПИНГ
+                            avg_latency = get_triple_ping(ip, port, sni)
+                            
+                            if avg_latency is not None:
+                                # ТВОЙ ФИЛЬТР: Для России берем только 90-400мс
                                 if is_ru_final:
-                                    # Если по IP это RU, подтверждаем онлайн. Если по флагу - верим флагу.
+                                    if avg_latency < MIN_RU_PING: continue 
+                                    
                                     if is_ru_by_ip and not is_ru_by_name:
                                         if not check_ru_isp_online(ip): is_ru_final = False
-                                    
-                                    if is_ru_final: ru_count += 1
+                                        else: ru_count += 1
+                                    elif is_ru_by_name: ru_count += 1
                                 
+                                # Добавление в списки
                                 added = False
                                 if len(vlm2_list) < MAX_CONFIGS:
                                     vlm2_list.append(config); added = True
@@ -206,14 +202,14 @@ def main():
                                     sni_counts[sni] = sni_counts.get(sni, 0) + 1
                                     subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                                     id_counts[cid] = id_counts.get(cid, 0) + 1
-                                    print(f" [+] {ip} ({ip_country}) | RU: {ru_count} | Name: {name[:20]}")
+                                    print(f" [+] {ip} ({ip_country}) | Ping: {avg_latency:.1f}ms | RU: {ru_count}")
                         except: continue
 
         process_pool(extra_urls, True, "EXTRA")
         process_pool(std_urls, True, "STD")
         process_pool(extra_urls + std_urls, False, "RESERVE")
 
-    # Сохранение
+    # Сохранение на GitHub
     g = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = g.get_repo(REPO_NAME)
     for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
