@@ -28,43 +28,37 @@ zone = zoneinfo.ZoneInfo("Europe/Moscow")
 start_time = datetime.now(zone)
 offset = start_time.strftime("%H:%M | %d.%m.%Y")
 
+# Список ключевых слов и флаг РФ
+RU_FLAG_EMOJI = "🇷🇺"
 COUNTRY_MAP = {
-    "RU": ["RUSSIA", "РОССИЯ", "RUS"],
-    "US": ["USA", "UNITED STATES", "AMERICA"],
-    "DE": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND"],
-    "NL": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND"],
-    "GB": ["UNITED KINGDOM", "ENGLAND", "ЛОНДОН"],
-    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE"],
-    "KZ": ["KAZAKHSTAN", "КАЗАХСТАН"],
-    "AT": ["AUSTRIA", "АВСТРИЯ"],
+    "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
+    "US": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"],
+    "DE": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"],
+    "NL": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"],
+    "GB": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"],
+    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "🇹🇷"],
+    "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
+    "AT": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"],
 }
 
-# --- ЛОГИКА КЭШИРОВАНИЯ CLOUDFLARE ---
 def get_cloudflare_networks():
-    # Проверяем возраст файла (3 дня)
     need_update = True
     if os.path.exists(CF_IPS_PATH):
         file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH))
-        if file_age < timedelta(days=3):
-            need_update = False
+        if file_age < timedelta(days=3): need_update = False
     
     if need_update:
         try:
-            print("🌐 Обновление списка IP Cloudflare...")
             resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
-            with open(CF_IPS_PATH, "w") as f:
-                f.write(resp.text)
-        except Exception as e:
-            print(f"⚠️ Не удалось обновить CF IPs: {e}")
+            with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
+        except: pass
 
-    # Читаем из файла в любом случае
     networks = []
     if os.path.exists(CF_IPS_PATH):
         with open(CF_IPS_PATH, "r") as f:
             for line in f:
-                line = line.strip()
-                if line:
-                    try: networks.append(ipaddress.ip_network(line))
+                if line.strip(): 
+                    try: networks.append(ipaddress.ip_network(line.strip()))
                     except: continue
     return networks
 
@@ -78,7 +72,7 @@ def is_ip_in_networks(ip_str, networks):
 
 def check_ru_isp_online(ip_str):
     try:
-        time.sleep(1.4)
+        time.sleep(1.35)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (r.get("isp", "") + " " + r.get("org", "")).lower()
@@ -98,7 +92,9 @@ def smart_ping(host, port, sni):
 
 def get_config_details(link):
     try:
-        name = requests.utils.unquote(link.split("#")[1]).upper() if "#" in link else ""
+        # Название не переводим в upper сразу, чтобы не сломать эмодзи флага, 
+        # но для поиска текста используем upper_name
+        name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         id_match = re.search(r'://([^@]+)@', clean_link)
         cid = id_match.group(1) if id_match else None
@@ -120,17 +116,14 @@ def fetch_raw_configs(url):
     except: return []
 
 def main():
-    # База GeoIP
     if not os.path.exists(MMDB_PATH) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH)) > timedelta(days=3)):
         try:
             r = requests.get(MMDB_URL, timeout=30)
             with open(MMDB_PATH, "wb") as f: f.write(r.content)
         except: pass
 
-    # Подсети Cloudflare (с кэшем)
     cf_networks = get_cloudflare_networks()
-    print(f"✅ Готово. Подсетей Cloudflare: {len(cf_networks)}")
-
+    
     try:
         src = session.get(REMOTE_SOURCE_URL).text
         def get_list(n):
@@ -169,19 +162,38 @@ def main():
                             geo = reader.get(ip)
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             
-                            found_country_code = None
-                            for code, aliases in COUNTRY_MAP.items():
-                                if any(alias in name for alias in aliases):
-                                    found_country_code = code; break
-                            if found_country_code and ip_country and found_country_code != ip_country: continue
+                            # --- НОВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ RU ---
+                            name_upper = name.upper()
+                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
+                            is_ru_by_ip = (ip_country == 'RU')
+                            
+                            # Итоговый статус: РУ, если либо по имени, либо по IP
+                            is_ru_final = is_ru_by_name or is_ru_by_ip
 
-                            is_ru = (ip_country == 'RU')
-                            if is_ru and ru_count >= MAX_RU_CONFIGS: continue
+                            # Если в имени указана ДРУГАЯ страна, а по IP - Россия, 
+                            # или наоборот, проверяем на конфликт (кроме исключений)
+                            found_other_country = False
+                            for code, aliases in COUNTRY_MAP.items():
+                                if code == "RU": continue
+                                if any(alias in name_upper for alias in aliases):
+                                    found_other_country = True
+                                    if ip_country and ip_country != code:
+                                        # Если имя говорит "US", а IP "DE" - в мусор
+                                        break
+                            
+                            if found_other_country and ip_country and ip_country not in [c for c, a in COUNTRY_MAP.items() if any(al in name_upper for al in a)]:
+                                if not is_ru_by_name: continue # Если это не явный RU-флаг, то несовпадение критично
+
+                            if is_ru_final and ru_count >= MAX_RU_CONFIGS: continue
 
                             if smart_ping(ip, port, sni):
-                                if is_ru:
-                                    if not check_ru_isp_online(ip): is_ru = False
-                                    else: ru_count += 1
+                                # Доп. проверка провайдера для подозрительных IP
+                                if is_ru_final:
+                                    # Если по IP это RU, подтверждаем онлайн. Если по флагу - верим флагу.
+                                    if is_ru_by_ip and not is_ru_by_name:
+                                        if not check_ru_isp_online(ip): is_ru_final = False
+                                    
+                                    if is_ru_final: ru_count += 1
                                 
                                 added = False
                                 if len(vlm2_list) < MAX_CONFIGS:
@@ -194,7 +206,7 @@ def main():
                                     sni_counts[sni] = sni_counts.get(sni, 0) + 1
                                     subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                                     id_counts[cid] = id_counts.get(cid, 0) + 1
-                                    print(f" [+] {ip} ({ip_country}) | RU: {ru_count}")
+                                    print(f" [+] {ip} ({ip_country}) | RU: {ru_count} | Name: {name[:20]}")
                         except: continue
 
         process_pool(extra_urls, True, "EXTRA")
