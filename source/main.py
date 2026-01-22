@@ -23,7 +23,7 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
 # Параметры для RU-пинга
-MIN_RU_PING = 85.0
+MIN_RU_PING = 100.0
 MAX_RU_PING = 450.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
