@@ -14,7 +14,7 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 MAX_CONFIGS = 150
 MAX_PER_SUBNET = 3
 MAX_RU_CONFIGS = 10 
-WORKERS = 40
+WORKERS = 20 # Уменьшили для стабильности в GitHub Actions
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
@@ -22,45 +22,56 @@ now_date = datetime.now(zone)
 offset = now_date.strftime("%H:%M | %d.%m.%Y")
 
 def get_xray_now():
-    """Принудительное скачивание Xray если его нет"""
+    """Синхронная подготовка бинарника"""
     if os.path.exists(XRAY_BIN):
         return True
-    
     print("🌐 Скачивание Xray бинарника...")
     try:
         url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
         r = requests.get(url, timeout=30)
         with open("xray.zip", "wb") as f: f.write(r.content)
-        
         with zipfile.ZipFile("xray.zip", 'r') as zip_ref:
-            # Извлекаем только сам бинарник
             zip_ref.extract("xray", path=".")
-        
         os.chmod(XRAY_BIN, 0o755)
         os.remove("xray.zip")
-        print("✅ Xray готов к работе.")
+        print("✅ Xray готов.")
         return True
     except Exception as e:
-        print(f"❌ Критическая ошибка при подготовке Xray: {e}")
+        print(f"❌ Ошибка подготовки Xray: {e}")
         return False
 
 def test_config_real(vless_link, local_port):
     config_file = f"config_{local_port}.json"
     proc = None
     try:
-        # Улучшенный парсинг: теперь ловит ссылки даже с минимумом параметров
-        if not vless_link.startswith("vless://"): return False, "NotVless", 0
+        # 1. Парсинг ссылки через Regex + Очистка
+        m = re.match(r"vless://([^@]+)@([^:]+):(\d+)\?(.*)", vless_link)
+        if not m: return False, "ParseError"
         
-        # Разбиваем ссылку более надежно
-        core_part = vless_link.split("://")[1]
-        user_info, rest = core_part.split("@")
-        address_port, params_part = rest.split("?")
-        address, port = address_port.split(":")
-        # Убираем якорь (#), если он есть
-        params_str = params_part.split("#")[0]
+        uuid, address, port, raw_params = m.groups()
+        params_str = raw_params.split("#")[0]
         params = dict(re.findall(r'([^&=]+)=([^&]*)', params_str))
+
+        # 2. Формирование чистого конфига
+        stream_settings = {
+            "network": params.get("type", "tcp"),
+            "security": params.get("security", "none")
+        }
         
-        uuid = user_info
+        if params.get("security") == "tls":
+            stream_settings["tlsSettings"] = {"serverName": params.get("sni", ""), "allowInsecure": True}
+        elif params.get("security") == "reality":
+            stream_settings["realitySettings"] = {
+                "serverName": params.get("sni", ""),
+                "publicKey": params.get("pbk", ""),
+                "shortId": params.get("sid", ""),
+                "spiderX": params.get("spx", "")
+            }
+
+        if params.get("type") == "ws":
+            stream_settings["wsSettings"] = {"path": params.get("path", "/")}
+        elif params.get("type") == "grpc":
+            stream_settings["grpcSettings"] = {"serviceName": params.get("serviceName", "")}
 
         xray_config = {
             "log": {"loglevel": "none"},
@@ -68,83 +79,83 @@ def test_config_real(vless_link, local_port):
             "outbounds": [{
                 "protocol": "vless",
                 "settings": {"vnext": [{"address": address, "port": int(port), "users": [{"id": uuid, "encryption": "none", "flow": params.get("flow", "")}]}]},
-                "streamSettings": {
-                    "network": params.get("type", "tcp"),
-                    "security": params.get("security", "none"),
-                    "tlsSettings": {"serverName": params.get("sni", ""), "allowInsecure": True},
-                    "realitySettings": {
-                        "serverName": params.get("sni", ""),
-                        "publicKey": params.get("pbk", ""),
-                        "shortId": params.get("sid", ""),
-                        "spiderX": params.get("spx", "")
-                    } if params.get("security") == "reality" else None,
-                }
+                "streamSettings": stream_settings
             }]
         }
 
         with open(config_file, "w") as f: json.dump(xray_config, f)
         
-        # Проверка наличия бинарника прямо перед запуском
-        if not os.path.exists(XRAY_BIN): return False, "NoXrayBinary", 0
-        
+        # 3. Запуск и проверка живой ли процесс
         proc = subprocess.Popen([XRAY_BIN, "-c", config_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.0) # Даем чуть больше времени на медленных серверах GitHub
-
-        proxies = {"http": f"socks5h://127.0.0.1:{local_port}", "https": f"socks5h://127.0.0.1:{local_port}"}
-        r = requests.get("https://speed.cloudflare.com/meta", proxies=proxies, timeout=6).json()
+        time.sleep(1.2)
         
-        country = r.get("country", "??")
-        if ":" in r.get("clientIp", ""): return False, "IPv6", 0
-        return True, country, 0
+        if proc.poll() is not None: return False, "XrayCrash"
 
-    except Exception as e:
-        return False, f"Error", 0
+        # 4. Попытка запроса
+        proxies = {"http": f"socks5h://127.0.0.1:{local_port}", "https": f"socks5h://127.0.0.1:{local_port}"}
+        try:
+            r = requests.get("https://speed.cloudflare.com/meta", proxies=proxies, timeout=7)
+            data = r.json()
+            if ":" in data.get("clientIp", ""): return False, "IPv6"
+            return True, data.get("country", "??")
+        except requests.exceptions.ProxyError: return False, "ProxyRefused"
+        except requests.exceptions.Timeout: return False, "Timeout"
+        except Exception as e: return False, f"ReqErr:{type(e).__name__}"
+
+    except Exception as e: return False, f"LogicErr:{str(e)[:10]}"
     finally:
         if proc:
-            proc.terminate()
-            proc.wait()
-        if os.path.exists(config_file): os.remove(config_file)
+            try: proc.terminate()
+            except: pass
+        if os.path.exists(config_file):
+            try: os.remove(config_file)
+            except: pass
 
 def main():
-    print(f"--- ЗАПУСК {offset} ---")
+    print(f"--- СТАРТ: {offset} ---")
+    if not get_xray_now(): return
     
-    # 1. Сначала готовим Xray. Если не смогли - выходим.
-    if not get_xray_now():
-        return
+    auth = Auth.Token(GITHUB_TOKEN)
+    g = Github(auth=auth)
+    repo = g.get_repo(REPO_NAME)
 
-    # 2. Сбор ссылок
+    # Получение ссылок
     try:
         resp = requests.get(REMOTE_SOURCE_URL, timeout=15)
-        source_urls = re.findall(r'["\'](https?://[^"\']+)["\']', resp.text)
+        sources = re.findall(r'["\'](https?://[^"\']+)["\']', resp.text)
         raw_configs = []
-        for u in source_urls:
+        for s in sources:
             try:
-                r = requests.get(u, timeout=10)
+                r = requests.get(s, timeout=10)
                 raw_configs.extend(re.findall(r'vless://[^\s]+', r.text))
             except: continue
         raw_configs = list(set(raw_configs))
-        print(f"📦 Всего в базе: {len(raw_configs)}")
+        print(f"📦 Собрано ссылок: {len(raw_configs)}")
     except: return
 
-    # 3. Тест
-    vlm2_list = []
+    vlm2_list, vlm_list = [], []
     seen_ips, subnet_counts, ru_count = set(), {}, 0
-    total_tested = 0
+    total_checked = 0
 
+    print(f"🚀 Тестируем (воркеры: {WORKERS})...")
+    
+    # Ограничиваем первую пачку для теста, чтобы увидеть результат быстрее
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        # Проверяем не более 3000 за раз для экономии ресурсов
-        futures = {executor.submit(test_config_real, cfg, 20000 + i): cfg for i, cfg in enumerate(raw_configs[:3000])}
+        futures = {executor.submit(test_config_real, cfg, 20000 + i): cfg for i, cfg in enumerate(raw_configs[:2500])}
         
         for f in concurrent.futures.as_completed(futures):
-            total_tested += 1
+            total_checked += 1
             cfg = futures[f]
-            success, result, _ = f.result()
+            success, result = f.result()
 
             if not success:
-                if total_tested % 100 == 0: print(f" [LOG] {total_tested} проверено... Последний отказ: {result}")
+                if total_checked % 100 == 0:
+                    print(f" [LOG] Проверено {total_checked}. Статус: {result}")
                 continue
 
+            # Извлечение IP для фильтров
             host_m = re.search(r'@([^:/?#\s]+)', cfg)
+            if not host_m: continue
             ip_host = host_m.group(1)
             try:
                 ip_addr = socket.gethostbyname(ip_host)
@@ -158,15 +169,29 @@ def main():
                 ru_count += 1
 
             vlm2_list.append(cfg)
+            if "xhttp" not in cfg.lower(): vlm_list.append(cfg)
+            
             seen_ips.add(ip_addr)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            print(f" ✅ НАЙДЕН: {ip_addr} | {result}")
+            print(f" ✅ НАЙДЕН: {ip_addr} | Страна: {result}")
 
             if len(vlm2_list) >= MAX_CONFIGS: break
 
-    # 4. Сохранение (через PyGithub как в прошлых версиях)
-    # ... логика save_file ...
-    print(f"🏁 Финиш. Найдено рабочих: {len(vlm2_list)}")
+    # Сохранение
+    def save(name, data):
+        path = f"githubmirror/{name}"
+        msg = f"🚀 {name} | T: {len(data)} | RU: {ru_count} | {offset}"
+        try:
+            sha = repo.get_contents(path).sha
+            repo.update_file(path, msg, "\n".join(data), sha)
+        except: repo.create_file(path, msg, "\n".join(data))
+
+    if vlm2_list:
+        save(FILENAME_VLM, vlm_list)
+        save(FILENAME_VLM2, vlm2_list)
+        print(f"🏁 Успех! Сохранено {len(vlm2_list)} конфигов.")
+    else:
+        print("❌ Не найдено ни одного рабочего конфига.")
 
 if __name__ == "__main__":
     main()
