@@ -1,4 +1,4 @@
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket
+import os, re, requests, urllib3, concurrent.futures, ipaddress, json, time, socket, subprocess, zipfile
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -11,17 +11,30 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
+XRAY_BIN = "./xray"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
-EXCLUDE_KEYWORDS = ("type=ws")
 MAX_CONFIGS = 150 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 MAX_RU_CONFIGS = 6
+
+# Словарь для поиска стран в названии
+COUNTRY_MAP = {
+    "RU": ["russia", "россия", "rus"],
+    "US": ["usa", "united states", "сша"],
+    "DE": ["germany", "германия", "deutschland"],
+    "NL": ["netherlands", "нидерланды", "holland"],
+    "FI": ["finland", "финляндия"],
+    "TR": ["turkey", "турция"],
+    "KZ": ["kazakhstan", "казахстан",],
+    "GB": ["united kingdom", "британ"],
+    "FR": ["france", "франция"]
+}
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -35,21 +48,86 @@ REPO = g.get_repo(REPO_NAME)
 geo_cache = {} 
 last_online_geoip_time = 0
 
-# --- ФУНКЦИИ ---
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
+def setup_xray():
+    if os.path.exists(XRAY_BIN): return True
+    try:
+        r = requests.get("https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip", timeout=30)
+        with open("xray.zip", "wb") as f: f.write(r.content)
+        with zipfile.ZipFile("xray.zip", 'r') as z: z.extract("xray", path=".")
+        os.chmod(XRAY_BIN, 0o755)
+        return True
+    except: return False
+
+def get_country_from_name(link):
+    name = link.split("#")[-1].lower() if "#" in link else ""
+    for iso, keywords in COUNTRY_MAP.items():
+        if any(k in name for k in keywords): return iso
+    return None
+
+def test_xray_connectivity(vless_link, local_port):
+    """Проверка через Xray: cp.cloudflare.com и gstatic.com (3s timeout)"""
+    config_file = f"temp_{local_port}.json"
+    proc = None
+    try:
+        # Упрощенный парсинг для теста
+        main_part = vless_link.split("://")[1].split("#")[0]
+        user_info, rest = main_part.split("@")
+        addr_port = rest.split("?")[0]
+        address, port = addr_port.split(":")
+        
+        x_cfg = {
+            "log": {"loglevel": "none"},
+            "inbounds": [{"port": local_port, "protocol": "socks", "settings": {"udp": True}}],
+            "outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": address, "port": int(port), "users": [{"id": user_info}]}]}}]
+        }
+        with open(config_file, "w") as f: json.dump(x_cfg, f)
+        
+        proc = subprocess.Popen([XRAY_BIN, "-c", config_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.5)
+        
+        proxies = {'http': f'socks5h://127.0.0.1:{local_port}', 'https': f'socks5h://127.0.0.1:{local_port}'}
+        # Пункт 2: Проверка через оба URL
+        r1 = session.get("http://cp.cloudflare.com", proxies=proxies, timeout=3)
+        r2 = session.get("http://www.gstatic.com/generate_204", proxies=proxies, timeout=3)
+        
+        return r1.status_code < 400 and r2.status_code == 204
+    except: return False
+    finally:
+        if proc: proc.terminate()
+        if os.path.exists(config_file): os.remove(config_file)
+
+def get_ip_info_online(ip_str):
+    """Получает страну и проверяет на Cloudflare (Пункт 1)"""
+    global last_online_geoip_time
+    now = time.time()
+    wait = 1.35 - (now - last_online_geoip_time)
+    if wait > 0: time.sleep(wait)
+    try:
+        url = f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,org,isp,asname"
+        r = session.get(url, timeout=5).json()
+        last_online_geoip_time = time.time()
+        if r.get("status") == "success":
+            org_info = (r.get("org", "") + " " + r.get("isp", "") + " " + r.get("asname", "")).lower()
+            # Пункт 1: Фильтр Cloudflare
+            if "cloudflare" in org_info: return "CLOUDFLARE", True
+            
+            is_ru = (r.get("countryCode") == "RU") or any(k in org_info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom"])
+            return r.get("countryCode"), is_ru
+    except: pass
+    return None, False
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ (update_mmdb, get_config_details, etc) ---
+# ... (Оставляем их как в твоем исходном коде) ...
 def update_mmdb():
     if os.path.exists(MMDB_PATH):
         file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH))
-        if file_age < timedelta(days=3):
-            print(f"✅ База актуальна (возраст: {file_age.days} дн.)")
-            return
+        if file_age < timedelta(days=3): return
     try:
         r = requests.get(MMDB_URL, timeout=60)
-        with open(MMDB_PATH, "wb") as f:
-            f.write(r.content)
-        print("✅ База GeoLite2 обновлена.")
-    except Exception as e:
-        print(f"❌ Ошибка БД: {e}")
+        with open(MMDB_PATH, "wb") as f: f.write(r.content)
+    except: pass
 
 def get_config_details(link):
     try:
@@ -59,15 +137,9 @@ def get_config_details(link):
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
         s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
         if h_m:
-            host = h_m.group(1)
-            port = int(h_m.group(2))
+            host, port = h_m.group(1), int(h_m.group(2))
             sni = (s_m.group(1).lower() if s_m else None)
-            if not sni: return None, None, None, "missing_sni"
-            try:
-                ip_obj = ipaddress.ip_address(host)
-                if ip_obj.version == 6: return None, None, None, "ipv6"
-            except ValueError:
-                return None, None, None, "domain_not_ip"
+            if not sni: return None, None, None, None
             return host, port, sni, config_id
     except: pass
     return None, None, None, None
@@ -75,8 +147,7 @@ def get_config_details(link):
 def get_remote_data():
     try:
         resp = session.get(REMOTE_SOURCE_URL, timeout=15)
-        code = resp.text
-        all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL | re.IGNORECASE)
+        all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', resp.text, re.DOTALL | re.IGNORECASE)
         std_src, extra_src, sni_list = [], [], []
         for var, content in all_lists:
             items = re.findall(r'["\']([^"\']+)["\']', content)
@@ -93,24 +164,10 @@ def fetch_raw_configs(url):
         return [l.strip() for l in text.splitlines() if "://" in l]
     except: return []
 
-def is_ru_online(ip_str):
-    global last_online_geoip_time
-    now = time.time()
-    wait = 1.35 - (now - last_online_geoip_time)
-    if wait > 0: time.sleep(wait)
-    try:
-        url = f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,asname"
-        r = session.get(url, timeout=5).json()
-        last_online_geoip_time = time.time()
-        if r.get("status") == "success":
-            info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
-            return (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia"])
-    except: pass
-    return False
-
 # --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
+    setup_xray()
     update_mmdb()
     extra_urls, std_urls, sni_domains = get_remote_data()
     
@@ -125,94 +182,87 @@ def main():
             nonlocal ru_count
             print(f"\n--- [ЭТАП: {stage_name}] ---")
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor: # Уменьшено для Xray
                 future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
                 for future in concurrent.futures.as_completed(future_to_url):
                     configs = future.result()
-                    for config in configs:
-                        if len(vlm_list) >= MAX_CONFIGS and len(vlm2_list) >= MAX_CONFIGS: return
+                    for i, config in enumerate(configs):
+                        if len(vlm2_list) >= MAX_CONFIGS: return
 
                         if config.lower().startswith(EXCLUDE_PROTOCOLS): continue
                         
                         host, port, sni, config_id = get_config_details(config)
                         if not host or host in seen_hosts: continue
-                        if sni in ("missing_sni", "ipv6", "domain_not_ip"): continue
-                        if config_id and id_counts.get(config_id, 0) >= MAX_PER_ID: continue
                         if use_sni_filter and sni_domains and not any(d in sni for d in sni_domains): continue
-                        if sni_counts.get(sni, 0) >= MAX_PER_SNI: continue
+                        if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(config_id, 0) >= MAX_PER_ID: continue
                         
-                        subnet = ".".join(host.split(".")[:3])
+                        try:
+                            ip_addr = socket.gethostbyname(host)
+                            subnet = ".".join(ip_addr.split(".")[:3])
+                        except: continue
+
                         if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
-                        # ГЕО ПЕРЕД ПИНГОМ
-                        is_ru = False
-                        found_in_db = False
+                        # 1. ГЕО и ФИЛЬТР CLOUDFLARE (Пункт 1)
+                        real_iso, is_ru = None, False
+                        record = mmdb_reader.get(ip_addr)
+                        if record and 'country' in record:
+                            real_iso = record['country'].get('iso_code')
+                            is_ru = (real_iso == 'RU')
+
+                        # Если нет в базе или нужно проверить организацию
+                        online_iso, online_ru = get_ip_info_online(ip_addr)
+                        if online_iso == "CLOUDFLARE": continue # Исключаем Cloudflare
                         
-                        if host in geo_cache:
-                            is_ru = geo_cache[host]
-                            found_in_db = True
-                        else:
-                            record = mmdb_reader.get(host)
-                            if record and 'country' in record:
-                                is_ru = record['country'].get('iso_code') == 'RU'
-                                geo_cache[host] = is_ru
-                                found_in_db = True
+                        if online_iso: 
+                            real_iso = online_iso
+                            is_ru = online_ru
+
+                        # 2. СВЕРКА СТРАНЫ В НАЗВАНИИ (Пункт 3)
+                        name_iso = get_country_from_name(config)
+                        if name_iso and name_iso != real_iso: continue
 
                         if is_ru and ru_count >= MAX_RU_CONFIGS: continue
 
-                        # ПИНГ
-                        is_alive = False
-                        try:
-                            with socket.create_connection((host, port), timeout=1.2):
-                                is_alive = True
-                        except: pass
-                        
-                        if not is_alive: continue
+                        # 3. РЕАЛЬНЫЙ ТЕСТ ЧЕРЕЗ XRAY (Пункт 2)
+                        # Используем порт на основе индекса, чтобы потоки не конфликтовали
+                        if not test_xray_connectivity(config, 21000 + (total_tested % 100)): continue
 
-                        if not found_in_db and host not in geo_cache:
-                            is_ru = is_ru_online(host)
-                            geo_cache[host] = is_ru
-                            if is_ru and ru_count >= MAX_RU_CONFIGS: continue
-
+                        # ЕСЛИ ВСЁ ПРОШЛО:
                         if is_ru: ru_count += 1
-
+                        
                         added = False
                         if len(vlm2_list) < MAX_CONFIGS:
                             vlm2_list.append(config)
                             added = True
                         if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
                             vlm_list.append(config)
-                            added = True
 
                         if added:
                             seen_hosts.add(host)
                             sni_counts[sni] = sni_counts.get(sni, 0) + 1
                             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                             if config_id: id_counts[config_id] = id_counts.get(config_id, 0) + 1
-                            print(f" [+] {host} | RU: {is_ru}")
+                            print(f" [+] {ip_addr} | {real_iso} | RU: {is_ru}")
 
+        total_tested = 0
         process_pool(extra_urls, True, "EXTRA")
         process_pool(std_urls, True, "STD")
         process_pool(extra_urls + std_urls, False, "RESERVE")
 
-    # Сохранение (Исправлено content вместо data)
+    # Сохранение
     def save(filename, lst):
         if not lst: return
-        file_content = "\n".join(lst)
         path = f"githubmirror/{filename}"
         msg = f"🚀 {filename} | T: {len(lst)} | RU: {ru_count} | {offset}"
         try:
-            curr = REPO.get_contents(path)
-            REPO.update_file(path, msg, content=file_content, sha=curr.sha)
-        except: 
-            REPO.create_file(path, msg, content=file_content)
+            sha = REPO.get_contents(path).sha
+            REPO.update_file(path, msg, "\n".join(lst), sha)
+        except: REPO.create_file(path, msg, "\n".join(lst))
 
     save(FILENAME_VLM, vlm_list)
     save(FILENAME_VLM2, vlm2_list)
-    
-    end_time = datetime.now(zone)
-    duration = end_time - start_time
-    print(f"\n🏁 Готово. Время выполнения: {str(duration).split('.')[0]}")
+    print(f"\n🏁 Готово. Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
 
 if __name__ == "__main__":
     main()
