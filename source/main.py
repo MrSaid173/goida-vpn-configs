@@ -89,8 +89,8 @@ def test_xray_connectivity(vless_link, local_port):
         
         proxies = {'http': f'socks5h://127.0.0.1:{local_port}', 'https': f'socks5h://127.0.0.1:{local_port}'}
         # Пункт 2: Проверка через оба URL
-        r1 = session.get("http://cp.cloudflare.com", proxies=proxies, timeout=3)
-        r2 = session.get("http://www.gstatic.com/generate_204", proxies=proxies, timeout=3)
+        r1 = session.get("http://cp.cloudflare.com", proxies=proxies, timeout=1)
+        r2 = session.get("http://www.gstatic.com/generate_204", proxies=proxies, timeout=1)
         
         return r1.status_code < 400 and r2.status_code == 204
     except: return False
