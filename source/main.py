@@ -42,6 +42,7 @@ COUNTRY_MAP = {
     "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "🇹🇷"],
     "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
     "AT": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"],
+    "EE": ["ESTONIA", "ЭСТОНИЯ", "🇪🇪"],
 }
 
 def get_cloudflare_networks():
