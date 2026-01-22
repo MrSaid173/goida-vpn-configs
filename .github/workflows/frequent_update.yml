@@ -30,13 +30,12 @@ jobs:
         with:
           path: |
             source/GeoLite2-Country.mmdb
-            source/xray
-          key: tools-v1
+            source/cloudflare_ips.txt
+          key: tools-v2
 
       - name: Run script
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
         run: |
           cd source
-          [ -f xray ] && chmod +x xray 
           python main.py
