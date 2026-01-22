@@ -1,181 +1,218 @@
-import os, re, requests, urllib3, concurrent.futures, subprocess, json, time, socket, zipfile
-from datetime import datetime
+import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket
+from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
+import maxminddb
 
 # --- НАСТРОЙКИ ---
-XRAY_BIN = "./xray"
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
+FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
+MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 
-MAX_CONFIGS = 150
-MAX_PER_SUBNET = 3
-MAX_RU_CONFIGS = 10 
-WORKERS = 15
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
+EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
+EXCLUDE_KEYWORDS = ("type=ws")
+MAX_CONFIGS = 150 
+MAX_PER_SUBNET = 3 
+MAX_PER_SNI = 15
+MAX_PER_ID = 3
+MAX_RU_CONFIGS = 6
+
+# --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
-now_date = datetime.now(zone)
-offset = now_date.strftime("%H:%M | %d.%m.%Y")
+start_time = datetime.now(zone)
+offset = start_time.strftime("%H:%M | %d.%m.%Y")
+g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
+REPO = g.get_repo(REPO_NAME)
 
-def get_xray_now():
-    if os.path.exists(XRAY_BIN): return True
+geo_cache = {} 
+last_online_geoip_time = 0
+
+# --- ФУНКЦИИ ---
+
+def update_mmdb():
+    if os.path.exists(MMDB_PATH):
+        file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH))
+        if file_age < timedelta(days=3):
+            print(f"✅ База актуальна (возраст: {file_age.days} дн.)")
+            return
     try:
-        url = "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-        r = requests.get(url, timeout=30)
-        with open("xray.zip", "wb") as f: f.write(r.content)
-        with zipfile.ZipFile("xray.zip", 'r') as zip_ref:
-            zip_ref.extract("xray", path=".")
-        os.chmod(XRAY_BIN, 0o755)
-        os.remove("xray.zip")
-        return True
-    except: return False
+        r = requests.get(MMDB_URL, timeout=60)
+        with open(MMDB_PATH, "wb") as f:
+            f.write(r.content)
+        print("✅ База GeoLite2 обновлена.")
+    except Exception as e:
+        print(f"❌ Ошибка БД: {e}")
 
-def test_config_real(vless_link, local_port):
-    config_file = f"config_{local_port}.json"
-    proc = None
+def get_config_details(link):
     try:
-        # 1. Сверх-надежный парсинг
-        if not vless_link.startswith("vless://"): return False, "NoVless"
-        
-        main_part = vless_link.split("://")[1].split("#")[0]
-        if "@" not in main_part: return False, "ParseErr"
-        
-        user_info, rest = main_part.split("@")
-        if "?" in rest:
-            addr_port, params_raw = rest.split("?", 1)
-            params = {k: v for k, v in [p.split("=") for p in params_raw.split("&") if "=" in p]}
-        else:
-            addr_port = rest
-            params = {}
-            
-        if ":" not in addr_port: return False, "PortErr"
-        address, port = addr_port.split(":")
+        if link.startswith("vmess://"): return None, None, None, None
+        id_match = re.search(r'://([^@]+)@', link)
+        config_id = id_match.group(1) if id_match else None
+        h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
+        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
+        if h_m:
+            host = h_m.group(1)
+            port = int(h_m.group(2))
+            sni = (s_m.group(1).lower() if s_m else None)
+            if not sni: return None, None, None, "missing_sni"
+            try:
+                ip_obj = ipaddress.ip_address(host)
+                if ip_obj.version == 6: return None, None, None, "ipv6"
+            except ValueError:
+                return None, None, None, "domain_not_ip"
+            return host, port, sni, config_id
+    except: pass
+    return None, None, None, None
 
-        # 2. Конфиг Xray
-        stream_settings = {"network": params.get("type", "tcp"), "security": params.get("security", "none")}
-        if params.get("security") == "tls":
-            stream_settings["tlsSettings"] = {"serverName": params.get("sni", address), "allowInsecure": True}
-        elif params.get("security") == "reality":
-            stream_settings["realitySettings"] = {
-                "serverName": params.get("sni", address),
-                "publicKey": params.get("pbk", ""),
-                "shortId": params.get("sid", ""),
-                "spiderX": params.get("spx", "")
-            }
+def get_remote_data():
+    try:
+        resp = session.get(REMOTE_SOURCE_URL, timeout=15)
+        code = resp.text
+        all_lists = re.findall(r'(\w+)\s*=\s*\[(.*?)\]', code, re.DOTALL | re.IGNORECASE)
+        std_src, extra_src, sni_list = [], [], []
+        for var, content in all_lists:
+            items = re.findall(r'["\']([^"\']+)["\']', content)
+            if var.upper() == "URLS": std_src = items
+            elif var.upper() == "EXTRA_URLS_FOR_26": extra_src = items
+            elif var.upper() == "SNI_DOMAINS": sni_list = items
+        return extra_src, std_src, sni_list
+    except: return [], [], []
 
-        xray_config = {
-            "log": {"loglevel": "none"},
-            "inbounds": [{"port": local_port, "protocol": "socks", "settings": {"udp": True}}],
-            "outbounds": [{
-                "protocol": "vless",
-                "settings": {"vnext": [{"address": address, "port": int(port), "users": [{"id": user_info, "encryption": "none", "flow": params.get("flow", "")}]}]},
-                "streamSettings": stream_settings
-            }]
-        }
+def fetch_raw_configs(url):
+    try:
+        resp = session.get(url, timeout=10, verify=False)
+        text = re.sub(r'(vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp.text)
+        return [l.strip() for l in text.splitlines() if "://" in l]
+    except: return []
 
-        with open(config_file, "w") as f: json.dump(xray_config, f)
-        
-        # 3. Запуск
-        proc = subprocess.Popen([XRAY_BIN, "-c", config_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.5)
-        if proc.poll() is not None: return False, "XrayCrash"
+def is_ru_online(ip_str):
+    global last_online_geoip_time
+    now = time.time()
+    wait = 1.35 - (now - last_online_geoip_time)
+    if wait > 0: time.sleep(wait)
+    try:
+        url = f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,asname"
+        r = session.get(url, timeout=5).json()
+        last_online_geoip_time = time.time()
+        if r.get("status") == "success":
+            info = (r.get("isp", "") + " " + r.get("org", "") + " " + r.get("asname", "")).lower()
+            return (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom", "russia"])
+    except: pass
+    return False
 
-        # 4. Тест Cloudflare
-        proxies = {'http': f'socks5://127.0.0.1:{local_port}', 'https': f'socks5://127.0.0.1:{local_port}'}
-        r = requests.get("https://speed.cloudflare.com/meta", proxies=proxies, timeout=10)
-        data = r.json()
-        
-        country = data.get("country", "??")
-        if not country or country == "??": 
-            # Запасной вариант если поле пустое
-            country = data.get("region", "??")
-
-        if ":" in data.get("clientIp", ""): return False, "IPv6"
-        return True, country
-
-    except: return False, "Error"
-    finally:
-        if proc:
-            try: proc.terminate()
-            except: pass
-        if os.path.exists(config_file):
-            try: os.remove(config_file)
-            except: pass
+# --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
-    print(f"--- РЕСТАРТ ТЕСТА: {offset} ---")
-    if not get_xray_now(): return
+    update_mmdb()
+    extra_urls, std_urls, sni_domains = get_remote_data()
     
-    auth = Auth.Token(GITHUB_TOKEN)
-    g = Github(auth=auth)
-    repo = g.get_repo(REPO_NAME)
+    vlm_list, vlm2_list = [], []
+    seen_hosts = set()
+    sni_counts, subnet_counts, id_counts = {}, {}, {}
+    ru_count = 0
 
-    try:
-        resp = requests.get(REMOTE_SOURCE_URL, timeout=15)
-        sources = re.findall(r'["\'](https?://[^"\']+)["\']', resp.text)
-        raw_configs = []
-        for s in sources:
-            try:
-                r = requests.get(s, timeout=10)
-                raw_configs.extend(re.findall(r'vless://[^\s]+', r.text))
-            except: continue
-        raw_configs = list(set(raw_configs))
-        print(f"📦 Собрано уникальных: {len(raw_configs)}")
-    except: return
+    with maxminddb.open_database(MMDB_PATH) as mmdb_reader:
 
-    vlm2_list = []
-    seen_ips, subnet_counts, ru_count = set(), {}, 0
-    total = 0
+        def process_pool(urls, use_sni_filter=True, stage_name=""):
+            nonlocal ru_count
+            print(f"\n--- [ЭТАП: {stage_name}] ---")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
+                future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
+                for future in concurrent.futures.as_completed(future_to_url):
+                    configs = future.result()
+                    for config in configs:
+                        if len(vlm_list) >= MAX_CONFIGS and len(vlm2_list) >= MAX_CONFIGS: return
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        futures = {executor.submit(test_config_real, cfg, 21000 + i): cfg for i, cfg in enumerate(raw_configs[:2000])}
-        
-        for f in concurrent.futures.as_completed(futures):
-            total += 1
-            cfg = futures[f]
-            try:
-                success, country = f.result()
-            except: continue
+                        if config.lower().startswith(EXCLUDE_PROTOCOLS): continue
+                        
+                        host, port, sni, config_id = get_config_details(config)
+                        if not host or host in seen_hosts: continue
+                        if sni in ("missing_sni", "ipv6", "domain_not_ip"): continue
+                        if config_id and id_counts.get(config_id, 0) >= MAX_PER_ID: continue
+                        if use_sni_filter and sni_domains and not any(d in sni for d in sni_domains): continue
+                        if sni_counts.get(sni, 0) >= MAX_PER_SNI: continue
+                        
+                        subnet = ".".join(host.split(".")[:3])
+                        if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
 
-            if not success:
-                if total % 100 == 0: print(f" [LOG] {total} - {country}")
-                continue
+                        # ГЕО ПЕРЕД ПИНГОМ
+                        is_ru = False
+                        found_in_db = False
+                        
+                        if host in geo_cache:
+                            is_ru = geo_cache[host]
+                            found_in_db = True
+                        else:
+                            record = mmdb_reader.get(host)
+                            if record and 'country' in record:
+                                is_ru = record['country'].get('iso_code') == 'RU'
+                                geo_cache[host] = is_ru
+                                found_in_db = True
 
-            # Фильтрация IP
-            host_m = re.search(r'@([^:/?#\s]+)', cfg)
-            if not host_m: continue
-            ip_host = host_m.group(1)
-            try:
-                ip_addr = socket.gethostbyname(ip_host)
-                subnet = ".".join(ip_addr.split(".")[:3])
-            except: continue
+                        if is_ru and ru_count >= MAX_RU_CONFIGS: continue
 
-            if ip_addr in seen_ips or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+                        # ПИНГ
+                        is_alive = False
+                        try:
+                            with socket.create_connection((host, port), timeout=1.2):
+                                is_alive = True
+                        except: pass
+                        
+                        if not is_alive: continue
 
-            if country == "RU":
-                if ru_count >= MAX_RU_CONFIGS: continue
-                ru_count += 1
+                        if not found_in_db and host not in geo_cache:
+                            is_ru = is_ru_online(host)
+                            geo_cache[host] = is_ru
+                            if is_ru and ru_count >= MAX_RU_CONFIGS: continue
 
-            vlm2_list.append(cfg)
-            seen_ips.add(ip_addr)
-            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            print(f" ✅ ДОБАВЛЕН: {ip_addr} | {country} | RU: {ru_count}")
+                        if is_ru: ru_count += 1
 
-            if len(vlm2_list) >= MAX_CONFIGS: break
+                        added = False
+                        if len(vlm2_list) < MAX_CONFIGS:
+                            vlm2_list.append(config)
+                            added = True
+                        if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
+                            vlm_list.append(config)
+                            added = True
 
-    # Сохранение
-    if vlm2_list:
-        path = f"githubmirror/{FILENAME_VLM2}"
-        content = "\n".join(vlm2_list)
-        msg = f"🚀 Update | Total: {len(vlm2_list)} | RU: {ru_count} | {offset}"
+                        if added:
+                            seen_hosts.add(host)
+                            sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                            if config_id: id_counts[config_id] = id_counts.get(config_id, 0) + 1
+                            print(f" [+] {host} | RU: {is_ru}")
+
+        process_pool(extra_urls, True, "EXTRA")
+        process_pool(std_urls, True, "STD")
+        process_pool(extra_urls + std_urls, False, "RESERVE")
+
+    # Сохранение (Исправлено content вместо data)
+    def save(filename, lst):
+        if not lst: return
+        file_content = "\n".join(lst)
+        path = f"githubmirror/{filename}"
+        msg = f"🚀 {filename} | T: {len(lst)} | RU: {ru_count} | {offset}"
         try:
-            sha = repo.get_contents(path).sha
-            repo.update_file(path, msg, content, sha)
-        except: repo.create_file(path, msg, content)
-        print(f"🏁 Готово! Найдено: {len(vlm2_list)}")
+            curr = REPO.get_contents(path)
+            REPO.update_file(path, msg, content=file_content, sha=curr.sha)
+        except: 
+            REPO.create_file(path, msg, content=file_content)
+
+    save(FILENAME_VLM, vlm_list)
+    save(FILENAME_VLM2, vlm2_list)
+    
+    end_time = datetime.now(zone)
+    duration = end_time - start_time
+    print(f"\n🏁 Готово. Время выполнения: {str(duration).split('.')[0]}")
 
 if __name__ == "__main__":
     main()
