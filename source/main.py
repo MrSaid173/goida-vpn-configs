@@ -22,10 +22,10 @@ MAX_PER_SUBNET = 3
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
-# Твои лимиты по пингу
+# Параметры пинга для RU
 MIN_RU_PING = 90.0
-MAX_ALLOWED_PING = 400.0
-SOCKET_TIMEOUT = 0.5  # Порог отсечки (500мс)
+MAX_RU_PING = 400.0
+SOCKET_TIMEOUT = 0.5 # 500мс на попытку коннекта
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -34,16 +34,6 @@ start_time = datetime.now(zone)
 offset = start_time.strftime("%H:%M | %d.%m.%Y")
 
 RU_FLAG_EMOJI = "🇷🇺"
-COUNTRY_MAP = {
-    "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
-    "US": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"],
-    "DE": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"],
-    "NL": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"],
-    "GB": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"],
-    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "🇹🇷"],
-    "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
-    "AT": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"],
-}
 
 def get_cloudflare_networks():
     if os.path.exists(CF_IPS_PATH):
@@ -65,50 +55,62 @@ def is_ip_in_networks(ip_str, networks):
     except: pass
     return False
 
-# --- ТРОЙНОЙ ПИНГ С ПАУЗОЙ И ЛИМИТОМ 400МС ---
-def get_triple_ping(host, port, sni):
-    latencies = []
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
+def smart_ping(host, port, sni):
+    """Быстрая проверка 'жив/мертв' для иностранных серверов"""
     try:
-        for i in range(3):
-            start = time.perf_counter()
-            # Таймаут 0.5с для быстрой отсечки безнадежных серверов
-            with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT) as sock:
-                with context.wrap_socket(sock, server_hostname=sni) as ssock:
-                    latencies.append((time.perf_counter() - start) * 1000)
-            
-            if i < 2:
-                time.sleep(1.1) # Пауза минимум секунда
-        
-        avg = sum(latencies) / 3
-        # Если средний пинг выше 400мс — сервер не подходит
-        if avg > MAX_ALLOWED_PING: return None
-        return avg
-    except:
-        return None
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=1.1) as sock:
+            with context.wrap_socket(sock, server_hostname=sni) as ssock:
+                return True
+    except: return False
 
-def check_ru_isp_online(ip_str):
+def get_online_info(ip_str):
+    """Онлайн проверка провайдера и Cloudflare для RU-кандидатов"""
     try:
         time.sleep(1.35)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
-            info = (r.get("isp", "") + " " + r.get("org", "")).lower()
-            return (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
+            isp_info = (r.get("isp", "") + " " + r.get("org", "")).lower()
+            is_cf = "cloudflare" in isp_info
+            is_ru = (r.get("countryCode") == "RU") or any(k in isp_info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
+            return is_ru, is_cf
     except: pass
-    return False
+    return False, False
+
+def get_triple_ping(host, port, sni):
+    """Замер пинга. Если хотя бы 1 из 3 успешен — сервер рабочий."""
+    latencies = []
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    
+    for i in range(3):
+        try:
+            start = time.perf_counter()
+            with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT) as sock:
+                with context.wrap_socket(sock, server_hostname=sni) as ssock:
+                    latencies.append((time.perf_counter() - start) * 1000)
+        except:
+            pass # Игнорируем ошибку одной попытки
+        
+        if i < 2: 
+            time.sleep(1.1) 
+    
+    # Если есть хотя бы один успешный замер
+    if latencies:
+        return sum(latencies) / len(latencies)
+    return None
 
 def get_config_details(link):
     try:
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
-        id_match = re.search(r'://([^@]+)@', clean_link)
-        cid = id_match.group(1) if id_match else None
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', clean_link)
-        if h_m:
-            return h_m.group(1), int(h_m.group(2)), (s_m.group(1).lower() if s_m else ""), cid, name
+        id_m = re.search(r'://([^@]+)@', clean_link)
+        if h_m: return h_m.group(1), int(h_m.group(2)), (s_m.group(1).lower() if s_m else ""), (id_m.group(1) if id_m else None), name
     except: pass
     return None, None, None, None, None
 
@@ -123,7 +125,7 @@ def fetch_raw_configs(url):
     except: return []
 
 def main():
-    if not os.path.exists(MMDB_PATH) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH)) > timedelta(days=3)):
+    if not os.path.exists(MMDB_PATH):
         try:
             r = requests.get(MMDB_URL, timeout=30)
             with open(MMDB_PATH, "wb") as f: f.write(r.content)
@@ -136,92 +138,69 @@ def main():
         def get_list(n):
             m = re.search(rf'{n}\s*=\s*\[(.*?)\]', src, re.S)
             return re.findall(r'["\'](https?://[^"\']+)["\']', m.group(1)) if m else []
-        extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
-        sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src, re.S)
-        sni_domains = [s.strip(" \"'") for s in sni_match.group(1).split(",")] if sni_match else []
+        urls = get_list("EXTRA_URLS_FOR_26") + get_list("URLS")
     except: return
 
     vlm_list, vlm2_list = [], []
-    seen_hosts, sni_counts, subnet_counts, id_counts, ru_count = set(), {}, {}, {}, 0
+    seen_hosts, subnet_counts, ru_count = set(), {}, 0
 
     with maxminddb.open_database(MMDB_PATH) as reader:
-        def process_pool(urls, use_sni_filter, stage_name):
-            nonlocal ru_count
-            print(f"--- [ЭТАП: {stage_name}] ---")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
-                f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
-                for f in concurrent.futures.as_completed(f_to_u):
-                    for config in f.result():
-                        if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: return
-                        
-                        host, port, sni, cid, name = get_config_details(config)
-                        if not host or host in seen_hosts: continue
-                        if use_sni_filter and not any(d in sni for d in sni_domains): continue
-                        if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
-                        
-                        try:
-                            ip = socket.gethostbyname(host)
-                            if is_ip_in_networks(ip, cf_networks): continue
+        print(f"--- [ЗАПУСК С ОПТИМИЗИРОВАННЫМ ПИНГОМ] ---")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
+            f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
+            for f in concurrent.futures.as_completed(f_to_u):
+                for config in f.result():
+                    if len(vlm_list) >= MAX_CONFIGS: break
+                    host, port, sni, cid, name = get_config_details(config)
+                    if not host or host in seen_hosts: continue
+                    
+                    try:
+                        ip = socket.gethostbyname(host)
+                        if is_ip_in_networks(ip, cf_networks): continue
 
-                            subnet = ".".join(ip.split(".")[:3])
-                            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+                        geo = reader.get(ip)
+                        ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
+                        is_ru_candidate = (ip_country == 'RU') or (RU_FLAG_EMOJI in name)
+
+                        if is_ru_candidate:
+                            if ru_count >= MAX_RU_CONFIGS: continue
                             
-                            geo = reader.get(ip)
-                            ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
+                            is_ru_real, is_cf_online = get_online_info(ip)
+                            if is_cf_online or not is_ru_real: continue
                             
-                            name_upper = name.upper()
-                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
-                            is_ru_by_ip = (ip_country == 'RU')
-                            is_ru_final = is_ru_by_name or is_ru_by_ip
+                            # ГИБКИЙ ПИНГ: берем, если хоть раз ответил
+                            avg_p = get_triple_ping(ip, port, sni)
+                            if avg_p is None or avg_p < MIN_RU_PING or avg_p > MAX_RU_PING:
+                                continue
+                            ru_count += 1
+                        else:
+                            if not smart_ping(ip, port, sni): continue
 
-                            # Фильтр RU лимитов
-                            if is_ru_final and ru_count >= MAX_RU_CONFIGS: continue
-
-                            # ТРОЙНОЙ ПИНГ
-                            avg_latency = get_triple_ping(ip, port, sni)
+                        subnet = ".".join(ip.split(".")[:3])
+                        if subnet_counts.get(subnet, 0) < MAX_PER_SUBNET:
+                            vlm_list.append(config)
+                            vlm2_list.append(config)
+                            seen_hosts.add(host)
+                            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                             
-                            if avg_latency is not None:
-                                # ТВОЙ ФИЛЬТР: Для России берем только 90-400мс
-                                if is_ru_final:
-                                    if avg_latency < MIN_RU_PING: continue 
-                                    
-                                    if is_ru_by_ip and not is_ru_by_name:
-                                        if not check_ru_isp_online(ip): is_ru_final = False
-                                        else: ru_count += 1
-                                    elif is_ru_by_name: ru_count += 1
-                                
-                                # Добавление в списки
-                                added = False
-                                if len(vlm2_list) < MAX_CONFIGS:
-                                    vlm2_list.append(config); added = True
-                                if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
-                                    vlm_list.append(config); added = True
-                                
-                                if added:
-                                    seen_hosts.add(host)
-                                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                                    id_counts[cid] = id_counts.get(cid, 0) + 1
-                                    print(f" [+] {ip} ({ip_country}) | Ping: {avg_latency:.1f}ms | RU: {ru_count}")
-                        except: continue
-
-        process_pool(extra_urls, True, "EXTRA")
-        process_pool(std_urls, True, "STD")
-        process_pool(extra_urls + std_urls, False, "RESERVE")
+                            log_status = f"{avg_p:.1f}ms" if is_ru_candidate else "Live"
+                            print(f" [+] {ip} ({ip_country}) | Ping: {log_status} | RU: {ru_count}")
+                    except: continue
 
     # Сохранение на GitHub
     g = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = g.get_repo(REPO_NAME)
-    for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
+    for fname, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
         if not lst: continue
-        path = f"githubmirror/{name}"
-        msg = f"🚀 {name} | T: {len(lst)} | RU: {ru_count} | {offset}"
+        path = f"githubmirror/{fname}"
+        msg = f"🚀 {fname} | T: {len(lst)} | RU: {ru_count} | {offset}"
         try:
             sha = repo.get_contents(path).sha
             repo.update_file(path, msg, "\n".join(lst), sha)
         except: repo.create_file(path, msg, "\n".join(lst))
     
-    print(f"\n🏁 Финиш! RU: {ru_count} | Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
+    print(f"\n🏁 Финиш! RU: {ru_count}")
 
 if __name__ == "__main__":
     main()
+                            
