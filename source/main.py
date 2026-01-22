@@ -1,4 +1,4 @@
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, subprocess, zipfile
+import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -11,206 +11,154 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
-XRAY_BIN = "./xray"
-MMDB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GeoLite2-Country.mmdb")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 
 EXCLUDE_PROTOCOLS = ("ss://", "trojan://", "vmess://")
-MAX_CONFIGS = 2 
-MAX_PER_SUBNET = 1 
-MAX_PER_SNI = 1
-MAX_PER_ID = 1
-MAX_RU_CONFIGS = 1
-WORKERS = 15
-TEST_TIMEOUT = 4.5  # Время на реальный тест интернета
+MAX_CONFIGS = 150 
+MAX_PER_SUBNET = 3 
+MAX_PER_SNI = 15
+MAX_PER_ID = 3
+MAX_RU_CONFIGS = 6
 
+# --- ИНИЦИАЛИЗАЦИЯ ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
-offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
+start_time = datetime.now(zone)
+offset = start_time.strftime("%H:%M | %d.%m.%Y")
+g = Github(auth=Auth.Token(GITHUB_TOKEN)) if GITHUB_TOKEN else Github()
+REPO = g.get_repo(REPO_NAME)
 
-# --- ПОДГОТОВКА ИНСТРУМЕНТОВ ---
+geo_cache = {} 
+last_online_geoip_time = 0
 
-def setup_tools():
-    if not os.path.exists(XRAY_BIN):
-        print("📥 Скачивание ядра Xray...")
-        r = requests.get("https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip", timeout=20)
-        with open("xray.zip", "wb") as f: f.write(r.content)
-        with zipfile.ZipFile("xray.zip", 'r') as z: z.extract("xray", path=".")
-        os.chmod(XRAY_BIN, 0o755)
-    
-    if not os.path.exists(MMDB_PATH) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH)) > timedelta(days=3)):
-        print("📥 Обновление GeoIP базы...")
-        r = requests.get(MMDB_URL, timeout=30)
-        with open(MMDB_PATH, "wb") as f: f.write(r.content)
-
-# --- ПАРСИНГ И ОЧИСТКА ---
-
-def fetch_and_clean_configs(url):
+# --- УМНЫЙ ПИНГ (TLS HANDSHAKE) ---
+def smart_ping(host, port, sni):
+    """Проверяет не только порт, но и готовность сервера к TLS соединению"""
     try:
-        resp = session.get(url, timeout=12, verify=False).text
-        # Авто-декодирование Base64 (для LalatinaHub и др.)
-        if "://" not in resp[:50] and len(resp) > 64:
-            try:
-                resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
-            except: pass
+        # Создаем контекст без проверки сертификата (для скорости)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         
-        # Находим vless и чистим от ASCII мусора и эмодзи
-        found = re.findall(r'vless://[^\s\'"]+', resp)
-        cleaned = []
-        for link in found:
-            link = re.sub(r'[^\x20-\x7E]', '', link) # Только печатные символы
-            if link.endswith(('.', ',', ';')): link = link[:-1]
-            cleaned.append(link)
-        return list(set(cleaned))
-    except: return []
+        # Устанавливаем соединение
+        with socket.create_connection((host, port), timeout=1.2) as sock:
+            with context.wrap_socket(sock, server_hostname=sni) as ssock:
+                # Если мы дошли до сюда, значит TLS-рукопожатие прошло успешно
+                return True
+    except:
+        return False
+
+# --- ОСТАЛЬНЫЕ ФУНКЦИИ ---
+def update_mmdb():
+    if os.path.exists(MMDB_PATH):
+        file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH))
+        if file_age < timedelta(days=3): return
+    try:
+        r = requests.get(MMDB_URL, timeout=60)
+        with open(MMDB_PATH, "wb") as f: f.write(r.content)
+    except: pass
 
 def get_config_details(link):
     try:
-        parts = link.split("://")[1].split("#")[0]
-        config_id = parts.split("@")[0]
-        addr = parts.split("@")[1].split("?")[0].split(":")
-        host, port = addr[0], int(addr[1])
-        sni_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
-        sni = sni_m.group(1).lower() if sni_m else ""
-        return host, port, sni, config_id
-    except: return None, None, None, None
+        link = re.sub(r'[^\x20-\x7E]', '', link).strip() # Очистка от мусора
+        if link.startswith("vmess://"): return None, None, None, None
+        id_match = re.search(r'://([^@]+)@', link)
+        config_id = id_match.group(1) if id_match else None
+        h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
+        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', link)
+        if h_m:
+            host, port = h_m.group(1), int(h_m.group(2))
+            sni = s_m.group(1).lower() if s_m else ""
+            return host, port, sni, config_id
+    except: pass
+    return None, None, None, None
 
-# --- ТЕСТИРОВАНИЕ ЧЕРЕЗ XRAY ---
-
-def test_via_xray(vless_link, port):
-    config_file = f"t_{port}.json"
-    proc = None
+def fetch_raw_configs(url):
     try:
-        h, p, sni, cid = get_config_details(vless_link)
-        # Генерируем временный конфиг для Xray
-        x_cfg = {
-            "log": {"loglevel": "none"},
-            "inbounds": [{"port": port, "protocol": "socks", "settings": {"udp": True}}],
-            "outbounds": [{"protocol": "vless", "settings": {"vnext": [{"address": h, "port": p, "users": [{"id": cid}]}]}}]
-        }
-        with open(config_file, "w") as f: json.dump(x_cfg, f)
-        
-        # Запускаем Xray
-        proc = subprocess.Popen([XRAY_BIN, "-c", config_file], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # Ждем, пока порт откроется (макс 0.8с)
-        ready = False
-        for _ in range(8):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.1)
-                if s.connect_ex(('127.0.0.1', port)) == 0:
-                    ready = True; break
-            time.sleep(0.1)
-        
-        if not ready: return False
-        
-        # Реальный запрос к Google через прокси
-        proxies = {'http': f'socks5h://127.0.0.1:{port}', 'https': f'socks5h://127.0.0.1:{port}'}
-        r = session.get("http://www.gstatic.com/generate_204", proxies=proxies, timeout=TEST_TIMEOUT)
-        return r.status_code == 204
-    except: return False
-    finally:
-        if proc:
-            proc.terminate()
-            try: proc.wait(timeout=1)
-            except: proc.kill()
-        if os.path.exists(config_file): os.remove(config_file)
+        resp = session.get(url, timeout=12, verify=False).text
+        # Поддержка Base64 для LalatinaHub и др.
+        if "://" not in resp[:50] and len(resp) > 64:
+            try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
+            except: pass
+        text = re.sub(r'(vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp)
+        return [l.strip() for l in text.splitlines() if "vless://" in l]
+    except: return []
 
 # --- ГЛАВНАЯ ЛОГИКА ---
-
 def main():
-    setup_tools()
-    
-    print("🛰 Получение списков URL и SNI...")
+    update_mmdb()
+    # Собираем данные об источниках (URLS, EXTRA_URLS_FOR_26, SNI_DOMAINS)
     try:
-        src_code = session.get(REMOTE_SOURCE_URL).text
-        def extract_list(name):
-            match = re.search(rf'{name}\s*=\s*\[(.*?)\]', src_code, re.S)
-            return re.findall(r'["\'](https?://[^"\']+)["\']', match.group(1)) if match else []
-
-        extra_urls = extract_list("EXTRA_URLS_FOR_26")
-        std_urls = extract_list("URLS")
+        src = session.get(REMOTE_SOURCE_URL).text
+        def get_list(name):
+            m = re.search(rf'{name}\s*=\s*\[(.*?)\]', src, re.S)
+            return re.findall(r'["\'](https?://[^"\']+)["\']', m.group(1)) if m else []
         
-        sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src_code, re.S)
+        extra_urls = get_list("EXTRA_URLS_FOR_26")
+        std_urls = get_list("URLS")
+        sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src, re.S)
         sni_domains = [s.strip(" \"'") for s in sni_match.group(1).split(",")] if sni_match else []
-    except Exception as e:
-        print(f"❌ Ошибка загрузки источников: {e}"); return
+    except: return
 
     vlm_list, vlm2_list = [], []
-    seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
-    ru_count = 0
+    seen_hosts, sni_counts, subnet_counts, id_counts, ru_count = set(), {}, {}, {}, 0
 
     
 
-    with maxminddb.open_database(MMDB_PATH) as reader:
-        def process_stage(urls, use_sni_filter, stage_name):
+    with maxminddb.open_database(MMDB_PATH) as mmdb_reader:
+        def process_pool(urls, use_sni_filter, stage_name):
             nonlocal ru_count
-            print(f"\n--- ЭТАП: {stage_name} ({len(urls)} источников) ---")
-            
-            for u in urls:
-                if len(vlm2_list) >= MAX_CONFIGS: break
-                configs = fetch_and_clean_configs(u)
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-                    tasks = {}
-                    for i, cfg in enumerate(configs):
-                        if cfg.lower().startswith(EXCLUDE_PROTOCOLS): continue
+            print(f"--- [ЭТАП: {stage_name}] ---")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
+                future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
+                for future in concurrent.futures.as_completed(future_to_url):
+                    for config in future.result():
+                        if len(vlm2_list) >= MAX_CONFIGS: return
                         
-                        host, port, sni, cid = get_config_details(cfg)
-                        if not host or host in seen_ips: continue
-                        
-                        # Фильтры (SNI, ID, Subnet)
-                        if use_sni_filter and not any(d in sni for d in sni_domains): continue
+                        host, port, sni, config_id = get_config_details(config)
+                        if not host or host in seen_hosts: continue
+                        if use_sni_filter and sni_domains and not any(d in sni for d in sni_domains): continue
                         if sni_counts.get(sni, 0) >= MAX_PER_SNI: continue
-                        if id_counts.get(cid, 0) >= MAX_PER_ID: continue
-
+                        
                         try:
                             ip = socket.gethostbyname(host)
                             subnet = ".".join(ip.split(".")[:3])
                             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
                             
-                            geo = reader.get(ip)
+                            # ГЕО проверка
+                            geo = mmdb_reader.get(ip)
                             is_ru = geo and geo.get('country', {}).get('iso_code') == 'RU'
                             if is_ru and ru_count >= MAX_RU_CONFIGS: continue
-                            
-                            # Предварительный пинг (быстрый сокет)
-                            with socket.create_connection((ip, port), timeout=0.6):
-                                t_port = 22000 + (i % 500)
-                                tasks[executor.submit(test_via_xray, cfg, t_port)] = (cfg, ip, sni, subnet, cid, is_ru)
+
+                            # ИСПОЛЬЗУЕМ УМНЫЙ ПИНГ ВМЕСТО ОБЫЧНОГО
+                            if smart_ping(ip, port, sni):
+                                if is_ru: ru_count += 1
+                                vlm2_list.append(config)
+                                if "xhttp" not in config.lower(): vlm_list.append(config)
+                                
+                                seen_hosts.add(host)
+                                sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                                id_counts[config_id] = id_counts.get(config_id, 0) + 1
+                                print(f" [+] {host} | OK")
                         except: continue
 
-                    for f in concurrent.futures.as_completed(tasks):
-                        cfg, ip, sni, subnet, cid, is_ru = tasks[f]
-                        if f.result():
-                            if is_ru: ru_count += 1
-                            vlm2_list.append(cfg)
-                            if "xhttp" not in cfg.lower(): vlm_list.append(cfg)
-                            
-                            seen_ips.add(ip)
-                            sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                            id_counts[cid] = id_counts.get(cid, 0) + 1
-                            print(f"  [+] {ip} | RU: {is_ru} | SNI: {sni}")
-                            if len(vlm2_list) >= MAX_CONFIGS: return
+        process_pool(extra_urls, True, "EXTRA")
+        process_pool(std_urls, True, "STD")
+        process_pool(extra_urls + std_urls, False, "RESERVE")
 
-        # Выполнение этапов
-        process_stage(extra_urls, True, "EXTRA")
-        process_stage(std_urls, True, "STD")
-        process_stage(extra_urls + std_urls, False, "RESERVE")
-
-    # --- СОХРАНЕНИЕ ---
-    if GITHUB_TOKEN and (vlm_list or vlm2_list):
-        g = Github(auth=Auth.Token(GITHUB_TOKEN))
-        repo = g.get_repo(REPO_NAME)
-        for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
-            path = f"githubmirror/{name}"
-            content = "\n".join(lst)
-            msg = f"🚀 {name} | Total: {len(lst)} | {offset}"
-            try:
-                sha = repo.get_contents(path).sha
-                repo.update_file(path, msg, content, sha)
-            except: repo.create_file(path, msg, content)
-        print("💾 Обновлено на GitHub")
+    # Сохранение на GitHub
+    for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
+        if not lst: continue
+        path = f"githubmirror/{name}"
+        msg = f"🚀 {name} | T: {len(lst)} | {offset}"
+        try:
+            sha = REPO.get_contents(path).sha
+            REPO.update_file(path, msg, "\n".join(lst), sha)
+        except: REPO.create_file(path, msg, "\n".join(lst))
 
 if __name__ == "__main__":
     main()
