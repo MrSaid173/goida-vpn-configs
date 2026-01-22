@@ -36,6 +36,7 @@ COUNTRY_MAP = {
     "GB": ["UNITED KINGDOM", "ENGLAND", "ЛОНДОН"],
     "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE"],
     "KZ": ["KAZAKHSTAN", "КАЗАХСТАН"],
+    "AT": ["AUSTRIA", "АВСТРИЯ"]
 }
 
 # --- ЛОГИКА КЭШИРОВАНИЯ CLOUDFLARE ---
@@ -77,7 +78,7 @@ def is_ip_in_networks(ip_str, networks):
 
 def check_ru_isp_online(ip_str):
     try:
-        time.sleep(1.3)
+        time.sleep(1.4)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (r.get("isp", "") + " " + r.get("org", "")).lower()
