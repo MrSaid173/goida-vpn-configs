@@ -36,7 +36,7 @@ COUNTRY_MAP = {
     "GB": ["UNITED KINGDOM", "ENGLAND", "ЛОНДОН"],
     "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE"],
     "KZ": ["KAZAKHSTAN", "КАЗАХСТАН"],
-    "AT": ["AUSTRIA", "АВСТРИЯ"]
+    "AT": ["AUSTRIA", "АВСТРИЯ"],
 }
 
 # --- ЛОГИКА КЭШИРОВАНИЯ CLOUDFLARE ---
