@@ -16,8 +16,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 CF_IPS_PATH = os.path.join(BASE_DIR, "cloudflare_ips.txt")
 
-MAX_CONFIGS = 150 
-MAX_RU_CONFIGS = 6
+MAX_CONFIGS = 300 
+MAX_RU_CONFIGS = 10
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
