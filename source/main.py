@@ -78,7 +78,7 @@ def is_ip_in_networks(ip_str, networks):
 
 def check_ru_and_cf_online(ip_str):
     try:
-        time.sleep(1.66)
+        time.sleep(1.5)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (r.get("isp", "") + " " + r.get("org", "")).lower()
@@ -164,7 +164,7 @@ def main():
         def process_pool(urls, use_sni_filter, stage_name):
             nonlocal ru_count
             print(f"--- [ЭТАП: {stage_name}] ---")
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
                 f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
                 for f in concurrent.futures.as_completed(f_to_u):
                     for config in f.result():
