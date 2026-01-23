@@ -87,7 +87,7 @@ def check_ru_and_cf_online(ip_str):
     return False, False
 
 def get_triple_ping(host, port, sni):
-    """Тройной замер: если хоть одна попытка успешна — сервер годен"""
+    """Тройной замер: берем МИНИМАЛЬНЫЙ пинг из успешных попыток"""
     latencies = []
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -100,7 +100,8 @@ def get_triple_ping(host, port, sni):
                     latencies.append((time.perf_counter() - start) * 1000)
         except: pass
         if i < 2: time.sleep(1.1)
-    return sum(latencies) / len(latencies) if latencies else None
+    # Возвращаем самый быстрый результат, если хоть один удался
+    return min(latencies) if latencies else None
 
 def smart_ping(host, port, sni):
     try:
@@ -183,7 +184,6 @@ def main():
                             is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                             is_ru_final = is_ru_by_name or (ip_country == 'RU')
 
-                            # Проверка конфликта стран
                             found_other_country = False
                             for code, aliases in COUNTRY_MAP.items():
                                 if code == "RU": continue
@@ -195,21 +195,20 @@ def main():
 
                             if is_ru_final and ru_count >= MAX_RU_CONFIGS: continue
 
-                            # --- ГИБКАЯ ПРОВЕРКА RU VS ИНО ---
                             if is_ru_final:
                                 is_ru_online, is_cf_online = check_ru_and_cf_online(ip)
-                                if is_cf_online: continue # Бан Cloudflare онлайн
+                                if is_cf_online: continue
                                 if not is_ru_online and not is_ru_by_name: continue
                                 
-                                avg_p = get_triple_ping(ip, port, sni)
-                                if avg_p is None or not (MIN_RU_PING <= avg_p <= MAX_RU_PING): continue
+                                # ИСПОЛЬЗУЕМ МИНИМАЛЬНЫЙ ПИНГ
+                                min_p = get_triple_ping(ip, port, sni)
+                                if min_p is None or not (MIN_RU_PING <= min_p <= MAX_RU_PING): continue
                                 ru_count += 1
-                                log_info = f"{avg_p:.1f}ms"
+                                log_info = f"{min_p:.1f}ms (min)"
                             else:
                                 if not smart_ping(ip, port, sni): continue
                                 log_info = "Live"
 
-                            # Добавление
                             added = False
                             if len(vlm2_list) < MAX_CONFIGS:
                                 vlm2_list.append(config); added = True
@@ -221,14 +220,13 @@ def main():
                                 sni_counts[sni] = sni_counts.get(sni, 0) + 1
                                 subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                                 id_counts[cid] = id_counts.get(cid, 0) + 1
-                                print(f" [+] {ip} ({ip_country}) | {log_info} | RU: {ru_count} | {name[:15]}")
+                                print(f" [+] {ip} ({ip_country}) | {log_info} | RU: {ru_count}")
                         except: continue
 
         process_pool(extra_urls, True, "EXTRA")
         process_pool(std_urls, True, "STD")
         process_pool(extra_urls + std_urls, False, "RESERVE")
 
-    # Сохранение
     g = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = g.get_repo(REPO_NAME)
     for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
@@ -240,7 +238,7 @@ def main():
             repo.update_file(path, msg, "\n".join(lst), sha)
         except: repo.create_file(path, msg, "\n".join(lst))
     
-    print(f"\n🏁 Финиш! RU: {ru_count} | Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
+    print(f"\n🏁 Финиш! RU: {ru_count}")
 
 if __name__ == "__main__":
     main()
