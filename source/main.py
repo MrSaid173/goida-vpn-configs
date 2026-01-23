@@ -184,7 +184,7 @@ def main():
                             geo = reader.get(ip)
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             name_upper = name.upper()
-                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
+                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RUSSIA", "РОССИЯ", "RUSS"])
                             is_ru_final = is_ru_by_name or (ip_country == 'RU')
 
                             found_other_country = False
