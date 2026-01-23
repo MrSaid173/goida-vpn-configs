@@ -77,7 +77,6 @@ def is_ip_in_networks(ip_str, networks):
     return False
 
 def check_ru_and_cf_online(ip_str):
-    """Возвращает (is_ru_confirmed, is_cloudflare)"""
     try:
         time.sleep(1.40)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
@@ -90,7 +89,6 @@ def check_ru_and_cf_online(ip_str):
     return False, False
 
 def get_triple_ping(host, port, sni):
-    """Тройной замер: берем МИНИМАЛЬНЫЙ пинг из успешных попыток"""
     latencies = []
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -103,7 +101,6 @@ def get_triple_ping(host, port, sni):
                     latencies.append((time.perf_counter() - start) * 1000)
         except: pass
         if i < 2: time.sleep(1.1)
-    # Возвращаем самый быстрый результат, если хоть один удался
     return min(latencies) if latencies else None
 
 def smart_ping(host, port, sni):
@@ -135,7 +132,10 @@ def fetch_raw_configs(url):
             try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except: pass
         text = re.sub(r'(vless|trojan|ss|ssr|tuic|hysteria|hysteria2)://', r'\n\1://', resp)
-        return [l.strip() for l in text.splitlines() if "vless://" in l]
+        lines = [l.strip() for l in text.splitlines() if "vless://" in l]
+        
+        # Оставляем только те конфиги, где НЕТ udp443
+        return [l for l in lines if "udp443" not in l.lower()]
     except: return []
 
 def main():
@@ -203,7 +203,6 @@ def main():
                                 if is_cf_online: continue
                                 if not is_ru_online and not is_ru_by_name: continue
                                 
-                                # ИСПОЛЬЗУЕМ МИНИМАЛЬНЫЙ ПИНГ
                                 min_p = get_triple_ping(ip, port, sni)
                                 if min_p is None or not (MIN_RU_PING <= min_p <= MAX_RU_PING): continue
                                 ru_count += 1
