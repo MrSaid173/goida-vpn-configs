@@ -23,7 +23,7 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
 # Параметры для RU-пинга
-MIN_RU_PING = 115.0
+MIN_RU_PING = 100.0
 MAX_RU_PING = 500.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -44,6 +44,9 @@ COUNTRY_MAP = {
     "AT": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"],
     "EE": ["ESTONIA", "ЭСТОНИЯ", "🇪🇪"],
     "LV": ["LATVIA", "ЛАТВИЯ", "LV-", "🇱🇻"],
+    "FI": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"],
+    "PL": ["POLAND", "ПОЛЬША", "🇵🇱"],
+    "SE": ["SWEDEN", "ШВЕЦИЯ", "🇸🇪"],
 }
 
 def get_cloudflare_networks():
