@@ -43,6 +43,7 @@ COUNTRY_MAP = {
     "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
     "AT": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"],
     "EE": ["ESTONIA", "ЭСТОНИЯ", "🇪🇪"],
+    "LV": ["LATVIA", "ЛАТВИЯ", "LV-", "🇱🇻"],
 }
 
 def get_cloudflare_networks():
@@ -75,7 +76,7 @@ def is_ip_in_networks(ip_str, networks):
 def check_ru_and_cf_online(ip_str):
     """Возвращает (is_ru_confirmed, is_cloudflare)"""
     try:
-        time.sleep(1.35)
+        time.sleep(1.40)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (r.get("isp", "") + " " + r.get("org", "")).lower()
