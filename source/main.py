@@ -20,13 +20,13 @@ MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 CF_IPS_PATH = os.path.join(BASE_DIR, "cloudflare_ips.txt")
 HZ_IPS_PATH = os.path.join(BASE_DIR, "hetzner_ips.txt")
 
-MAX_CONFIGS = 300 
-MAX_RU_CONFIGS = 15 
+MAX_CONFIGS = 150 
+MAX_RU_CONFIGS = 5 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 MIN_RU_PING = 110.0
-MAX_RU_PING = 500.0
+MAX_RU_PING = 450.0
 
 RU_PATTERN = [2, 5, 3, 5] 
 
