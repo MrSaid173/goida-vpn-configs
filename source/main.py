@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
 import maxminddb
+import threading
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
@@ -19,8 +20,8 @@ MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 CF_IPS_PATH = os.path.join(BASE_DIR, "cloudflare_ips.txt")
 HZ_IPS_PATH = os.path.join(BASE_DIR, "hetzner_ips.txt")
 
-MAX_CONFIGS = 150 
-MAX_RU_CONFIGS = 10 
+MAX_CONFIGS = 10 
+MAX_RU_CONFIGS = 5 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
@@ -35,6 +36,7 @@ zone = zoneinfo.ZoneInfo("Europe/Moscow")
 now_moscow = datetime.now(zone)
 offset = now_moscow.strftime("%H:%M | %d.%m.%Y")
 
+# --- ПОЛНЫЙ COUNTRY_MAP ---
 RU_FLAG_EMOJI = "🇷🇺"
 COUNTRY_MAP = {
     "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
@@ -50,7 +52,17 @@ COUNTRY_MAP = {
     "FI": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"],
     "PL": ["POLAND", "ПОЛЬША", "🇵🇱"],
     "SE": ["SWEDEN", "ШВЕЦИЯ", "🇸🇪"],
+    "FR": ["FRANCE", "ФРАНЦИЯ", "🇫🇷"],
+    "IT": ["ITALY", "ИТАЛИЯ", "🇮🇹"],
+    "ES": ["SPAIN", "ИСПАНИЯ", "🇪🇸"],
+    "CA": ["CANADA", "КАНАДА", "🇨🇦"],
+    "JP": ["JAPAN", "ЯПОНИЯ", "🇯🇵"],
+    "HK": ["HONG KONG", "ГОНКОНГ", "🇭🇰"],
+    "SG": ["SINGAPORE", "СИНГАПУР", "🇸🇬"],
 }
+
+# Блокировка для потокобезопасности
+lock = threading.Lock()
 
 # --- УТИЛИТЫ ---
 
@@ -58,19 +70,20 @@ def get_net_list(path, url):
     if os.path.exists(path) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(path)) < timedelta(days=3)):
         with open(path, "r") as f: return [ipaddress.ip_network(l.strip()) for l in f if "/" in l]
     try:
-        r = session.get(url, timeout=10)
+        r = requests.get(url, timeout=10)
         with open(path, "w") as f: f.write(r.text)
         return [ipaddress.ip_network(l.strip()) for l in r.text.splitlines() if "/" in l]
     except: return []
 
-def check_isp_api(ip):
+def check_isp_online(ip):
     try:
-        time.sleep(1.3)
-        r = session.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode,isp,org", timeout=4).json()
+        # IP-API имеет лимит 45 запросов в минуту. В многопотоке может быть затык, 
+        # но мы вызываем его только после всех остальных фильтров.
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (str(r.get("isp", "")) + " " + str(r.get("org", ""))).lower()
-            if "cloudflare" in info or "hetzner" in info or "digitalocean" in info:
-                return False, True
+            if any(x in info for x in ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh"]):
+                return False, True 
             is_ru = (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
             return is_ru, False
     except: pass
@@ -81,7 +94,7 @@ def smart_ping(host, port, sni):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.2) as s:
+        with socket.create_connection((host, port), timeout=1.1) as s:
             with ctx.wrap_socket(s, server_hostname=sni): return True
     except: return False
 
@@ -91,7 +104,7 @@ def get_triple_ping(host, port, sni):
         start = time.perf_counter()
         if smart_ping(host, port, sni):
             lats.append((time.perf_counter() - start) * 1000)
-        time.sleep(1.1)
+        time.sleep(0.4) 
     return min(lats) if lats else None
 
 def get_config_details(link):
@@ -102,7 +115,7 @@ def get_config_details(link):
         id_m = re.search(r'://([^@]+)@', link)
         if h_m: return h_m.group(1), int(h_m.group(2)), (s_m.group(1).lower() if s_m else ""), (id_m.group(1) if id_m else ""), name
     except: pass
-    return [None]*5
+    return None, None, None, None, None
 
 def fetch_raw(url):
     try:
@@ -111,17 +124,23 @@ def fetch_raw(url):
             try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except: pass
         lines = [l.strip() for l in resp.splitlines() if "vless://" in l]
+        # Жесткий фильтр Cloudflare сразу при чтении
         return [l for l in lines if "udp443" not in l.lower() and "cloudflare" not in l.lower()]
     except: return []
 
-# --- MAIN ---
+# --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
+    start_exec = time.time()
     print(f"--- ЗАПУСК СКРИПТА [{offset}] ---")
     
     cf_nets = get_net_list(CF_IPS_PATH, "https://www.cloudflare.com/ips-v4")
     hz_nets = get_net_list(HZ_IPS_PATH, HZ_SOURCE_URL)
     
+    if not os.path.exists(MMDB_PATH):
+        print("Загрузка GeoIP базы...")
+        r = requests.get(MMDB_URL); open(MMDB_PATH, "wb").write(r.content)
+
     try:
         src = session.get(REMOTE_SOURCE_URL).text
         def get_var(var_name):
@@ -129,12 +148,12 @@ def main():
             match = re.search(pattern, src, re.S | re.IGNORECASE)
             return re.findall(r'["\']([^"\']+)["\']', match.group(1)) if match else []
         
-        white_snis = get_var("SNI_DOMAINS")
         extra_urls = get_var("EXTRA_URLS_FOR_26")
         std_urls = get_var("URLS")
+        white_snis = get_var("SNI_DOMAINS")
         print(f"Источники: EXTRA={len(extra_urls)}, STD={len(std_urls)}, Белых SNI={len(white_snis)}")
     except Exception as e:
-        print(f"Ошибка парсинга: {e}"); return
+        print(f"Ошибка парсинга источников: {e}"); return
 
     g = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = g.get_repo(REPO_NAME)
@@ -150,105 +169,136 @@ def main():
 
     final_ru, final_others = [], []
     seen_hosts, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
-    new_run_keys = [] # Ключи, найденные ТОЛЬКО в этом запуске
+    new_run_keys = [] 
 
     with maxminddb.open_database(MMDB_PATH) as reader:
-        def process_source(urls, is_extra):
-            print(f"Сканирование {'EXTRA' if is_extra else 'STD'}...")
-            for url in urls:
-                for config in fetch_raw(url):
-                    if len(final_ru) >= MAX_RU_CONFIGS and len(final_others) >= (MAX_CONFIGS - MAX_RU_CONFIGS): return
+        def process_config(config, is_extra):
+            nonlocal final_ru, final_others
+            
+            host, port, sni, cid, name = get_config_details(config)
+            # 1. Базовые фильтры
+            if not host or host in seen_hosts or "cloudflare" in (sni or ""): return
+            if is_extra and not any(ws in sni for ws in white_snis): return
+            
+            with lock:
+                if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: return
+
+            try:
+                # 2. IP фильтры
+                ip = socket.gethostbyname(host)
+                ip_obj = ipaddress.ip_address(ip)
+                if any(ip_obj in n for n in cf_nets) or any(ip_obj in n for n in hz_nets): return
+                
+                subnet = ".".join(ip.split(".")[:3])
+                with lock:
+                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
+
+                conf_key = config.split('#')[0]
+                if conf_key in db["blacklist"]: return
+
+                # 3. Логика Tracked / Memory
+                is_ru = False
+                if conf_key in db["tracked"]:
+                    item = db["tracked"][conf_key]
+                    if now_moscow - datetime.fromisoformat(item["added_at"]) > timedelta(days=5):
+                        with lock:
+                            db["blacklist"][conf_key] = (now_moscow + timedelta(days=7)).isoformat()
+                            if conf_key in db["tracked"]: del db["tracked"][conf_key]
+                        return
+                    if not smart_ping(ip, port, sni): return
+                    is_ru = item["is_ru"]
+                else:
+                    if not smart_ping(ip, port, sni): return
                     
-                    host, port, sni, cid, name = get_config_details(config)
-                    if not host or host in seen_hosts: continue
-                    if "cloudflare" in (sni or ""): continue
-                    if is_extra and not any(ws in sni for ws in white_snis): continue
+                    geo = reader.get(ip)
+                    ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
+                    name_up = name.upper()
+                    is_ru_name = RU_FLAG_EMOJI in name or any(w in name_up for w in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                     
-                    try:
-                        ip_obj = ipaddress.ip_address(host)
-                        if any(ip_obj in n for n in cf_nets) or any(ip_obj in n for n in hz_nets): continue
-                    except: continue
+                    # Проверка провайдера
+                    is_ru_api, is_bad_isp = check_isp_online(ip)
+                    if is_bad_isp: return
+                    
+                    is_ru = is_ru_name or (ip_country == 'RU') or is_ru_api
 
-                    conf_key = config.split('#')[0]
-                    if conf_key in db["blacklist"]: continue
-                    if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
-                    subnet = ".".join(host.split(".")[:3])
-                    if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+                    # Если повторный — в tracked
+                    if conf_key in db.get("last_run_configs", []):
+                        with lock:
+                            db["tracked"][conf_key] = {"added_at": now_moscow.isoformat(), "is_ru": is_ru}
 
-                    try:
-                        is_ru = False
-                        # ЛОГИКА ПОВТОРНЫХ КОНФИГОВ (TRACKED)
-                        if conf_key in db["tracked"]:
-                            item = db["tracked"][conf_key]
-                            # Если уже в tracked — проверяем срок жизни (5 дней)
-                            if now_moscow - datetime.fromisoformat(item["added_at"]) > timedelta(days=5):
-                                db["blacklist"][conf_key] = (now_moscow + timedelta(days=7)).isoformat()
-                                del db["tracked"][conf_key]
-                                continue
-                            if not smart_ping(host, port, sni): continue
-                            is_ru = item["is_ru"]
-                        else:
-                            # Проверка: Повторный ли это конфиг?
-                            is_repeat = conf_key in db.get("last_run_configs", [])
-                            
-                            geo = reader.get(host)
-                            ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
-                            name_up = name.upper()
-                            is_ru_name = RU_FLAG_EMOJI in name or any(word in name_up for word in COUNTRY_MAP["RU"])
-                            is_ru_api, is_bad_isp = check_isp_api(host)
-                            if is_bad_isp or not smart_ping(host, port, sni): continue
-                            
-                            is_ru = is_ru_name or (ip_country == 'RU') or is_ru_api
-
-                            # ТОЛЬКО ЕСЛИ ПОВТОРНЫЙ — заносим в tracked
-                            if is_repeat:
-                                print(f" [!] Повторный конфиг занесен в tracked: {host}")
-                                db["tracked"][conf_key] = {"added_at": now_moscow.isoformat(), "is_ru": is_ru}
-
-                        if is_ru:
-                            if len(final_ru) < MAX_RU_CONFIGS:
-                                p = get_triple_ping(host, port, sni)
-                                if p and MIN_RU_PING <= p <= MAX_RU_PING: 
+                # 4. Распределение и Пинг
+                if is_ru:
+                    with lock:
+                        can_add_ru = len(final_ru) < MAX_RU_CONFIGS
+                    if can_add_ru:
+                        p = get_triple_ping(ip, port, sni)
+                        if p and MIN_RU_PING <= p <= MAX_RU_PING:
+                            with lock:
+                                if len(final_ru) < MAX_RU_CONFIGS:
                                     final_ru.append(config)
-                                    print(f" [+] RU найден: {host} | Ping: {p:.1f}ms")
-                            else: continue
-                        else:
-                            if len(final_others) < (MAX_CONFIGS - len(final_ru)):
-                                final_others.append(config)
-                        
-                        seen_hosts.add(host)
-                        new_run_keys.append(conf_key) # Сохраняем для завтрашнего сравнения
-                        sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                        subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                        id_counts[cid] = id_counts.get(cid, 0) + 1
-                    except: continue
+                                    print(f" [+] RU найден: {ip} | Ping: {p:.1f}ms | {name[:15]}")
+                                    seen_hosts.add(host)
+                                    new_run_keys.append(conf_key)
+                                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                                    id_counts[cid] = id_counts.get(cid, 0) + 1
+                    return
+                else:
+                    with lock:
+                        if len(final_others) < (MAX_CONFIGS - len(final_ru)):
+                            final_others.append(config)
+                            seen_hosts.add(host)
+                            new_run_keys.append(conf_key)
+                            sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                            id_counts[cid] = id_counts.get(cid, 0) + 1
+            except: pass
 
-        process_source(extra_urls, True)
-        process_source(std_urls, False)
+        def run_parallel(urls, is_extra):
+            # 35 потоков на скачивание, внутри на каждый файл до 25 потоков на проверку
+            with concurrent.futures.ThreadPoolExecutor(max_workers=35) as fetch_executor:
+                future_to_url = {fetch_executor.submit(fetch_raw, u): u for u in urls}
+                for future in concurrent.futures.as_completed(future_to_url):
+                    configs = future.result()
+                    if not configs: continue
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as process_executor:
+                        [process_executor.submit(process_config, c, is_extra) for c in configs]
 
-    # Паттерн и Сохранение
+        run_parallel(extra_urls, True)
+        run_parallel(std_urls, False)
+
+    # 5. Сборка (2 RU, 5 Others, 3 RU, 5 Others)
     ordered, r_i, o_i, step = [], 0, 0, 0
     while (r_i < len(final_ru) or o_i < len(final_others)) and len(ordered) < MAX_CONFIGS:
         limit = RU_PATTERN[step % 4]
-        if step % 2 == 0:
+        if step % 2 == 0: 
             for _ in range(limit):
                 if r_i < len(final_ru): ordered.append(final_ru[r_i]); r_i += 1
-        else:
+        else: 
             for _ in range(limit):
                 if o_i < len(final_others): ordered.append(final_others[o_i]); o_i += 1
         step += 1
 
-    db["last_run_configs"] = new_run_keys # Запоминаем всё, что нашли сегодня
-    out_text = "\n".join(ordered)
+    # 6. Запись результатов
+    db["last_run_configs"] = new_run_keys
+    final_text = "\n".join(ordered)
+    
     for fn in [FILENAME_VLM, FILENAME_VLM2]:
         path = f"githubmirror/{fn}"
+        commit_msg = f"🚀 {offset} | RU:{len(final_ru)} Всего:{len(ordered)}"
         try:
             sha = repo.get_contents(path).sha
-            repo.update_file(path, f"🚀 {offset} | RU:{len(final_ru)}", out_text, sha)
-        except: repo.create_file(path, f"🚀 {offset}", out_text)
+            repo.update_file(path, commit_msg, final_text, sha)
+        except:
+            repo.create_file(path, commit_msg, final_text)
     
-    repo.update_file(f"githubmirror/{FILENAME_OPT}", "Sync", json.dumps(db, indent=2), db_sha)
-    print("🏁 Готово.")
+    opt_json = json.dumps(db, indent=2)
+    if db_sha:
+        repo.update_file(f"githubmirror/{FILENAME_OPT}", "Sync DB", opt_json, db_sha)
+    else:
+        repo.create_file(f"githubmirror/{FILENAME_OPT}", "Init DB", opt_json)
+        
+    print(f"🏁 Время выполнения: {int(time.time()-start_exec)} сек. Найдено RU: {len(final_ru)}")
 
 if __name__ == "__main__":
     main()
