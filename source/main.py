@@ -16,9 +16,13 @@ MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MMDB_PATH = os.path.join(BASE_DIR, "GeoLite2-Country.mmdb")
 CF_IPS_PATH = os.path.join(BASE_DIR, "cloudflare_ips.txt")
+HZ_IPS_PATH = os.path.join(BASE_DIR, "hetzner_ips.txt") # Локальный файл Hetzner
+
+# Источник диапазонов Hetzner (AS24940 - основной ASN)
+HZ_SOURCE_URL = "https://raw.githubusercontent.com/ipverse/asn-ip/master/as/24940/ipv4-aggregated.txt"
 
 MAX_CONFIGS = 300 
-MAX_RU_CONFIGS = 10  # <--- ВОТ ТВОЯ ПЕРЕМЕННАЯ ОГРАНИЧЕНИЯ
+MAX_RU_CONFIGS = 10 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
@@ -35,7 +39,7 @@ offset = now_moscow.strftime("%H:%M | %d.%m.%Y")
 
 RU_FLAG_EMOJI = "🇷🇺"
 
-# ... (функции утилит: is_ipv4, get_cloudflare_networks, check_ru_and_isp, get_triple_ping, smart_ping, get_config_details, fetch_raw_configs - остаются без изменений) ...
+# --- УТИЛИТЫ ---
 
 def is_ipv4(ip_str):
     try:
@@ -43,27 +47,34 @@ def is_ipv4(ip_str):
         return True
     except: return False
 
-def get_cloudflare_networks():
-    if os.path.exists(CF_IPS_PATH) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH)) < timedelta(days=3)):
-        with open(CF_IPS_PATH, "r") as f:
-            return [ipaddress.ip_network(l.strip()) for l in f if l.strip()]
+def get_network_list(file_path, url):
+    """Универсальная функция для загрузки и обновления списков IP (CF и Hetzner)"""
+    if os.path.exists(file_path) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path)) < timedelta(days=3)):
+        with open(file_path, "r") as f:
+            return [ipaddress.ip_network(l.strip()) for l in f if l.strip() and not l.startswith("#")]
     try:
-        resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
-        with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
-        return [ipaddress.ip_network(l.strip()) for l in resp.text.splitlines() if l.strip()]
-    except: return []
+        resp = session.get(url, timeout=15)
+        if resp.status_code == 200:
+            with open(file_path, "w") as f: f.write(resp.text)
+            return [ipaddress.ip_network(l.strip()) for l in resp.text.splitlines() if l.strip() and not l.startswith("#")]
+    except: pass
+    return []
 
 def check_ru_and_isp(ip_str):
+    """Обращаемся к API только если локальные списки не дали результата"""
     try:
-        time.sleep(1.3)
+        time.sleep(1.3) # Лимит ip-api.com
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             info = (r.get("isp", "") + " " + r.get("org", "")).lower()
-            if any(x in info for x in ["cloudflare", "hetzner"]): return False, True
+            # На случай, если в локальных списках не было, но API подтвердил бан
+            if any(x in info for x in ["cloudflare", "hetzner", "ovh", "digitalocean"]): return False, True
             is_ru = (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
             return is_ru, False
     except: pass
     return False, False
+
+# ... (get_triple_ping, smart_ping, get_config_details, fetch_raw_configs остаются прежними) ...
 
 def get_triple_ping(host, port, sni):
     latencies = []
@@ -103,6 +114,8 @@ def fetch_raw_configs(url):
         return [l for l in lines if "udp443" not in l.lower() and "cloudflare" not in l.lower()]
     except: return []
 
+# --- ГЛАВНАЯ ЧАСТЬ ---
+
 def main():
     if not os.path.exists(MMDB_PATH) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH)) > timedelta(days=3)):
         try:
@@ -121,7 +134,10 @@ def main():
 
     db["blacklist"] = {k: v for k, v in db.get("blacklist", {}).items() if datetime.fromisoformat(v) > now_moscow}
 
-    cf_nets = get_cloudflare_networks()
+    # Загружаем локальные списки
+    cf_nets = get_network_list(CF_IPS_PATH, "https://www.cloudflare.com/ips-v4")
+    hz_nets = get_network_list(HZ_IPS_PATH, HZ_SOURCE_URL)
+    
     try:
         src_text = session.get(REMOTE_SOURCE_URL).text
         def get_l(n):
@@ -142,7 +158,12 @@ def main():
                 if not host or host in seen_hosts or not is_ipv4(host): continue
                 
                 ip_obj = ipaddress.ip_address(host)
-                if any(ip_obj in net for net in cf_nets): continue
+                
+                # --- ЛОКАЛЬНЫЙ ФИЛЬТР (БЫСТРЫЙ) ---
+                if any(ip_obj in net for net in cf_nets): continue # Cloudflare
+                if any(ip_obj in net for net in hz_nets): continue # Hetzner
+                # -----------------------------------
+
                 if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
                 
                 conf_key = config.split('#')[0]
@@ -162,6 +183,7 @@ def main():
                         if not smart_ping(host, port, sni): continue
                         is_ru = item["is_ru"]
                     else:
+                        # Если не нашли в локальных списках, идем в API
                         is_ru_geo, is_blocked_isp = check_ru_and_isp(host)
                         if is_blocked_isp or not smart_ping(host, port, sni): continue
                         
@@ -175,7 +197,6 @@ def main():
                             db["tracked"][conf_key] = {"added_at": now_moscow.isoformat(), "is_ru": is_ru}
 
                     if is_ru:
-                        # ПРИМЕНЯЕМ ЛИМИТ ЗДЕСЬ
                         if len(final_ru) < MAX_RU_CONFIGS:
                             p = get_triple_ping(host, port, sni)
                             if p and MIN_RU_PING <= p <= MAX_RU_PING: 
@@ -194,7 +215,7 @@ def main():
                         id_counts[cid] = id_counts.get(cid, 0) + 1
                 except: continue
 
-    # Сборка по паттерну
+    # Сборка по паттерну [2, 5, 3, 5]
     ordered = []
     r_i, o_i, step = 0, 0, 0
     while (r_i < len(final_ru) or o_i < len(final_others)) and len(ordered) < MAX_CONFIGS:
@@ -207,7 +228,7 @@ def main():
                 if o_i < len(final_others): ordered.append(final_others[o_i]); o_i += 1
         step += 1
 
-    # Сохранение (vlm, vlm2, opt.json) - аналогично прошлому коду
+    # Сохранение (vlm, vlm2, opt.json)
     db["last_run_configs"] = current_run_keys
     output = "\n".join(ordered)
     for fn in [FILENAME_VLM, FILENAME_VLM2]:
