@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
 import maxminddb
+import threading
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
@@ -28,7 +29,6 @@ zone = zoneinfo.ZoneInfo("Europe/Moscow")
 start_time = datetime.now(zone)
 offset = start_time.strftime("%H:%M | %d.%m.%Y")
 
-# Список ключевых слов и флаг РФ
 RU_FLAG_EMOJI = "🇷🇺"
 COUNTRY_MAP = {
     "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
@@ -53,44 +53,37 @@ COUNTRY_MAP = {
     "SG": ["SINGAPORE", "СИНГАПУР", "🇸🇬"],
 }
 
+# Блокировка для потокобезопасности счетчиков
+lock = threading.Lock()
+
 def get_cloudflare_networks():
-    need_update = True
-    if os.path.exists(CF_IPS_PATH):
-        file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH))
-        if file_age < timedelta(days=3): need_update = False
-    
-    if need_update:
-        try:
-            resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
-            with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
-        except: pass
-
-    networks = []
-    if os.path.exists(CF_IPS_PATH):
-        with open(CF_IPS_PATH, "r") as f:
-            for line in f:
-                if line.strip(): 
-                    try: networks.append(ipaddress.ip_network(line.strip()))
-                    except: continue
-    return networks
-
-def is_ip_in_networks(ip_str, networks):
+    if os.path.exists(CF_IPS_PATH) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH)) < timedelta(days=3)):
+        with open(CF_IPS_PATH, "r") as f: return [ipaddress.ip_network(l.strip()) for l in f if l.strip()]
     try:
-        ip_obj = ipaddress.ip_address(ip_str)
-        for net in networks:
-            if ip_obj in net: return True
-    except: pass
-    return False
+        resp = session.get("https://www.cloudflare.com/ips-v4", timeout=10)
+        with open(CF_IPS_PATH, "w") as f: f.write(resp.text)
+        return [ipaddress.ip_network(l.strip()) for l in resp.text.splitlines() if l.strip()]
+    except: return []
 
-def check_ru_isp_online(ip_str):
+def check_isp_info(ip_str):
+    """Возвращает (is_ru, is_blocked_isp)"""
     try:
+        # Для соблюдения лимитов API и корректности данных
         time.sleep(1.35)
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
-            info = (r.get("isp", "") + " " + r.get("org", "")).lower()
-            return (r.get("countryCode") == "RU") or any(k in info for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
+            isp_org = (str(r.get("isp", "")) + " " + str(r.get("org", ""))).lower()
+            
+            # Фильтр запрещенных провайдеров
+            bad_isps = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft"]
+            if any(x in isp_org for x in bad_isps):
+                return False, True
+            
+            # Проверка на принадлежность к РФ
+            is_ru = (r.get("countryCode") == "RU") or any(k in isp_org for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
+            return is_ru, False
     except: pass
-    return False
+    return False, False
 
 def smart_ping(host, port, sni):
     try:
@@ -98,14 +91,12 @@ def smart_ping(host, port, sni):
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         with socket.create_connection((host, port), timeout=1.1) as sock:
-            with context.wrap_socket(sock, server_hostname=sni) as ssock:
+            with context.wrap_socket(sock, server_hostname=sni):
                 return True
     except: return False
 
 def get_config_details(link):
     try:
-        # Название не переводим в upper сразу, чтобы не сломать эмодзи флага, 
-        # но для поиска текста используем upper_name
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         id_match = re.search(r'://([^@]+)@', clean_link)
@@ -128,7 +119,7 @@ def fetch_raw_configs(url):
     except: return []
 
 def main():
-    if not os.path.exists(MMDB_PATH) or (datetime.now() - datetime.fromtimestamp(os.path.getmtime(MMDB_PATH)) > timedelta(days=3)):
+    if not os.path.exists(MMDB_PATH):
         try:
             r = requests.get(MMDB_URL, timeout=30)
             with open(MMDB_PATH, "wb") as f: f.write(r.content)
@@ -143,11 +134,12 @@ def main():
             return re.findall(r'["\'](https?://[^"\']+)["\']', m.group(1)) if m else []
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src, re.S)
-        sni_domains = [s.strip(" \"'") for s in sni_match.group(1).split(",")] if sni_match else []
+        sni_domains = [s.strip(" \"'").lower() for s in sni_match.group(1).split(",")] if sni_match else []
     except: return
 
     vlm_list, vlm2_list = [], []
-    seen_hosts, sni_counts, subnet_counts, id_counts, ru_count = set(), {}, {}, {}, 0
+    seen_hosts, seen_ips, sni_counts, subnet_counts, id_counts = set(), set(), {}, {}, {}
+    ru_count = 0
 
     with maxminddb.open_database(MMDB_PATH) as reader:
         def process_pool(urls, use_sni_filter, stage_name):
@@ -157,75 +149,85 @@ def main():
                 f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
                 for f in concurrent.futures.as_completed(f_to_u):
                     for config in f.result():
+                        # Фильтр общего количества
                         if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: return
                         
                         host, port, sni, cid, name = get_config_details(config)
-                        if not host or host in seen_hosts: continue
-                        if use_sni_filter and not any(d in sni for d in sni_domains): continue
-                        if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
                         
-                        try:
-                            ip = socket.gethostbyname(host)
-                            if is_ip_in_networks(ip, cf_networks): continue
+                        # 1. ОБЯЗАТЕЛЬНОЕ НАЛИЧИЕ SNI И ЧИСТЫЙ ХОСТ
+                        if not host or not sni: continue
+                        if host in seen_hosts: continue
+                        
+                        # 2. ИСКЛЮЧЕНИЕ БУКВЕННЫХ ХОСТОВ (ТОЛЬКО ЦИФРОВЫЕ IP)
+                        if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): continue
+                        
+                        # 3. ФИЛЬТР SNI (CLOUDFLARE / OPENPROXY)
+                        sni_lower = sni.lower()
+                        if any(x in sni_lower for x in ["cloudflare", "openproxy"]): continue
+                        
+                        # 4. ПРИОРИТЕТНЫЕ SNI (ДЛЯ EXTRA/STD ЭТАПОВ)
+                        if use_sni_filter and not any(d in sni_lower for d in sni_domains): continue
+                        
+                        # 5. ЛИМИТЫ ПО SNI И ID
+                        with lock:
+                            if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
 
+                        try:
+                            ip = host # так как мы выше отфильтровали только цифровые IP
+                            if ip in seen_ips: continue
+                            
+                            # Проверка сетей Cloudflare
+                            ip_obj = ipaddress.ip_address(ip)
+                            if any(ip_obj in net for net in cf_networks): continue
+
+                            # 6. ФИЛЬТР ПО ПОДСЕТИ
                             subnet = ".".join(ip.split(".")[:3])
-                            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
+                            with lock:
+                                if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
                             
                             geo = reader.get(ip)
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             
-                            # --- НОВАЯ ЛОГИКА ОПРЕДЕЛЕНИЯ RU ---
+                            # Определение RU
                             name_upper = name.upper()
                             is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                             is_ru_by_ip = (ip_country == 'RU')
+                            is_ru_candidate = is_ru_by_name or is_ru_by_ip
+
+                            # Проверка провайдера (Cloudflare, Hetzner, DigitalOcean)
+                            is_ru_confirmed, is_bad_isp = check_isp_info(ip)
+                            if is_bad_isp: continue
+
+                            if is_ru_candidate:
+                                with lock:
+                                    if ru_count >= MAX_RU_CONFIGS: is_ru_candidate = False
                             
-                            # Итоговый статус: РУ, если либо по имени, либо по IP
-                            is_ru_final = is_ru_by_name or is_ru_by_ip
-
-                            # Если в имени указана ДРУГАЯ страна, а по IP - Россия, 
-                            # или наоборот, проверяем на конфликт (кроме исключений)
-                            found_other_country = False
-                            for code, aliases in COUNTRY_MAP.items():
-                                if code == "RU": continue
-                                if any(alias in name_upper for alias in aliases):
-                                    found_other_country = True
-                                    if ip_country and ip_country != code:
-                                        # Если имя говорит "US", а IP "DE" - в мусор
-                                        break
-                            
-                            if found_other_country and ip_country and ip_country not in [c for c, a in COUNTRY_MAP.items() if any(al in name_upper for al in a)]:
-                                if not is_ru_by_name: continue # Если это не явный RU-флаг, то несовпадение критично
-
-                            if is_ru_final and ru_count >= MAX_RU_CONFIGS: continue
-
                             if smart_ping(ip, port, sni):
-                                # Доп. проверка провайдера для подозрительных IP
-                                if is_ru_final:
-                                    # Если по IP это RU, подтверждаем онлайн. Если по флагу - верим флагу.
-                                    if is_ru_by_ip and not is_ru_by_name:
-                                        if not check_ru_isp_online(ip): is_ru_final = False
+                                with lock:
+                                    # Финальное подтверждение RU
+                                    is_final_ru = is_ru_candidate and (is_ru_by_name or is_ru_confirmed)
+                                    if is_final_ru: ru_count += 1
                                     
-                                    if is_ru_final: ru_count += 1
-                                
-                                added = False
-                                if len(vlm2_list) < MAX_CONFIGS:
-                                    vlm2_list.append(config); added = True
-                                if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
-                                    vlm_list.append(config); added = True
-                                
-                                if added:
-                                    seen_hosts.add(host)
-                                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                                    id_counts[cid] = id_counts.get(cid, 0) + 1
-                                    print(f" [+] {ip} ({ip_country}) | RU: {ru_count} | Name: {name[:20]}")
+                                    added = False
+                                    if len(vlm2_list) < MAX_CONFIGS:
+                                        vlm2_list.append(config); added = True
+                                    if "xhttp" not in config.lower() and len(vlm_list) < MAX_CONFIGS:
+                                        vlm_list.append(config); added = True
+                                    
+                                    if added:
+                                        seen_hosts.add(host)
+                                        seen_ips.add(ip)
+                                        sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                                        subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                                        id_counts[cid] = id_counts.get(cid, 0) + 1
+                                        print(f" [+] {ip} ({ip_country}) | RU: {ru_count} | SNI: {sni}")
                         except: continue
 
-        process_pool(extra_urls, True, "EXTRA")
-        process_pool(std_urls, True, "STD")
-        process_pool(extra_urls + std_urls, False, "RESERVE")
+        process_pool(extra_urls, True, "EXTRA_PRIORITY")
+        process_pool(std_urls, True, "STD_PRIORITY")
+        process_pool(extra_urls + std_urls, False, "RESERVE_ALL")
 
-    # Сохранение
+    # Сохранение на GitHub
     g = Github(auth=Auth.Token(GITHUB_TOKEN))
     repo = g.get_repo(REPO_NAME)
     for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
@@ -237,7 +239,7 @@ def main():
             repo.update_file(path, msg, "\n".join(lst), sha)
         except: repo.create_file(path, msg, "\n".join(lst))
     
-    print(f"\n🏁 Финиш! RU: {ru_count} | Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
+    print(f"\n🏁 Финиш! RU: {ru_count} | Всего: {len(vlm2_list)} | Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
 
 if __name__ == "__main__":
     main()
