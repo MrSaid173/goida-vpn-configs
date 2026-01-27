@@ -26,10 +26,11 @@ MAX_PER_ID = 3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
-start_time = datetime.now(zone)
-offset = start_time.strftime("%H:%M | %d.%m.%Y")
+start_exec_time = time.perf_counter() # Глобальный таймер
+offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
 RU_FLAG_EMOJI = "🇷🇺"
+# Карта стран (сохранена из твоего кода)
 COUNTRY_MAP = {
     "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
     "US": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"],
@@ -53,8 +54,9 @@ COUNTRY_MAP = {
     "SG": ["SINGAPORE", "СИНГАПУР", "🇸🇬"],
 }
 
-# Блокировка для потокобезопасности счетчиков
 lock = threading.Lock()
+
+# --- УТИЛИТЫ ---
 
 def get_cloudflare_networks():
     if os.path.exists(CF_IPS_PATH) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(CF_IPS_PATH)) < timedelta(days=3)):
@@ -66,20 +68,13 @@ def get_cloudflare_networks():
     except: return []
 
 def check_isp_info(ip_str):
-    """Возвращает (is_ru, is_blocked_isp)"""
     try:
-        # Для соблюдения лимитов API и корректности данных
-        time.sleep(1.35)
+        time.sleep(1.35) # Лимит для API
         r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
         if r.get("status") == "success":
             isp_org = (str(r.get("isp", "")) + " " + str(r.get("org", ""))).lower()
-            
-            # Фильтр запрещенных провайдеров
             bad_isps = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft"]
-            if any(x in isp_org for x in bad_isps):
-                return False, True
-            
-            # Проверка на принадлежность к РФ
+            if any(x in isp_org for x in bad_isps): return False, True
             is_ru = (r.get("countryCode") == "RU") or any(k in isp_org for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
             return is_ru, False
     except: pass
@@ -91,8 +86,7 @@ def smart_ping(host, port, sni):
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         with socket.create_connection((host, port), timeout=1.1) as sock:
-            with context.wrap_socket(sock, server_hostname=sni):
-                return True
+            with context.wrap_socket(sock, server_hostname=sni): return True
     except: return False
 
 def get_config_details(link):
@@ -118,15 +112,23 @@ def fetch_raw_configs(url):
         return [l.strip() for l in text.splitlines() if "vless://" in l]
     except: return []
 
+# --- ГЛАВНАЯ ЛОГИКА ---
+
 def main():
+    print(f"--- 🟢 ЗАПУСК СКРИПТА [{offset}] ---")
+    
+    # [1] ПОДГОТОВКА БАЗ
+    stage_start = time.perf_counter()
     if not os.path.exists(MMDB_PATH):
         try:
             r = requests.get(MMDB_URL, timeout=30)
             with open(MMDB_PATH, "wb") as f: f.write(r.content)
         except: pass
-
     cf_networks = get_cloudflare_networks()
-    
+    print(f" [✓] Этап 1 (Базы): {time.perf_counter()-stage_start:.2f} сек.")
+
+    # [2] ЗАГРУЗКА ИСТОЧНИКОВ
+    stage_start = time.perf_counter()
     try:
         src = session.get(REMOTE_SOURCE_URL).text
         def get_list(n):
@@ -135,7 +137,9 @@ def main():
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src, re.S)
         sni_domains = [s.strip(" \"'").lower() for s in sni_match.group(1).split(",")] if sni_match else []
-    except: return
+    except Exception as e:
+        print(f" ❌ Ошибка на этапе 2: {e}"); return
+    print(f" [✓] Этап 2 (Источники): {time.perf_counter()-stage_start:.2f} сек.")
 
     vlm_list, vlm2_list = [], []
     seen_hosts, seen_ips, sni_counts, subnet_counts, id_counts = set(), set(), {}, {}, {}
@@ -144,13 +148,14 @@ def main():
     with maxminddb.open_database(MMDB_PATH) as reader:
         def process_pool(urls, use_sni_filter, stage_name):
             nonlocal ru_count
-            print(f"--- [ЭТАП: {stage_name}] ---")
+            print(f"\n--- 🛰 ЭТАП: {stage_name} ---")
+            st_stage = time.perf_counter()
+            
             with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
                 f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
                 for f in concurrent.futures.as_completed(f_to_u):
                     for config in f.result():
-                        # Фильтр общего количества
-                        if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: return
+                        if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: break
                         
                         host, port, sni, cid, name = get_config_details(config)
                         
@@ -161,11 +166,15 @@ def main():
                         # 2. ИСКЛЮЧЕНИЕ БУКВЕННЫХ ХОСТОВ (ТОЛЬКО ЦИФРОВЫЕ IP)
                         if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): continue
                         
-                        # 3. ФИЛЬТР SNI (CLOUDFLARE / OPENPROXY)
+                        # 3. ФИЛЬТР ПО ИМЕНИ (Исключаем cloudflare/openproxy везде в названии)
+                        name_lower = name.lower()
+                        if any(x in name_lower for x in ["cloudflare", "openproxy"]): continue
+                        
+                        # 3.1 ФИЛЬТР SNI (CLOUDFLARE / OPENPROXY ИСКЛЮЧЕНИЕ)
                         sni_lower = sni.lower()
                         if any(x in sni_lower for x in ["cloudflare", "openproxy"]): continue
                         
-                        # 4. ПРИОРИТЕТНЫЕ SNI (ДЛЯ EXTRA/STD ЭТАПОВ)
+                        # 4. ФИЛЬТР ПРИОРИТЕТНЫХ SNI
                         if use_sni_filter and not any(d in sni_lower for d in sni_domains): continue
                         
                         # 5. ЛИМИТЫ ПО SNI И ID
@@ -173,10 +182,10 @@ def main():
                             if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
 
                         try:
-                            ip = host # так как мы выше отфильтровали только цифровые IP
+                            ip = host 
                             if ip in seen_ips: continue
                             
-                            # Проверка сетей Cloudflare
+                            # Проверка сетей Cloudflare (по IP)
                             ip_obj = ipaddress.ip_address(ip)
                             if any(ip_obj in net for net in cf_networks): continue
 
@@ -189,12 +198,12 @@ def main():
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             
                             # Определение RU
-                            name_upper = name.upper()
-                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_upper for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
+                            name_up = name.upper()
+                            is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_up for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                             is_ru_by_ip = (ip_country == 'RU')
                             is_ru_candidate = is_ru_by_name or is_ru_by_ip
 
-                            # Проверка провайдера (Cloudflare, Hetzner, DigitalOcean)
+                            # 9. Проверка провайдера (Исключение хостингов)
                             is_ru_confirmed, is_bad_isp = check_isp_info(ip)
                             if is_bad_isp: continue
 
@@ -204,7 +213,6 @@ def main():
                             
                             if smart_ping(ip, port, sni):
                                 with lock:
-                                    # Финальное подтверждение RU
                                     is_final_ru = is_ru_candidate and (is_ru_by_name or is_ru_confirmed)
                                     if is_final_ru: ru_count += 1
                                     
@@ -215,31 +223,42 @@ def main():
                                         vlm_list.append(config); added = True
                                     
                                     if added:
-                                        seen_hosts.add(host)
-                                        seen_ips.add(ip)
+                                        seen_hosts.add(host); seen_ips.add(ip)
                                         sni_counts[sni] = sni_counts.get(sni, 0) + 1
                                         subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                                         id_counts[cid] = id_counts.get(cid, 0) + 1
-                                        print(f" [+] {ip} ({ip_country}) | RU: {ru_count} | SNI: {sni}")
+                                        print(f" [+] {ip} | RU: {is_final_ru} | {name[:20]}")
                         except: continue
+            
+            print(f" [✓] Этап {stage_name} завершен за {time.perf_counter()-st_stage:.2f} сек.")
 
+        # ЗАПУСК ЭТАПОВ
         process_pool(extra_urls, True, "EXTRA_PRIORITY")
         process_pool(std_urls, True, "STD_PRIORITY")
         process_pool(extra_urls + std_urls, False, "RESERVE_ALL")
 
-    # Сохранение на GitHub
-    g = Github(auth=Auth.Token(GITHUB_TOKEN))
-    repo = g.get_repo(REPO_NAME)
-    for name, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
-        if not lst: continue
-        path = f"githubmirror/{name}"
-        msg = f"🚀 {name} | T: {len(lst)} | RU: {ru_count} | {offset}"
-        try:
-            sha = repo.get_contents(path).sha
-            repo.update_file(path, msg, "\n".join(lst), sha)
-        except: repo.create_file(path, msg, "\n".join(lst))
-    
-    print(f"\n🏁 Финиш! RU: {ru_count} | Всего: {len(vlm2_list)} | Время: {str(datetime.now(zone)-start_time).split('.')[0]}")
+    # [3] СОХРАНЕНИЕ
+    print(f"\n--- 📤 ЭТАП: GITHUB UPLOAD ---")
+    stage_start = time.perf_counter()
+    try:
+        g = Github(auth=Auth.Token(GITHUB_TOKEN))
+        repo = g.get_repo(REPO_NAME)
+        for fn, lst in [(FILENAME_VLM, vlm_list), (FILENAME_VLM2, vlm2_list)]:
+            if not lst: continue
+            path = f"githubmirror/{fn}"
+            msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
+            try:
+                sha = repo.get_contents(path).sha
+                repo.update_file(path, msg, "\n".join(lst), sha)
+            except:
+                repo.create_file(path, msg, "\n".join(lst))
+        print(f" [✓] Этап 3 (Upload): {time.perf_counter()-stage_start:.2f} сек.")
+    except Exception as e:
+        print(f" ❌ Ошибка GitHub: {e}")
+
+    total_time = time.perf_counter() - start_exec_time
+    print(f"\n--- 🏁 ФИНИШ! RU: {ru_count} | Всего: {len(vlm2_list)} ---")
+    print(f" ОБЩЕЕ ВРЕМЯ РАБОТЫ: {total_time/60:.2f} мин. ({int(total_time)} сек.)")
 
 if __name__ == "__main__":
     main()
