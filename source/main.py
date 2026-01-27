@@ -26,11 +26,10 @@ MAX_PER_ID = 3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
-start_exec_time = time.perf_counter() # Глобальный таймер
+start_exec_time = time.perf_counter()
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
 RU_FLAG_EMOJI = "🇷🇺"
-# Карта стран (сохранена из твоего кода)
 COUNTRY_MAP = {
     "RU": ["RUSSIA", "РОССИЯ", "RUS", RU_FLAG_EMOJI],
     "US": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"],
@@ -68,15 +67,20 @@ def get_cloudflare_networks():
     except: return []
 
 def check_isp_info(ip_str):
+    """Проверка провайдера: исключаем хостинги и проверяем на RU."""
     try:
-        time.sleep(1.35) # Лимит для API
-        r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org", timeout=4).json()
+        time.sleep(1.35) 
+        r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as", timeout=4).json()
         if r.get("status") == "success":
-            isp_org = (str(r.get("isp", "")) + " " + str(r.get("org", ""))).lower()
-            bad_isps = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft"]
-            if any(x in isp_org for x in bad_isps): return False, True
-            is_ru = (r.get("countryCode") == "RU") or any(k in isp_org for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota"])
-            return is_ru, False
+            isp_org_as = (str(r.get("isp", "")) + " " + str(r.get("org", "")) + " " + str(r.get("as", ""))).lower()
+            
+            # ЧЕРНЫЙ СПИСОК ХОСТИНГОВ
+            bad_isps = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "m247", "leaseweb"]
+            if any(x in isp_org_as for x in bad_isps):
+                return False, True # Это хостинг
+            
+            is_ru = (r.get("countryCode") == "RU") or any(k in isp_org_as for k in ["mts", "beeline", "megafon", "rostelecom", "tele2", "yota", "vimpelcom"])
+            return is_ru, False # Не хостинг, статус RU определен
     except: pass
     return False, False
 
@@ -117,29 +121,38 @@ def fetch_raw_configs(url):
 def main():
     print(f"--- 🟢 ЗАПУСК СКРИПТА [{offset}] ---")
     
-    # [1] ПОДГОТОВКА БАЗ
-    stage_start = time.perf_counter()
     if not os.path.exists(MMDB_PATH):
         try:
             r = requests.get(MMDB_URL, timeout=30)
             with open(MMDB_PATH, "wb") as f: f.write(r.content)
         except: pass
     cf_networks = get_cloudflare_networks()
-    print(f" [✓] Этап 1 (Базы): {time.perf_counter()-stage_start:.2f} сек.")
 
-    # [2] ЗАГРУЗКА ИСТОЧНИКОВ
-    stage_start = time.perf_counter()
+    # [2] ЗАГРУЗКА ИСТОЧНИКОВ И SNI
     try:
         src = session.get(REMOTE_SOURCE_URL).text
+        
+        # Улучшенный парсинг списков URL
         def get_list(n):
             m = re.search(rf'{n}\s*=\s*\[(.*?)\]', src, re.S)
-            return re.findall(r'["\'](https?://[^"\']+)["\']', m.group(1)) if m else []
-        extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
+            if not m: return []
+            return re.findall(r'["\'](https?://[^"\']+)["\']', m.group(1))
+        
+        extra_urls = get_list("EXTRA_URLS_FOR_26")
+        std_urls = get_list("URLS")
+        
+        # Улучшенный парсинг SNI_DOMAINS
         sni_match = re.search(r'SNI_DOMAINS\s*=\s*\[(.*?)\]', src, re.S)
-        sni_domains = [s.strip(" \"'").lower() for s in sni_match.group(1).split(",")] if sni_match else []
+        if sni_match:
+            # Извлекаем все строки внутри кавычек
+            sni_domains = re.findall(r'["\']([^"\']+)["\']', sni_match.group(1))
+            sni_domains = [s.lower() for s in sni_domains]
+        else:
+            sni_domains = []
+            
+        print(f" [✓] Источники загружены. SNI в базе: {len(sni_domains)}")
     except Exception as e:
-        print(f" ❌ Ошибка на этапе 2: {e}"); return
-    print(f" [✓] Этап 2 (Источники): {time.perf_counter()-stage_start:.2f} сек.")
+        print(f" ❌ Ошибка загрузки: {e}"); return
 
     vlm_list, vlm2_list = [], []
     seen_hosts, seen_ips, sni_counts, subnet_counts, id_counts = set(), set(), {}, {}, {}
@@ -149,71 +162,78 @@ def main():
         def process_pool(urls, use_sni_filter, stage_name):
             nonlocal ru_count
             print(f"\n--- 🛰 ЭТАП: {stage_name} ---")
-            st_stage = time.perf_counter()
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=35) as executor:
                 f_to_u = {executor.submit(fetch_raw_configs, u): u for u in urls}
                 for f in concurrent.futures.as_completed(f_to_u):
                     for config in f.result():
-                        if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: break
+                        if len(vlm2_list) >= MAX_CONFIGS and len(vlm_list) >= MAX_CONFIGS: return
                         
                         host, port, sni, cid, name = get_config_details(config)
+                        if not host or not sni or host in seen_hosts: continue
                         
-                        # 1. ОБЯЗАТЕЛЬНОЕ НАЛИЧИЕ SNI И ЧИСТЫЙ ХОСТ
-                        if not host or not sni: continue
-                        if host in seen_hosts: continue
-                        
-                        # 2. ИСКЛЮЧЕНИЕ БУКВЕННЫХ ХОСТОВ (ТОЛЬКО ЦИФРОВЫЕ IP)
+                        # 1. ТОЛЬКО IP
                         if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): continue
                         
-                        # 3. ФИЛЬТР ПО ИМЕНИ (Исключаем cloudflare/openproxy везде в названии)
-                        name_lower = name.lower()
-                        if any(x in name_lower for x in ["cloudflare", "openproxy"]): continue
-                        
-                        # 3.1 ФИЛЬТР SNI (CLOUDFLARE / OPENPROXY ИСКЛЮЧЕНИЕ)
+                        # 2. ФИЛЬТР SNI (проверка наличия в списке из основного кода)
                         sni_lower = sni.lower()
-                        if any(x in sni_lower for x in ["cloudflare", "openproxy"]): continue
+                        if use_sni_filter:
+                            if not any(d in sni_lower for d in sni_domains): continue
                         
-                        # 4. ФИЛЬТР ПРИОРИТЕТНЫХ SNI
-                        if use_sni_filter and not any(d in sni_lower for d in sni_domains): continue
+                        # 3. ИСКЛЮЧЕНИЕ ГРЯЗИ В НАЗВАНИИ И SNI
+                        name_lower = name.lower()
+                        if any(x in name_lower or x in sni_lower for x in ["cloudflare", "openproxy", "hero", "panel"]): continue
                         
-                        # 5. ЛИМИТЫ ПО SNI И ID
+                        # 4. ЛИМИТЫ
                         with lock:
-                            if sni_counts.get(sni, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
+                            if sni_counts.get(sni_lower, 0) >= MAX_PER_SNI or id_counts.get(cid, 0) >= MAX_PER_ID: continue
 
                         try:
-                            ip = host 
+                            ip = host
                             if ip in seen_ips: continue
                             
-                            # Проверка сетей Cloudflare (по IP)
+                            # Проверка Cloudflare сетей
                             ip_obj = ipaddress.ip_address(ip)
                             if any(ip_obj in net for net in cf_networks): continue
 
-                            # 6. ФИЛЬТР ПО ПОДСЕТИ
                             subnet = ".".join(ip.split(".")[:3])
                             with lock:
                                 if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: continue
                             
+                            # ГЕО ИЗ MMDB
                             geo = reader.get(ip)
                             ip_country = geo.get('country', {}).get('iso_code', '').upper() if geo else ""
                             
-                            # Определение RU
+                            # --- ЛОГИКА СРАВНЕНИЯ С COUNTRY_MAP ---
                             name_up = name.upper()
+                            
+                            # Проверяем, не принадлежит ли конфиг другой стране (несовпадение флага и IP)
+                            mismatch = False
+                            for code, aliases in COUNTRY_MAP.items():
+                                if any(alias in name_up for alias in aliases):
+                                    if ip_country and ip_country != code:
+                                        mismatch = True # Написано US, а IP из DE
+                                        break
+                            if mismatch: continue
+
+                            # Определение RU статуса
                             is_ru_by_name = RU_FLAG_EMOJI in name or any(word in name_up for word in ["RU", "RUSSIA", "РОССИЯ", "RUS"])
                             is_ru_by_ip = (ip_country == 'RU')
-                            is_ru_candidate = is_ru_by_name or is_ru_by_ip
-
-                            # 9. Проверка провайдера (Исключение хостингов)
-                            is_ru_confirmed, is_bad_isp = check_isp_info(ip)
-                            if is_bad_isp: continue
-
-                            if is_ru_candidate:
-                                with lock:
-                                    if ru_count >= MAX_RU_CONFIGS: is_ru_candidate = False
                             
+                            # ПРОВЕРКА ПРОВАЙДЕРА (ИСКЛЮЧЕНИЕ HETZNER/DIGITALOCEAN И Т.Д.)
+                            is_ru_isp, is_bad_hosting = check_isp_info(ip)
+                            if is_bad_hosting: continue # Сразу выкидываем хостинги
+
+                            # Финальное решение по RU
+                            is_final_ru = (is_ru_by_name or is_ru_by_ip or is_ru_isp)
+                            
+                            if is_final_ru:
+                                with lock:
+                                    if ru_count >= MAX_RU_CONFIGS: continue
+
+                            # ПИНГ
                             if smart_ping(ip, port, sni):
                                 with lock:
-                                    is_final_ru = is_ru_candidate and (is_ru_by_name or is_ru_confirmed)
                                     if is_final_ru: ru_count += 1
                                     
                                     added = False
@@ -224,22 +244,17 @@ def main():
                                     
                                     if added:
                                         seen_hosts.add(host); seen_ips.add(ip)
-                                        sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                                        sni_counts[sni_lower] = sni_counts.get(sni_lower, 0) + 1
                                         subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                                         id_counts[cid] = id_counts.get(cid, 0) + 1
-                                        print(f" [+] {ip} | RU: {is_final_ru} | {name[:20]}")
+                                        print(f" [+] {ip} ({ip_country}) | RU: {is_final_ru} | {name[:20]}")
                         except: continue
-            
-            print(f" [✓] Этап {stage_name} завершен за {time.perf_counter()-st_stage:.2f} сек.")
 
-        # ЗАПУСК ЭТАПОВ
         process_pool(extra_urls, True, "EXTRA_PRIORITY")
         process_pool(std_urls, True, "STD_PRIORITY")
         process_pool(extra_urls + std_urls, False, "RESERVE_ALL")
 
     # [3] СОХРАНЕНИЕ
-    print(f"\n--- 📤 ЭТАП: GITHUB UPLOAD ---")
-    stage_start = time.perf_counter()
     try:
         g = Github(auth=Auth.Token(GITHUB_TOKEN))
         repo = g.get_repo(REPO_NAME)
@@ -252,13 +267,11 @@ def main():
                 repo.update_file(path, msg, "\n".join(lst), sha)
             except:
                 repo.create_file(path, msg, "\n".join(lst))
-        print(f" [✓] Этап 3 (Upload): {time.perf_counter()-stage_start:.2f} сек.")
     except Exception as e:
         print(f" ❌ Ошибка GitHub: {e}")
 
     total_time = time.perf_counter() - start_exec_time
     print(f"\n--- 🏁 ФИНИШ! RU: {ru_count} | Всего: {len(vlm2_list)} ---")
-    print(f" ОБЩЕЕ ВРЕМЯ РАБОТЫ: {total_time/60:.2f} мин. ({int(total_time)} сек.)")
 
 if __name__ == "__main__":
     main()
