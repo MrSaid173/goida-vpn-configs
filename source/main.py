@@ -11,7 +11,7 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
-MAX_CONFIGS = 40 
+MAX_CONFIGS = 150 
 MAX_RU_CONFIGS = 6
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
