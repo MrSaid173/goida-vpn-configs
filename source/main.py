@@ -17,6 +17,10 @@ MAX_PER_SUBNET = 3
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
+# Новые настройки пинга для RU
+MIN_RU_PING = 110
+MAX_RU_PING = 500
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
@@ -76,13 +80,16 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def smart_ping(host, port, sni):
+    """Возвращает время в мс или None при ошибке"""
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.0) as sock:
-            with context.wrap_socket(sock, server_hostname=sni): return True
-    except: return False
+        start = time.perf_counter()
+        with socket.create_connection((host, port), timeout=1.2) as sock:
+            with context.wrap_socket(sock, server_hostname=sni):
+                return int((time.perf_counter() - start) * 1000)
+    except: return None
 
 def get_config_details(link):
     try:
@@ -112,7 +119,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [RU LIMIT FIX] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [PING FILTER] [{offset}] ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -168,10 +175,23 @@ def main():
         if is_ru:
             with lock:
                 if ru_count >= MAX_RU_CONFIGS: return
-                ru_count += 1 # Атомарное бронирование
+                ru_count += 1
                 ru_reserved = True
         
-        if smart_ping(host, port, sni):
+        ping_res = smart_ping(host, port, sni)
+        
+        # ПРОВЕРКА ПИНГА
+        is_valid_ping = False
+        if ping_res is not None:
+            if is_ru:
+                # RU: строгий диапазон
+                if MIN_RU_PING <= ping_res <= MAX_RU_PING:
+                    is_valid_ping = True
+            else:
+                # Остальные: просто наличие связи
+                is_valid_ping = True
+
+        if is_valid_ping:
             final_config = apply_random_fp(config)
             with lock:
                 score = (2 if white_sni_only else 1) if is_priority else 0
