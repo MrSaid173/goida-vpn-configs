@@ -4,15 +4,14 @@ import zoneinfo
 from github import Github, Auth
 import threading
 
-# --- НАСТРОЙКИ (без изменений) ---
+# --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
-MMDB_URL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 
-MAX_CONFIGS = 150 
+MAX_CONFIGS = 40 
 MAX_RU_CONFIGS = 6
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
@@ -111,17 +110,14 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК СКРИПТА [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК СКРИПТА С ПРИОРИТЕТОМ SNI [{offset}] ---")
     
-    # ЭТАП 1: Инициализация баз
-    s_init = time.perf_counter()
+    # ЭТАП 1: Базы IP
     bad_networks += get_network_list(os.path.join(os.path.dirname(__file__), "cloudflare_ips.txt"), "https://www.cloudflare.com/ips-v4", "Cloudflare")
     bad_networks += get_network_list(os.path.join(os.path.dirname(__file__), "hetzner_ips.txt"), "https://raw.githubusercontent.com/ipverse/asn-networks/master/networks/AS24940.list", "Hetzner")
     bad_networks += get_network_list(os.path.join(os.path.dirname(__file__), "ocean_ips.txt"), "http://digitalocean.com/geo/google.csv", "DigitalOcean")
-    print(f" [⏱] Этап 1 (Базы IP) завершен за {time.perf_counter() - s_init:.2f} сек.")
 
-    # ЭТАП 2: Получение URL источников
-    s_src = time.perf_counter()
+    # ЭТАП 2: Ресурсы
     try:
         src = session.get(REMOTE_SOURCE_URL).text
         def get_list_by_name(var_name):
@@ -129,7 +125,8 @@ def main():
             return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
         extra_urls = get_list_by_name("EXTRA_URLS_FOR_26")
         std_urls = get_list_by_name("URLS")
-        print(f" [⏱] Этап 2 (Импорт ресурсов) завершен за {time.perf_counter() - s_src:.2f} сек.")
+        sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
+        print(f" [✓] Загружено {len(sni_domains)} приоритетных SNI.")
     except Exception as e:
         print(f" ❌ Ошибка Этапа 2: {e}"); return
 
@@ -137,43 +134,59 @@ def main():
     seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
     ru_count = 0
 
-    def validate_one_config(config, is_priority):
+    def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
         if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
+        
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
+
+        # ФИЛЬТР ПО SNI (Новый функционал)
+        is_white_sni = sni in sni_domains
+        if white_sni_only and not is_white_sni: return
+        if not white_sni_only and is_white_sni: return # Чтобы не дублировать проверки в разных проходах
+
         garbage = ["cloudflare", "openproxy", "-udp443"]
         if any(x in name.lower() or x in sni.lower() for x in garbage): return
         if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): return 
+        
         with lock:
             if host in seen_ips: return
             subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
                id_counts.get(cid, 0) >= MAX_PER_ID or \
                sni_counts.get(sni, 0) >= MAX_PER_SNI: return
+
         try:
             ip_obj = ipaddress.ip_address(host)
             if any(ip_obj in net for net in bad_networks): return
         except: return
+
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code or is_hosting: return
+        
         mismatch = False
         for code, aliases in COUNTRY_MAP.items():
             if any(a in name.upper() for a in aliases) and country_code != code:
                 mismatch = True; break
         if mismatch: return
+
         is_ru = (country_code == "RU")
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
+        
         if smart_ping(host, port, sni):
             final_config = apply_random_fp(config)
             with lock:
                 added = False
+                # Приоритет в итоговом списке (v=2 для Extra+Sni, v=1 для Extra)
+                score = (2 if is_white_sni else 1) if is_priority else 0
+                
                 if len(vlm2_data) < MAX_CONFIGS:
-                    vlm2_data[final_config] = is_priority
+                    vlm2_data[final_config] = score
                     added = True
                 if "xhttp" not in final_config.lower() and len(vlm_data) < MAX_CONFIGS:
-                    vlm_data[final_config] = is_priority
+                    vlm_data[final_config] = score
                     added = True
                 if added:
                     if is_ru: ru_count += 1
@@ -182,36 +195,31 @@ def main():
                     id_counts[cid] = id_counts.get(cid, 0) + 1
                     sni_counts[sni] = sni_counts.get(sni, 0) + 1
 
-    def process_category(urls, is_priority):
-        cat_name = 'EXTRA' if is_priority else 'STANDARD'
-        s_cat = time.perf_counter()
-        print(f"\n--- 🚀 ОБРАБОТКА: {cat_name} ---")
+    def process_step(urls, is_priority, white_sni_only):
+        if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
         
-        # Сбор ссылок
-        s_fetch = time.perf_counter()
+        mode = "WHITE SNI" if white_sni_only else "OTHER SNI"
+        cat = "EXTRA" if is_priority else "STANDARD"
+        print(f" > Поиск: {cat} + {mode}")
+        
         all_raw = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as gatherer:
             futures = [gatherer.submit(fetch_raw_configs, u) for u in urls]
             for f in concurrent.futures.as_completed(futures):
                 all_raw.extend(f.result())
-        print(f" [⏱] Сбор {len(all_raw)} ссылок ({cat_name}) занял {time.perf_counter() - s_fetch:.2f} сек.")
         
-        # Валидация
-        s_val = time.perf_counter()
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as validator:
             for config in all_raw:
-                if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: break
-                validator.submit(validate_one_config, config, is_priority)
-        print(f" [⏱] Валидация в категории {cat_name} завершена за {time.perf_counter() - s_val:.2f} сек.")
+                validator.submit(validate_one_config, config, is_priority, white_sni_only)
 
-    # Запуск категорий
-    process_category(extra_urls, True)
-    if len(vlm2_data) < MAX_CONFIGS or len(vlm_data) < MAX_CONFIGS:
-        process_category(std_urls, False)
+    # --- 4 УРОВНЯ ПРИОРИТЕТА ---
+    process_step(extra_urls, True, True)   # 1. Extra + White SNI
+    process_step(std_urls, False, True)    # 2. Standard + White SNI
+    process_step(extra_urls, True, False)  # 3. Extra + Other SNI
+    process_step(std_urls, False, False)   # 4. Standard + Other SNI
 
-    # ЭТАП 7: Сортировка и Публикация
-    s_pub = time.perf_counter()
     def sort_configs(data_dict):
+        # Сортируем по score (2, 1, 0)
         return [k for k, v in sorted(data_dict.items(), key=lambda item: item[1], reverse=True)]
 
     final_vlm, final_vlm2 = sort_configs(vlm_data), sort_configs(vlm2_data)
@@ -221,20 +229,16 @@ def main():
         repo = g.get_repo(REPO_NAME)
         for fn, lst in [(FILENAME_VLM, final_vlm), (FILENAME_VLM2, final_vlm2)]:
             path = f"githubmirror/{fn}"
-            content = "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
             try:
                 sha = repo.get_contents(path).sha
-                repo.update_file(path, msg, content, sha)
+                repo.update_file(path, msg, "\n".join(lst), sha)
             except:
-                repo.create_file(path, msg, content)
-        print(f"\n [⏱] Этап публикации на GitHub занял {time.perf_counter() - s_pub:.2f} сек.")
+                repo.create_file(path, msg, "\n".join(lst))
     except Exception as e:
         print(f" ❌ GitHub Error: {e}")
 
-    total_time = time.perf_counter() - start_total
-    print(f"\n--- 🏁 ГОТОВО! Всего: {len(final_vlm2)} | RU: {ru_count}")
-    print(f"--- ⏱ ОБЩЕЕ ВРЕМЯ РАБОТЫ: {total_time:.2f} сек. ---")
+    print(f"--- 🏁 ФИНИШ! Время: {time.perf_counter() - start_total:.2f} сек. ---")
 
 if __name__ == "__main__":
     main()
