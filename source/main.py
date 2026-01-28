@@ -19,7 +19,7 @@ MAX_PER_ID = 3
 
 # Новые настройки пинга для RU
 MIN_RU_PING = 10.0
-MAX_RU_PING = 450.0
+MAX_RU_PING = 430.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
