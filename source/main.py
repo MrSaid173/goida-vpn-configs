@@ -18,8 +18,8 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
 # Настройки пинга (в мс)
-MIN_RU_PING, MAX_RU_PING = 60.0, 470.0
-MIN_WORLD_PING, MAX_WORLD_PING = 80.0, 400.0
+MIN_RU_PING, MAX_RU_PING = 50.0, 470.0
+MIN_WORLD_PING, MAX_WORLD_PING = 50.0, 650.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
