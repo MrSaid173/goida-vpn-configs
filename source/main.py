@@ -79,9 +79,12 @@ def check_isp_info(ip_str):
         except: pass
         return None, None, False
 
-def smart_ping(host, port, sni):
-    """Мини-проверка стабильности: 3 замера с интервалом. Если хоть один упал - конфиг BAD."""
+def smart_ping(host, port, sni, is_ru=False):
+    """3 замера. Если хоть один замер > MAX_PING или Timeout - возвращаем None."""
     pings = []
+    current_max = MAX_RU_PING if is_ru else MAX_WORLD_PING
+    current_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
+    
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -91,10 +94,14 @@ def smart_ping(host, port, sni):
             start = time.perf_counter()
             with socket.create_connection((host, port), timeout=1.2) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
-                    pings.append(int((time.perf_counter() - start) * 1000))
-            if i < 2: time.sleep(0.15) # Дистанция между проверками
+                    p = int((time.perf_counter() - start) * 1000)
+                    # СТРОГАЯ ПРОВЕРКА КАЖДОГО ЗАМЕРА
+                    if p > current_max or p < current_min:
+                        return None
+                    pings.append(p)
+            if i < 2: time.sleep(0.15)
             
-        return sum(pings) // len(pings) # Возвращаем средний пинг
+        return sum(pings) // len(pings)
     except:
         return None
 
@@ -126,7 +133,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [STABILITY PING FILTER] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [OPTIMIZED STRICT FILTER] [{offset}] ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -153,19 +160,19 @@ def main():
         
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
+        
+        # 1. Сначала фильтруем SNI (без лишнего шума и пинга)
         if (sni in sni_domains) != white_sni_only: return
 
+        # 2. Фильтр мусора в названиях
         garbage = ["cloudflare", "openproxy", "-udp443"]
         if any(x in name.lower() or x in sni for x in garbage): return
         
         with lock:
             if host in seen_ips: return
-            subnet = ".".join(host.split(".")[:3])
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
-               id_counts.get(cid, 0) >= MAX_PER_ID or \
-               sni_counts.get(sni, 0) >= MAX_PER_SNI: return
             seen_ips.add(host)
 
+        # 3. Фильтр плохих сетей (тихий)
         try:
             if any(ipaddress.ip_address(host) in net for net in bad_networks):
                 with lock: seen_ips.discard(host)
@@ -174,6 +181,7 @@ def main():
             with lock: seen_ips.discard(host)
             return
 
+        # 4. Проверка страны и ISP (через кэш)
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code or is_hosting:
             with lock: seen_ips.discard(host)
@@ -185,55 +193,55 @@ def main():
                 with lock: seen_ips.discard(host)
                 return
 
+        # 5. Проверка лимитов ПЕРЕД пингом
         is_ru = (country_code == "RU")
-        ru_reserved = False
+        subnet = ".".join(host.split(".")[:3])
         
-        if is_ru:
-            with lock:
-                if ru_count >= MAX_RU_CONFIGS:
-                    seen_ips.discard(host)
-                    return
-                ru_count += 1
-                ru_reserved = True
-        
-        ping_res = smart_ping(host, port, sni)
-        
-        is_valid_ping = False
-        if ping_res is not None:
-            if is_ru:
-                if MIN_RU_PING <= ping_res <= MAX_RU_PING:
-                    is_valid_ping = True
-            else:
-                if MIN_WORLD_PING <= ping_res <= MAX_WORLD_PING:
-                    is_valid_ping = True
+        with lock:
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
+               id_counts.get(cid, 0) >= MAX_PER_ID or \
+               sni_counts.get(sni, 0) >= MAX_PER_SNI:
+                seen_ips.discard(host)
+                return
 
-        status = "✅ OK" if is_valid_ping else "❌ BAD"
-        ping_str = f"{ping_res}ms" if ping_res else "Timeout/Loss"
-        print(f"[{status}] {country_code} | Ping (avg): {ping_str} | Host: {host}")
+            if is_ru and ru_count >= MAX_RU_CONFIGS:
+                seen_ips.discard(host)
+                return
+            
+            # Временно бронируем место для RU
+            if is_ru: ru_count += 1
 
-        if is_valid_ping:
-            final_config = apply_random_fp(config)
-            with lock:
-                score = (2 if white_sni_only else 1) if is_priority else 0
-                added = False
-                if len(vlm2_data) < MAX_CONFIGS:
-                    vlm2_data[final_config] = score
-                    added = True
-                if "xhttp" not in final_config.lower() and len(vlm_data) < MAX_CONFIGS:
-                    vlm_data[final_config] = score
-                    added = True
-                
-                if added:
-                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                    id_counts[cid] = id_counts.get(cid, 0) + 1
-                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                else:
-                    seen_ips.discard(host)
-                    if ru_reserved: ru_count -= 1
-        else:
+        # 6. ПИНГУЕМ ТОЛЬКО ЕСЛИ ВСЕ ПРОВЕРКИ ВЫШЕ ПРОЙДЕНЫ
+        ping_res = smart_ping(host, port, sni, is_ru=is_ru)
+        
+        if ping_res is None:
+            # Логируем только реальные таймауты/потери
+            print(f"[❌ BAD] {country_code} | Ping: Loss/Strict | Host: {host}")
             with lock:
                 seen_ips.discard(host)
-                if ru_reserved: ru_count -= 1
+                if is_ru: ru_count -= 1
+            return
+
+        # 7. ЕСЛИ ПИНГ ОК - СОХРАНЯЕМ
+        print(f"[✅ OK] {country_code} | Ping (avg): {ping_res}ms | Host: {host}")
+        final_config = apply_random_fp(config)
+        with lock:
+            score = (2 if white_sni_only else 1) if is_priority else 0
+            added = False
+            if len(vlm2_data) < MAX_CONFIGS:
+                vlm2_data[final_config] = score
+                added = True
+            if "xhttp" not in final_config.lower() and len(vlm_data) < MAX_CONFIGS:
+                vlm_data[final_config] = score
+                added = True
+            
+            if added:
+                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                id_counts[cid] = id_counts.get(cid, 0) + 1
+                sni_counts[sni] = sni_counts.get(sni, 0) + 1
+            else:
+                seen_ips.discard(host)
+                if is_ru: ru_count -= 1
 
     def process_step(urls, is_priority, white_sni_only):
         if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
