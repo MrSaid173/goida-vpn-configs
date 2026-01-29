@@ -19,7 +19,7 @@ MAX_PER_ID = 3
 
 # Настройки пинга (в мс)
 MIN_RU_PING, MAX_RU_PING = 50.0, 470.0
-MIN_WORLD_PING, MAX_WORLD_PING = 50.0, 650.0
+MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 650.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -150,36 +150,47 @@ def main():
         garbage = ["cloudflare", "openproxy", "-udp443"]
         if any(x in name.lower() or x in sni for x in garbage): return
         
+        # Блокируем IP сразу
         with lock:
             if host in seen_ips: return
             subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
                id_counts.get(cid, 0) >= MAX_PER_ID or \
                sni_counts.get(sni, 0) >= MAX_PER_SNI: return
+            seen_ips.add(host)
 
         try:
-            if any(ipaddress.ip_address(host) in net for net in bad_networks): return
-        except: return
+            if any(ipaddress.ip_address(host) in net for net in bad_networks):
+                with lock: seen_ips.discard(host)
+                return
+        except:
+            with lock: seen_ips.discard(host)
+            return
 
         country_code, isp_info, is_hosting = check_isp_info(host)
-        if not country_code or is_hosting: return
+        if not country_code or is_hosting:
+            with lock: seen_ips.discard(host)
+            return
         
         name_u = name.upper()
         for code, aliases in COUNTRY_MAP.items():
-            if any(a in name_u for a in aliases) and country_code != code: return
+            if any(a in name_u for a in aliases) and country_code != code:
+                with lock: seen_ips.discard(host)
+                return
 
         is_ru = (country_code == "RU")
         ru_reserved = False
         
         if is_ru:
             with lock:
-                if ru_count >= MAX_RU_CONFIGS: return
+                if ru_count >= MAX_RU_CONFIGS:
+                    seen_ips.discard(host)
+                    return
                 ru_count += 1
                 ru_reserved = True
         
         ping_res = smart_ping(host, port, sni)
         
-        # ЛОГИКА ПРОВЕРКИ ПИНГА ДЛЯ ВСЕХ
         is_valid_ping = False
         if ping_res is not None:
             if is_ru:
@@ -189,7 +200,6 @@ def main():
                 if MIN_WORLD_PING <= ping_res <= MAX_WORLD_PING:
                     is_valid_ping = True
 
-        # ВЫВОД ЛОГА В КОНСОЛЬ
         status = "✅ OK" if is_valid_ping else "❌ BAD"
         ping_str = f"{ping_res}ms" if ping_res else "Timeout"
         print(f"[{status}] {country_code} | Ping: {ping_str} | Host: {host}")
@@ -207,14 +217,169 @@ def main():
                     added = True
                 
                 if added:
-                    seen_ips.add(host)
                     subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                     id_counts[cid] = id_counts.get(cid, 0) + 1
                     sni_counts[sni] = sni_counts.get(sni, 0) + 1
-                elif ru_reserved:
-                    ru_count -= 1
-        elif ru_reserved:
-            with lock: ru_count -= 1
+                else:
+                    seen_ips.discard(host)
+                    if ru_reserved: ru_count -= 1
+        else:
+            with lock:
+                seen_ips.discard(host)
+                if ru_reserved: ru_count -= 1
+
+    def process_step(urls, is_priority, white_sni_only):
+        if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
+        all_raw = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as gatherer:
+            futures = [gatherer.submit(fetch_raw_configs, u) for u in urls]
+            for f in concurrent.futures.as_completed(futures): all_raw.extend(f.result())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as validator:
+            for config in all_raw: validator.submit(validate_one_config, config, is_priority, white_sni_only)
+
+    for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
+        process_step(p_url, p_url == extra_urls, p_sni)
+
+    final_vlm2 = [k for k, v in sorted(vlm2_data.items(), key=lambda x: x[1], reverse=True)]
+    final_vlm = [k for k, v in sorted(vlm_data.items(), key=lambda x: x[1], reverse=True)]
+
+    try:
+        g = Github(auth=Auth.Token(GITHUB_TOKEN))
+        repo = g.get_repo(REPO_NAME)
+        for fn, lst in [(FILENAME_VLM, final_vlm), (FILENAME_VLM2, final_vlm2)]:
+            path = f"githubmirror/{fn}"
+            msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
+            try:
+                sha = repo.get_contents(path).sha
+                repo.update_file(path, msg, "\n".join(lst), sha)
+            except:
+                repo.create_file(path, msg, "\n".join(lst))
+    except Exception as e: print(f" ❌ GitHub Error: {e}")
+
+    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---")
+
+if __name__ == "__main__":
+    main()
+
+            except: pass
+        all_links = re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)
+        return [l.strip() for l in all_links if not l.startswith(("ss://", "trojan://"))]
+    except: return []
+
+# --- ГЛАВНАЯ ЛОГИКА ---
+
+def main():
+    global bad_networks
+    start_total = time.perf_counter()
+    print(f"--- 🟢 ЗАПУСК [FULL PING FILTER & LOGS] [{offset}] ---")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
+        f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
+        f_cf = init_executor.submit(get_network_list, os.path.join(os.path.dirname(__file__), "cloudflare_ips.txt"), "https://www.cloudflare.com/ips-v4", "CF")
+        f_hz = init_executor.submit(get_network_list, os.path.join(os.path.dirname(__file__), "hetzner_ips.txt"), "https://raw.githubusercontent.com/ipverse/asn-networks/master/networks/AS24940.list", "HZ")
+        bad_networks.extend(f_cf.result()); bad_networks.extend(f_hz.result())
+        src_text = f_src.result().text
+
+    def get_list_by_name(var_name):
+        m = re.search(rf'{var_name}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
+        return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
+        
+    extra_urls = get_list_by_name("EXTRA_URLS_FOR_26")
+    std_urls = get_list_by_name("URLS")
+    sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
+
+    vlm_data, vlm2_data = {}, {}
+    seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
+    ru_count = 0
+
+    def validate_one_config(config, is_priority, white_sni_only):
+        nonlocal ru_count
+        if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
+        
+        host, port, sni, cid, name = get_config_details(config)
+        if not host or not sni: return
+        if (sni in sni_domains) != white_sni_only: return
+
+        garbage = ["cloudflare", "openproxy", "-udp443"]
+        if any(x in name.lower() or x in sni for x in garbage): return
+        
+        # Блокируем IP сразу
+        with lock:
+            if host in seen_ips: return
+            subnet = ".".join(host.split(".")[:3])
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
+               id_counts.get(cid, 0) >= MAX_PER_ID or \
+               sni_counts.get(sni, 0) >= MAX_PER_SNI: return
+            seen_ips.add(host)
+
+        try:
+            if any(ipaddress.ip_address(host) in net for net in bad_networks):
+                with lock: seen_ips.discard(host)
+                return
+        except:
+            with lock: seen_ips.discard(host)
+            return
+
+        country_code, isp_info, is_hosting = check_isp_info(host)
+        if not country_code or is_hosting:
+            with lock: seen_ips.discard(host)
+            return
+        
+        name_u = name.upper()
+        for code, aliases in COUNTRY_MAP.items():
+            if any(a in name_u for a in aliases) and country_code != code:
+                with lock: seen_ips.discard(host)
+                return
+
+        is_ru = (country_code == "RU")
+        ru_reserved = False
+        
+        if is_ru:
+            with lock:
+                if ru_count >= MAX_RU_CONFIGS:
+                    seen_ips.discard(host)
+                    return
+                ru_count += 1
+                ru_reserved = True
+        
+        ping_res = smart_ping(host, port, sni)
+        
+        is_valid_ping = False
+        if ping_res is not None:
+            if is_ru:
+                if MIN_RU_PING <= ping_res <= MAX_RU_PING:
+                    is_valid_ping = True
+            else:
+                if MIN_WORLD_PING <= ping_res <= MAX_WORLD_PING:
+                    is_valid_ping = True
+
+        status = "✅ OK" if is_valid_ping else "❌ BAD"
+        ping_str = f"{ping_res}ms" if ping_res else "Timeout"
+        print(f"[{status}] {country_code} | Ping: {ping_str} | Host: {host}")
+
+        if is_valid_ping:
+            final_config = apply_random_fp(config)
+            with lock:
+                score = (2 if white_sni_only else 1) if is_priority else 0
+                added = False
+                if len(vlm2_data) < MAX_CONFIGS:
+                    vlm2_data[final_config] = score
+                    added = True
+                if "xhttp" not in final_config.lower() and len(vlm_data) < MAX_CONFIGS:
+                    vlm_data[final_config] = score
+                    added = True
+                
+                if added:
+                    subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                    id_counts[cid] = id_counts.get(cid, 0) + 1
+                    sni_counts[sni] = sni_counts.get(sni, 0) + 1
+                else:
+                    seen_ips.discard(host)
+                    if ru_reserved: ru_count -= 1
+        else:
+            with lock:
+                seen_ips.discard(host)
+                if ru_reserved: ru_count -= 1
 
     def process_step(urls, is_priority, white_sni_only):
         if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
