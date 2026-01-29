@@ -17,9 +17,9 @@ MAX_PER_SUBNET = 3
 MAX_PER_SNI = 15
 MAX_PER_ID = 3
 
-# Новые настройки пинга для RU
-MIN_RU_PING = 60.0
-MAX_RU_PING = 470.0
+# Настройки пинга (в мс)
+MIN_RU_PING, MAX_RU_PING = 60.0, 470.0
+MIN_WORLD_PING, MAX_WORLD_PING = 80.0, 400.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -80,7 +80,6 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def smart_ping(host, port, sni):
-    """Возвращает время в мс или None при ошибке"""
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
@@ -119,7 +118,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [PING FILTER] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [FULL PING FILTER & LOGS] [{offset}] ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -180,16 +179,20 @@ def main():
         
         ping_res = smart_ping(host, port, sni)
         
-        # ПРОВЕРКА ПИНГА
+        # ЛОГИКА ПРОВЕРКИ ПИНГА ДЛЯ ВСЕХ
         is_valid_ping = False
         if ping_res is not None:
             if is_ru:
-                # RU: строгий диапазон
                 if MIN_RU_PING <= ping_res <= MAX_RU_PING:
                     is_valid_ping = True
             else:
-                # Остальные: просто наличие связи
-                is_valid_ping = True
+                if MIN_WORLD_PING <= ping_res <= MAX_WORLD_PING:
+                    is_valid_ping = True
+
+        # ВЫВОД ЛОГА В КОНСОЛЬ
+        status = "✅ OK" if is_valid_ping else "❌ BAD"
+        ping_str = f"{ping_res}ms" if ping_res else "Timeout"
+        print(f"[{status}] {country_code} | Ping: {ping_str} | Host: {host}")
 
         if is_valid_ping:
             final_config = apply_random_fp(config)
