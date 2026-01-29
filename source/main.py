@@ -80,15 +80,23 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def smart_ping(host, port, sni):
+    """Мини-проверка стабильности: 3 замера с интервалом. Если хоть один упал - конфиг BAD."""
+    pings = []
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        start = time.perf_counter()
-        with socket.create_connection((host, port), timeout=1.2) as sock:
-            with context.wrap_socket(sock, server_hostname=sni):
-                return int((time.perf_counter() - start) * 1000)
-    except: return None
+        
+        for i in range(3):
+            start = time.perf_counter()
+            with socket.create_connection((host, port), timeout=1.2) as sock:
+                with context.wrap_socket(sock, server_hostname=sni):
+                    pings.append(int((time.perf_counter() - start) * 1000))
+            if i < 2: time.sleep(0.15) # Дистанция между проверками
+            
+        return sum(pings) // len(pings) # Возвращаем средний пинг
+    except:
+        return None
 
 def get_config_details(link):
     try:
@@ -118,7 +126,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [FULL PING FILTER & LOGS] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [STABILITY PING FILTER] [{offset}] ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -200,8 +208,8 @@ def main():
                     is_valid_ping = True
 
         status = "✅ OK" if is_valid_ping else "❌ BAD"
-        ping_str = f"{ping_res}ms" if ping_res else "Timeout"
-        print(f"[{status}] {country_code} | Ping: {ping_str} | Host: {host}")
+        ping_str = f"{ping_res}ms" if ping_res else "Timeout/Loss"
+        print(f"[{status}] {country_code} | Ping (avg): {ping_str} | Host: {host}")
 
         if is_valid_ping:
             final_config = apply_random_fp(config)
