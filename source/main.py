@@ -48,6 +48,10 @@ ip_cache = {}
 def apply_random_fp(config_link):
     return re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
 
+def remove_udp443(config_link):
+    """Специальная очистка только для VLM: удаление -udp443 отовсюду."""
+    return config_link.replace("-udp443", "")
+
 def get_network_list(file_path, url, name):
     if os.path.exists(file_path) and (datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path)) < timedelta(days=3)):
         try:
@@ -80,7 +84,6 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def smart_ping(host, port, sni, is_ru=False):
-    """3 замера. Если хоть один замер > MAX_PING или Timeout - возвращаем None."""
     pings = []
     current_max = MAX_RU_PING if is_ru else MAX_WORLD_PING
     current_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
@@ -95,12 +98,10 @@ def smart_ping(host, port, sni, is_ru=False):
             with socket.create_connection((host, port), timeout=1.2) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
                     p = int((time.perf_counter() - start) * 1000)
-                    # СТРОГАЯ ПРОВЕРКА КАЖДОГО ЗАМЕРА
                     if p > current_max or p < current_min:
                         return None
                     pings.append(p)
             if i < 2: time.sleep(0.15)
-            
         return sum(pings) // len(pings)
     except:
         return None
@@ -161,18 +162,16 @@ def main():
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
         
-        # 1. Сначала фильтруем SNI (без лишнего шума и пинга)
         if (sni in sni_domains) != white_sni_only: return
 
-        # 2. Фильтр мусора в названиях
-        garbage = ["cloudflare", "-udp443"]
+        # 2. Фильтр мусора (УБРАЛ -udp443 из списка удаления)
+        garbage = ["cloudflare"] 
         if any(x in name.lower() or x in sni for x in garbage): return
         
         with lock:
             if host in seen_ips: return
             seen_ips.add(host)
 
-        # 3. Фильтр плохих сетей (тихий)
         try:
             if any(ipaddress.ip_address(host) in net for net in bad_networks):
                 with lock: seen_ips.discard(host)
@@ -181,7 +180,6 @@ def main():
             with lock: seen_ips.discard(host)
             return
 
-        # 4. Проверка страны и ISP (через кэш)
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code or is_hosting:
             with lock: seen_ips.discard(host)
@@ -193,7 +191,6 @@ def main():
                 with lock: seen_ips.discard(host)
                 return
 
-        # 5. Проверка лимитов ПЕРЕД пингом
         is_ru = (country_code == "RU")
         subnet = ".".join(host.split(".")[:3])
         
@@ -203,36 +200,38 @@ def main():
                sni_counts.get(sni, 0) >= MAX_PER_SNI:
                 seen_ips.discard(host)
                 return
-
             if is_ru and ru_count >= MAX_RU_CONFIGS:
                 seen_ips.discard(host)
                 return
-            
-            # Временно бронируем место для RU
             if is_ru: ru_count += 1
 
-        # 6. ПИНГУЕМ ТОЛЬКО ЕСЛИ ВСЕ ПРОВЕРКИ ВЫШЕ ПРОЙДЕНЫ
         ping_res = smart_ping(host, port, sni, is_ru=is_ru)
         
         if ping_res is None:
-            # Логируем только реальные таймауты/потери
             print(f"[❌ BAD] {country_code} | Ping: Loss/Strict | Host: {host}")
             with lock:
                 seen_ips.discard(host)
                 if is_ru: ru_count -= 1
             return
 
-        # 7. ЕСЛИ ПИНГ ОК - СОХРАНЯЕМ
         print(f"[✅ OK] {country_code} | Ping (avg): {ping_res}ms | Host: {host}")
-        final_config = apply_random_fp(config)
+        
+        # Готовим финальную версию с рандомным FP
+        base_final = apply_random_fp(config)
+
         with lock:
             score = (2 if white_sni_only else 1) if is_priority else 0
             added = False
+            
+            # Сохраняем в vlm2 (как есть, с udp443)
             if len(vlm2_data) < MAX_CONFIGS:
-                vlm2_data[final_config] = score
+                vlm2_data[base_final] = score
                 added = True
-            if "xhttp" not in final_config.lower() and len(vlm_data) < MAX_CONFIGS:
-                vlm_data[final_config] = score
+            
+            # Сохраняем в vlm (БЕЗ udp443)
+            if "xhttp" not in base_final.lower() and len(vlm_data) < MAX_CONFIGS:
+                vlm_clean = remove_udp443(base_final)
+                vlm_data[vlm_clean] = score
                 added = True
             
             if added:
