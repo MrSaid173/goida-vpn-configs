@@ -165,7 +165,7 @@ def main():
         if (sni in sni_domains) != white_sni_only: return
 
         # 2. Фильтр мусора в названиях
-        garbage = ["cloudflare", "openproxy", "-udp443"]
+        garbage = ["cloudflare", "-udp443"]
         if any(x in name.lower() or x in sni for x in garbage): return
         
         with lock:
