@@ -16,7 +16,7 @@ MAX_RU_CONFIGS = 6
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
-MAX_FAILED_PER_SUBNET = 5 # Лимит неудачных попыток для подсети
+MAX_FAILED_PER_SUBNET = 5 
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
 MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 430.0
@@ -45,7 +45,7 @@ lock = threading.Lock()
 api_semaphore = threading.Semaphore(3)
 bad_networks = []
 ip_cache = {}
-failed_subnets = {} # { "217.13.104": кол-во_неудач }
+failed_subnets = {} 
 last_api_call = 0
 
 # --- УТИЛИТЫ ---
@@ -145,7 +145,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [SUBNET SMART DETECTOR ON] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [STRICT LIMITS MODE] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -173,54 +173,53 @@ def main():
         
         subnet = ".".join(host.split(".")[:3])
 
-        # 1. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА (Включая черный список подсетей)
+        # 1. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ЛИМИТОВ
         with lock:
-            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET:
-                return # Эта подсеть уже показала себя плохо, пропускаем без проверок
-            
+            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return 
             if host in seen_ips: return
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
             if id_counts.get(cid, 0) >= MAX_PER_ID: return
             if sni_counts.get(sni, 0) >= MAX_PER_SNI: return
             seen_ips.add(host)
 
-        # 2. ПРОВЕРКА ЧЕРНЫХ СПИСКОВ (IP ranges)
-        try:
-            ip_obj = ipaddress.ip_address(host)
-            if any(ip_obj in net for net in bad_networks): return
-        except: return
-
-        # 3. GEO / ISP (С кэшем по IP работает мгновенно)
+        # 2. GEO / ISP
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code: return
         
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
-        
+
+        # 3. БРОНИРОВАНИЕ МЕСТА ДЛЯ RU (До пинга)
+        if is_ru:
+            with lock:
+                if ru_count >= MAX_RU_CONFIGS: return
+                ru_count += 1
+
         # 4. ПИНГ
         ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
         
         if ping_res is None:
             with lock:
-                # Наращиваем счетчик неудач для подсети
                 failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
-                if failed_subnets[subnet] == MAX_FAILED_PER_SUBNET:
-                    print(f"  [!] SUBNET BLACKLISTED: {subnet}.x", flush=True)
+                if is_ru: ru_count -= 1 # ОСВОБОЖДАЕМ МЕСТО, если пинг не прошел
             return
 
-        # 5. ФИНАЛЬНАЯ ЗАПИСЬ (Если пинг прошел)
+        # 5. ФИНАЛЬНАЯ ЗАПИСЬ
         print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
         final_link = apply_random_fp(config)
         
         with lock:
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return 
+            # Повторная проверка подсетей/лимитов на случай, если за время пинга они заполнились
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
+                if is_ru: ru_count -= 1
+                return 
+
             res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
-            if is_ru: ru_count += 1
 
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         step_links = []
