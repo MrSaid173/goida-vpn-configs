@@ -50,11 +50,7 @@ ip_cache = {}
 def rename_config(link, country_code, index, is_hosting=False):
     base_part = link.split('#')[0]
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
-    
-    # Тэг хостинга (добавляем пробел перед ним, если он есть)
     host_tag = " [HOST]" if is_hosting else ""
-    
-    # Тэг теперь в самом конце после номера
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{host_tag}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
@@ -88,13 +84,11 @@ def check_isp_info(ip_str):
                 isp_data = [str(r.get("isp", "")), str(r.get("org", "")), str(r.get("as", "")), str(r.get("asname", ""))]
                 full_info_text = " ".join(isp_data).lower()
                 country = r.get("countryCode", "")
-                
                 is_hosting = r.get("hosting", False)
                 bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers"]
                 if not is_hosting:
                     if any(x in full_info_text for x in bad_keywords):
                         is_hosting = True
-                        
                 ip_cache[ip_str] = (country, full_info_text, is_hosting)
                 return ip_cache[ip_str]
         except: pass
@@ -102,14 +96,12 @@ def check_isp_info(ip_str):
 
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
-    
     if is_ru:
         current_min, current_max = MIN_RU_PING, MAX_RU_PING
     else:
         current_min = MIN_WORLD_PING
         if is_hosting:
-            calculated_limit = MAX_WORLD_PING / 3.0
-            current_max = min(calculated_limit, 150.0)
+            current_max = min(MAX_WORLD_PING / 3.0, 150.0)
         else:
             current_max = MAX_WORLD_PING
 
@@ -122,7 +114,10 @@ def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
             with socket.create_connection((host, port), timeout=1.2) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
                     p = int((time.perf_counter() - start) * 1000)
-                    if p > current_max or p < current_min: return None
+                    if p > current_max or p < current_min:
+                        # Логируем отсеивание по пингу
+                        print(f"  [PING SKIP] {host} | {p}ms (Limit: {current_max})", flush=True)
+                        return None
                     pings.append(p)
             if i < 2: time.sleep(0.15)
         return sum(pings) // len(pings)
@@ -156,7 +151,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [SMART HOSTING FILTER V2 + END TAGS] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [SMART HOSTING FILTER V2 + END TAGS] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -179,11 +174,9 @@ def main():
 
     def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
-        
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
         if (sni in sni_domains) != white_sni_only: return
-
         garbage = ["cloudflare"] 
         if any(x in name.lower() or x in sni for x in garbage): return
         
@@ -243,17 +236,13 @@ def main():
                 if is_ru: ru_count -= 1
             return
 
-        print(f"[✅ OK] {country_code} | {'HOSTING' if is_hosting else 'RESIDENTIAL'} | {ping_res}ms | {host}")
+        print(f"[✅ OK] {country_code} | {'HOSTING' if is_hosting else 'RESIDENTIAL'} | {ping_res}ms | {host}", flush=True)
         final_link = apply_random_fp(config)
         
         with lock:
             res_obj = {
-                "link": final_link, 
-                "ping": ping_res, 
-                "country": country_code, 
-                "is_priority": is_priority, 
-                "white_sni": white_sni_only,
-                "is_hosting": is_hosting
+                "link": final_link, "ping": ping_res, "country": country_code, 
+                "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting
             }
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
@@ -291,9 +280,9 @@ def main():
                 sha = repo.get_contents(path).sha
                 repo.update_file(path, msg, "\n".join(lst), sha)
             except: repo.create_file(path, msg, "\n".join(lst))
-    except Exception as e: print(f" ❌ GitHub Error: {e}")
+    except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
 
-    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---")
+    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
 
 if __name__ == "__main__":
     main()
