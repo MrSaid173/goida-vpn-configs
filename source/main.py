@@ -13,10 +13,11 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 
 MAX_CONFIGS = 100 
 MAX_RU_CONFIGS = 6
+MAX_PER_COUNTRY = 15 # Ограничение на количество конфигов любой одной страны
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
-MAX_FAILED_PER_SUBNET = 5 
+MAX_FAILED_PER_SUBNET = 4 
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
 MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 430.0
@@ -47,6 +48,7 @@ bad_networks = []
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
+stop_all = False # Флаг для моментальной остановки всех потоков
 
 # --- УТИЛИТЫ ---
 
@@ -109,6 +111,7 @@ def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
         for i in range(2):
+            if stop_all: return None
             start = time.perf_counter()
             with socket.create_connection((host, port), timeout=1.0) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
@@ -143,9 +146,9 @@ def fetch_raw_configs(url):
 # --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
-    global bad_networks
+    global bad_networks, stop_all
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [STRICT LIMITS MODE] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [SMART STOP MODE] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -162,19 +165,25 @@ def main():
     sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
 
     vlm_results, vlm2_results = [], []
-    seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
+    seen_ips, sni_counts, subnet_counts, id_counts, country_counts = set(), {}, {}, {}, {}
     ru_count = 0
 
     def validate_one_config(config, is_priority, white_sni_only):
+        global stop_all
         nonlocal ru_count
+        if stop_all: return
+
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni or (sni in sni_domains) != white_sni_only: return
         if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
         subnet = ".".join(host.split(".")[:3])
 
-        # 1. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ЛИМИТОВ
+        # 1. ПРОВЕРКА ЛИМИТОВ И СУЩЕСТВУЮЩЕГО КОЛИЧЕСТВА
         with lock:
+            if len(vlm2_results) >= MAX_CONFIGS: 
+                stop_all = True
+                return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return 
             if host in seen_ips: return
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
@@ -184,50 +193,65 @@ def main():
 
         # 2. GEO / ISP
         country_code, isp_info, is_hosting = check_isp_info(host)
-        if not country_code: return
+        if not country_code or stop_all: return
         
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
 
-        # 3. БРОНИРОВАНИЕ МЕСТА ДЛЯ RU (До пинга)
-        if is_ru:
-            with lock:
-                if ru_count >= MAX_RU_CONFIGS: return
-                ru_count += 1
+        # 3. БРОНИРОВАНИЕ (RU и ОБЩЕЕ СТРАНОВОЕ)
+        with lock:
+            limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
+            current = ru_count if is_ru else country_counts.get(country_code, 0)
+            if current >= limit: return
+            
+            # Предварительное бронирование
+            if is_ru: ru_count += 1
+            else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
         # 4. ПИНГ
         ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
         
-        if ping_res is None:
+        if ping_res is None or stop_all:
             with lock:
+                if is_ru: ru_count -= 1
+                else: country_counts[country_code] -= 1
                 failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
-                if is_ru: ru_count -= 1 # ОСВОБОЖДАЕМ МЕСТО, если пинг не прошел
             return
 
         # 5. ФИНАЛЬНАЯ ЗАПИСЬ
-        print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
-        final_link = apply_random_fp(config)
-        
         with lock:
-            # Повторная проверка подсетей/лимитов на случай, если за время пинга они заполнились
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
+            # Контрольная проверка перед записью
+            if len(vlm2_results) >= MAX_CONFIGS or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
                 if is_ru: ru_count -= 1
+                else: country_counts[country_code] -= 1
                 return 
 
+            print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
+            final_link = apply_random_fp(config)
             res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
+            
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
+            
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
+            
+            if len(vlm2_results) >= MAX_CONFIGS: stop_all = True
 
+    # ЗАПУСК ПРОВЕРОК
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
+        if stop_all: break
         step_links = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
             f = [g.submit(fetch_raw_configs, u) for u in p_url]
-            for fut in concurrent.futures.as_completed(f): step_links.extend(fut.result())
+            for fut in concurrent.futures.as_completed(f): 
+                if not stop_all: step_links.extend(fut.result())
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
-            for c in step_links: v.submit(validate_one_config, c, p_url == extra_urls, p_sni)
+            for c in step_links:
+                if stop_all: break
+                v.submit(validate_one_config, c, p_url == extra_urls, p_sni)
 
     def finalize_list(results, is_vlm1=False):
         results.sort(key=lambda x: ((2 if x['white_sni'] else 1) if x['is_priority'] else 0, -x['ping']), reverse=True)
