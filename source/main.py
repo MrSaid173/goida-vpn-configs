@@ -40,6 +40,15 @@ COUNTRY_MAP = {
     "AT": {"aliases": ["AUSTRIA", "АВСТРИЯ", "🇦🇹"], "full": "Austria", "flag": "🇦🇹"},
     "LV": {"aliases": ["LATVIA", "ЛАТВИЯ", "🇱🇻"], "full": "Latvia", "flag": "🇱🇻"},
     "NO": {"aliases": ["NORWAY", "НОРВЕГИЯ", "🇳🇴"], "full": "Norway", "flag": "🇳🇴"},
+    "SE": {"aliases": ["SWEDEN", "ШВЕЦИЯ", "🇸🇪"], "full": "Sweden", "flag": "🇸🇪"},
+    "UA": {"aliases": ["UKRAINE", "УКРАИНА", "🇺🇦"], "full": "Ukraine", "flag": "🇺🇦"},
+    "CA": {"aliases": ["CANADA", "КАНАДА", "🇨🇦"], "full": "Canada", "flag": "🇨🇦"},
+    "CH": {"aliases": ["SWITZERLAND", "ШВЕЙЦАРИЯ", "🇨🇭"], "full": "Switzerland", "flag": "🇨🇭"},
+    "CZ": {"aliases": ["CZECHIA", "CZECH REPUBLIC", "ЧЕХИЯ", "🇨🇿"], "full": "Czechia", "flag": "🇨🇿"},
+    "IT": {"aliases": ["ITALY", "ИТАЛИЯ", "🇮🇹"], "full": "Italy", "flag": "🇮🇹"},
+    "EE": {"aliases": ["ESTONIA", "ЭСТОНИЯ", "🇪🇪"], "full": "Estonia", "flag": "🇪🇪"},
+    "FR": {"aliases": ["FRANCE", "ФРАНЦИЯ", "🇫🇷"], "full": "France", "flag": "🇫🇷"},
+    "SG": {"aliases": ["SINGAPORE", "СИНГАПУР", "🇸🇬"], "full": "Singapore", "flag": "🇸🇬"},
 }
 
 lock = threading.Lock()
@@ -52,11 +61,18 @@ stop_all = False
 
 # --- УТИЛИТЫ ---
 
-def rename_config(link, country_code, index, is_hosting=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     base_part = link.split('#')[0]
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
-    host_tag = " [HOST]" if is_hosting else ""
-    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{host_tag}"
+    
+    # Формируем комбинированный тег
+    tags = []
+    if is_hosting: tags.append("HOST")
+    if is_white_sni: tags.append("SNI-RU")
+    
+    tag_str = f" [{'|'.join(tags)}]" if tags else ""
+    
+    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_random_fp(config_link):
@@ -148,7 +164,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks, stop_all
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [STRICT IP ONLY] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [SNI-RU TAG MODE] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -175,7 +191,6 @@ def main():
 
         host, port, sni, cid, name = get_config_details(config)
         
-        # ФИЛЬТР: Пропускаем только чистые IPv4 (убираем домены)
         if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
             return
 
@@ -184,7 +199,6 @@ def main():
         
         subnet = ".".join(host.split(".")[:3])
 
-        # 1. ПРОВЕРКА ЛИМИТОВ
         with lock:
             if len(vlm2_results) >= MAX_CONFIGS: 
                 stop_all = True
@@ -196,14 +210,12 @@ def main():
             if sni_counts.get(sni, 0) >= MAX_PER_SNI: return
             seen_ips.add(host)
 
-        # 2. GEO / ISP
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code or stop_all: return
         
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
 
-        # 3. БРОНИРОВАНИЕ
         with lock:
             limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
             current = ru_count if is_ru else country_counts.get(country_code, 0)
@@ -211,7 +223,6 @@ def main():
             if is_ru: ru_count += 1
             else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
-        # 4. ПИНГ
         ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
         
         if ping_res is None or stop_all:
@@ -221,7 +232,6 @@ def main():
                 failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        # 5. ФИНАЛЬНАЯ ЗАПИСЬ
         with lock:
             if len(vlm2_results) >= MAX_CONFIGS or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
                 if is_ru: ru_count -= 1
@@ -230,7 +240,14 @@ def main():
 
             print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
             final_link = apply_random_fp(config)
-            res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
+            res_obj = {
+                "link": final_link, 
+                "ping": ping_res, 
+                "country": country_code, 
+                "is_priority": is_priority, 
+                "white_sni": white_sni_only, 
+                "is_hosting": is_hosting
+            }
             
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
@@ -254,7 +271,11 @@ def main():
 
     def finalize_list(results, is_vlm1=False):
         results.sort(key=lambda x: ((2 if x['white_sni'] else 1) if x['is_priority'] else 0, -x['ping']), reverse=True)
-        return [remove_udp443(rename_config(r['link'], r['country'], i, r['is_hosting'])) if is_vlm1 else rename_config(r['link'], r['country'], i, r['is_hosting']) for i, r in enumerate(results[:MAX_CONFIGS], 1)]
+        return [
+            remove_udp443(rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])) 
+            if is_vlm1 else rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni']) 
+            for i, r in enumerate(results[:MAX_CONFIGS], 1)
+        ]
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
 
