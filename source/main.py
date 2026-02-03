@@ -13,7 +13,7 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 
 MAX_CONFIGS = 100 
 MAX_RU_CONFIGS = 6
-MAX_PER_COUNTRY = 15 # Ограничение на количество конфигов любой одной страны
+MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
@@ -48,7 +48,7 @@ bad_networks = []
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
-stop_all = False # Флаг для моментальной остановки всех потоков
+stop_all = False 
 
 # --- УТИЛИТЫ ---
 
@@ -148,7 +148,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks, stop_all
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [SMART STOP MODE] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [STRICT IP ONLY] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -174,12 +174,17 @@ def main():
         if stop_all: return
 
         host, port, sni, cid, name = get_config_details(config)
-        if not host or not sni or (sni in sni_domains) != white_sni_only: return
+        
+        # ФИЛЬТР: Пропускаем только чистые IPv4 (убираем домены)
+        if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
+            return
+
+        if not sni or (sni in sni_domains) != white_sni_only: return
         if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
         subnet = ".".join(host.split(".")[:3])
 
-        # 1. ПРОВЕРКА ЛИМИТОВ И СУЩЕСТВУЮЩЕГО КОЛИЧЕСТВА
+        # 1. ПРОВЕРКА ЛИМИТОВ
         with lock:
             if len(vlm2_results) >= MAX_CONFIGS: 
                 stop_all = True
@@ -198,13 +203,11 @@ def main():
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
 
-        # 3. БРОНИРОВАНИЕ (RU и ОБЩЕЕ СТРАНОВОЕ)
+        # 3. БРОНИРОВАНИЕ
         with lock:
             limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
             current = ru_count if is_ru else country_counts.get(country_code, 0)
             if current >= limit: return
-            
-            # Предварительное бронирование
             if is_ru: ru_count += 1
             else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
@@ -220,7 +223,6 @@ def main():
 
         # 5. ФИНАЛЬНАЯ ЗАПИСЬ
         with lock:
-            # Контрольная проверка перед записью
             if len(vlm2_results) >= MAX_CONFIGS or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
                 if is_ru: ru_count -= 1
                 else: country_counts[country_code] -= 1
@@ -236,10 +238,8 @@ def main():
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
-            
             if len(vlm2_results) >= MAX_CONFIGS: stop_all = True
 
-    # ЗАПУСК ПРОВЕРОК
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         if stop_all: break
         step_links = []
@@ -247,7 +247,6 @@ def main():
             f = [g.submit(fetch_raw_configs, u) for u in p_url]
             for fut in concurrent.futures.as_completed(f): 
                 if not stop_all: step_links.extend(fut.result())
-        
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
             for c in step_links:
                 if stop_all: break
