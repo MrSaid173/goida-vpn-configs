@@ -65,7 +65,6 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     base_part = link.split('#')[0]
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     
-    # Формируем комбинированный тег
     tags = []
     if is_hosting: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
@@ -278,16 +277,21 @@ def main():
         ]
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
+    
+    # Считаем количество SNI-RU среди финальных 100 конфигов в vlm2
+    sni_ru_final_count = sum(1 for r in vlm2_results[:MAX_CONFIGS] if r['white_sni'])
 
     try:
         repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
-            msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
+            msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | SNI-RU: {sni_ru_final_count} | {offset}"
             try: repo.update_file(path, msg, content, repo.get_contents(path).sha)
             except: repo.create_file(path, msg, content)
     except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
+    
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
+    print(f"--- Итого в списке SNI-RU конфигов: {sni_ru_final_count} ---", flush=True)
 
 if __name__ == "__main__":
     main()
