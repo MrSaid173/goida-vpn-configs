@@ -44,6 +44,7 @@ lock = threading.Lock()
 api_semaphore = threading.Semaphore(3)
 bad_networks = []
 ip_cache = {}
+last_api_call = 0
 
 # --- УТИЛИТЫ ---
 
@@ -75,51 +76,53 @@ def get_network_list(file_path, url, name):
     return []
 
 def check_isp_info(ip_str):
+    global last_api_call
     if ip_str in ip_cache: return ip_cache[ip_str]
+    
     with api_semaphore:
         try:
-            time.sleep(1.35)
-            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5).json()
+            # Умная задержка только перед запросом
+            with lock:
+                elapsed = time.perf_counter() - last_api_call
+                if elapsed < 1.1: time.sleep(1.1 - elapsed)
+                last_api_call = time.perf_counter()
+
+            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=4).json()
             if r.get("status") == "success":
-                isp_data = [str(r.get("isp", "")), str(r.get("org", "")), str(r.get("as", "")), str(r.get("asname", ""))]
+                isp_data = [str(r.get(k, "")) for k in ["isp", "org", "as", "asname"]]
                 full_info_text = " ".join(isp_data).lower()
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
                 bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers"]
                 if not is_hosting:
-                    if any(x in full_info_text for x in bad_keywords):
-                        is_hosting = True
-                ip_cache[ip_str] = (country, full_info_text, is_hosting)
-                return ip_cache[ip_str]
+                    is_hosting = any(x in full_info_text for x in bad_keywords)
+                
+                res = (country, full_info_text, is_hosting)
+                with lock: ip_cache[ip_str] = res
+                return res
         except: pass
         return None, None, False
 
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
-    if is_ru:
-        current_min, current_max = MIN_RU_PING, MAX_RU_PING
+    c_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
+    if not is_ru and is_hosting:
+        c_max = min(MAX_WORLD_PING / 3.0, 150.0)
     else:
-        current_min = MIN_WORLD_PING
-        if is_hosting:
-            current_max = min(MAX_WORLD_PING / 3.0, 150.0)
-        else:
-            current_max = MAX_WORLD_PING
+        c_max = MAX_RU_PING if is_ru else MAX_WORLD_PING
 
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        for i in range(3):
+        for i in range(2): # Уменьшено до 2 попыток для скорости
             start = time.perf_counter()
-            with socket.create_connection((host, port), timeout=1.2) as sock:
+            with socket.create_connection((host, port), timeout=1.0) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
                     p = int((time.perf_counter() - start) * 1000)
-                    if p > current_max or p < current_min:
-                        # Логируем отсеивание по пингу
-                        print(f"  [PING SKIP] {host} | {p}ms (Limit: {current_max})", flush=True)
-                        return None
+                    if p > c_max or p < c_min: return None
                     pings.append(p)
-            if i < 2: time.sleep(0.15)
+            if i < 1: time.sleep(0.1)
         return sum(pings) // len(pings)
     except: return None
 
@@ -127,8 +130,7 @@ def get_config_details(link):
     try:
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
-        id_match = re.search(r'://([^@]+)@', clean_link)
-        cid = id_match.group(1) if id_match else None
+        cid = re.search(r'://([^@]+)@', clean_link).group(1)
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', clean_link)
         sni = s_m.group(1).lower() if s_m else ""
@@ -138,34 +140,30 @@ def get_config_details(link):
 
 def fetch_raw_configs(url):
     try:
-        resp = session.get(url, timeout=10, verify=False).text
-        if "://" not in resp[:50] and len(resp) > 64:
+        resp = session.get(url, timeout=8, verify=False).text
+        if "://" not in resp[:50]:
             try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except: pass
-        all_links = re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)
-        return [l.strip() for l in all_links if not l.startswith(("ss://", "trojan://"))]
+        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
     except: return []
-
-# --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [SMART HOSTING FILTER V2 + END TAGS] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [OPTIMIZED SPEED] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
         f_cf = init_executor.submit(get_network_list, os.path.join(os.path.dirname(__file__), "cloudflare_ips.txt"), "https://www.cloudflare.com/ips-v4", "CF")
         f_hz = init_executor.submit(get_network_list, os.path.join(os.path.dirname(__file__), "hetzner_ips.txt"), "https://raw.githubusercontent.com/ipverse/asn-networks/master/networks/AS24940.list", "HZ")
-        bad_networks.extend(f_cf.result()); bad_networks.extend(f_hz.result())
+        bad_networks.extend(f_cf.result() or []); bad_networks.extend(f_hz.result() or [])
         src_text = f_src.result().text
 
     def get_list_by_name(var_name):
         m = re.search(rf'{var_name}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
         return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
         
-    extra_urls = get_list_by_name("EXTRA_URLS_FOR_26")
-    std_urls = get_list_by_name("URLS")
+    extra_urls, std_urls = get_list_by_name("EXTRA_URLS_FOR_26"), get_list_by_name("URLS")
     sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
 
     vlm_results, vlm2_results = [], []
@@ -175,75 +173,54 @@ def main():
     def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
         host, port, sni, cid, name = get_config_details(config)
-        if not host or not sni: return
-        if (sni in sni_domains) != white_sni_only: return
-        garbage = ["cloudflare"] 
-        if any(x in name.lower() or x in sni for x in garbage): return
+        if not host or not sni or (sni in sni_domains) != white_sni_only: return
+        if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
         with lock:
             if host in seen_ips: return
             seen_ips.add(host)
 
         try:
-            if any(ipaddress.ip_address(host) in net for net in bad_networks):
-                with lock: seen_ips.discard(host)
+            ip_obj = ipaddress.ip_address(host)
+            if any(ip_obj in net for net in bad_networks):
                 return
-        except:
-            with lock: seen_ips.discard(host)
-            return
+        except: return
 
         country_code, isp_info, is_hosting = check_isp_info(host)
-        if not country_code:
-            with lock: seen_ips.discard(host)
-            return
+        if not country_code: return
         
         name_u = name.upper()
-        is_sni_white = (sni in sni_domains)
-        geo_is_ru = (country_code == "RU")
+        is_ru = (country_code == "RU")
         name_has_ru = any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"])
 
-        if geo_is_ru or name_has_ru:
-            if geo_is_ru != name_has_ru:
-                with lock: seen_ips.discard(host)
-                return
-        else:
-            if not is_sni_white:
-                for code, data in COUNTRY_MAP.items():
-                    if code == "RU": continue
-                    if any(a in name_u for a in data['aliases']) and country_code != code:
-                        with lock: seen_ips.discard(host)
-                        return
+        if is_ru != name_has_ru: return
+        if not is_ru and not (sni in sni_domains):
+            valid_geo = False
+            for code, data in COUNTRY_MAP.items():
+                if code != "RU" and any(a in name_u for a in data['aliases']):
+                    if country_code == code: valid_geo = True
+                    break
+            else: valid_geo = True # Если в имени нет страны, считаем валидным
+            if not valid_geo: return
 
-        is_ru = geo_is_ru
         subnet = ".".join(host.split(".")[:3])
-        
         with lock:
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or \
-               id_counts.get(cid, 0) >= MAX_PER_ID or \
-               sni_counts.get(sni, 0) >= MAX_PER_SNI:
-                seen_ips.discard(host)
-                return
-            if is_ru and ru_count >= MAX_RU_CONFIGS:
-                seen_ips.discard(host)
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID or \
+               sni_counts.get(sni, 0) >= MAX_PER_SNI or (is_ru and ru_count >= MAX_RU_CONFIGS):
                 return
             if is_ru: ru_count += 1
 
         ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
-        
         if ping_res is None:
-            with lock:
-                seen_ips.discard(host)
-                if is_ru: ru_count -= 1
+            if is_ru: 
+                with lock: ru_count -= 1
             return
 
-        print(f"[✅ OK] {country_code} | {'HOSTING' if is_hosting else 'RESIDENTIAL'} | {ping_res}ms | {host}", flush=True)
+        print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
         final_link = apply_random_fp(config)
         
         with lock:
-            res_obj = {
-                "link": final_link, "ping": ping_res, "country": country_code, 
-                "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting
-            }
+            res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
@@ -255,31 +232,24 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
             f = [g.submit(fetch_raw_configs, u) for u in p_url]
             for fut in concurrent.futures.as_completed(f): step_links.extend(fut.result())
-        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as v:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v: # Увеличено количество воркеров
             for c in step_links: v.submit(validate_one_config, c, p_url == extra_urls, p_sni)
 
     def finalize_list(results, is_vlm1=False):
         results.sort(key=lambda x: ((2 if x['white_sni'] else 1) if x['is_priority'] else 0, -x['ping']), reverse=True)
-        renamed = []
-        for i, item in enumerate(results[:MAX_CONFIGS], 1):
-            lnk = rename_config(item['link'], item['country'], i, is_hosting=item['is_hosting'])
-            if is_vlm1: lnk = remove_udp443(lnk)
-            renamed.append(lnk)
-        return renamed
+        return [remove_udp443(rename_config(r['link'], r['country'], i, r['is_hosting'])) if is_vlm1 else rename_config(r['link'], r['country'], i, r['is_hosting']) for i, r in enumerate(results[:MAX_CONFIGS], 1)]
 
-    final_v1 = finalize_list(vlm_results, True)
-    final_v2 = finalize_list(vlm2_results)
+    f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
 
     try:
-        g = Github(auth=Auth.Token(GITHUB_TOKEN))
-        repo = g.get_repo(REPO_NAME)
-        for fn, lst in [(FILENAME_VLM, final_v1), (FILENAME_VLM2, final_v2)]:
+        repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
+        for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path = f"githubmirror/{fn}"
+            content = "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
             try:
-                sha = repo.get_contents(path).sha
-                repo.update_file(path, msg, "\n".join(lst), sha)
-            except: repo.create_file(path, msg, "\n".join(lst))
+                repo.update_file(path, msg, content, repo.get_contents(path).sha)
+            except: repo.create_file(path, msg, content)
     except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
 
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
