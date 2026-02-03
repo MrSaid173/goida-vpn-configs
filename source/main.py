@@ -32,7 +32,7 @@ COUNTRY_MAP = {
     "DE": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"],
     "NL": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"],
     "GB": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"],
-    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "🇹🇷"],
+    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "ТҮРКИЕ", "🇹🇷"],
     "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
     "FI": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"],
     "PL": ["POLAND", "ПОЛЬША", "🇵🇱"],
@@ -49,7 +49,6 @@ def apply_random_fp(config_link):
     return re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
 
 def remove_udp443(config_link):
-    """Специальная очистка только для VLM: удаление -udp443 отовсюду."""
     return config_link.replace("-udp443", "")
 
 def get_network_list(file_path, url, name):
@@ -72,13 +71,29 @@ def check_isp_info(ip_str):
     with api_semaphore:
         try:
             time.sleep(1.35)
-            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as", timeout=5).json()
+            # Запрашиваем расширенный набор полей, включая hosting и asname
+            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5).json()
             if r.get("status") == "success":
-                isp_info = (str(r.get("isp", "")) + " " + str(r.get("org", "")) + " " + str(r.get("as", ""))).lower()
+                # Собираем всю текстовую информацию об ASN и провайдере в одну строку для поиска
+                isp_data = [
+                    str(r.get("isp", "")),
+                    str(r.get("org", "")),
+                    str(r.get("as", "")),
+                    str(r.get("asname", ""))
+                ]
+                full_info_text = " ".join(isp_data).lower()
                 country = r.get("countryCode", "")
-                bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode"]
-                is_hosting = any(x in isp_info for x in bad_keywords)
-                ip_cache[ip_str] = (country, isp_info, is_hosting)
+                
+                # 1. Проверка флага hosting напрямую из API
+                is_hosting = r.get("hosting", False)
+                
+                # 2. Если API говорит False, проверяем текстовые триггеры (AlexHost, Hosting и т.д.)
+                if not is_hosting:
+                    bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host"]
+                    if any(x in full_info_text for x in bad_keywords):
+                        is_hosting = True
+                
+                ip_cache[ip_str] = (country, full_info_text, is_hosting)
                 return ip_cache[ip_str]
         except: pass
         return None, None, False
@@ -151,20 +166,19 @@ def main():
     std_urls = get_list_by_name("URLS")
     sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
 
-    vlm_data, vlm2_data = {}, {}
+    vlm_data, vlm_data2 = {}, {}
     seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
     ru_count = 0
 
     def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
-        if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
+        if len(vlm_data2) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
         
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
         
         if (sni in sni_domains) != white_sni_only: return
 
-        # 2. Фильтр мусора (УБРАЛ -udp443 из списка удаления)
         garbage = ["cloudflare"] 
         if any(x in name.lower() or x in sni for x in garbage): return
         
@@ -181,6 +195,8 @@ def main():
             return
 
         country_code, isp_info, is_hosting = check_isp_info(host)
+        
+        # Фильтр хостинга по API и по ключевому слову "host"
         if not country_code or is_hosting:
             with lock: seen_ips.discard(host)
             return
@@ -216,19 +232,16 @@ def main():
 
         print(f"[✅ OK] {country_code} | Ping (avg): {ping_res}ms | Host: {host}")
         
-        # Готовим финальную версию с рандомным FP
         base_final = apply_random_fp(config)
 
         with lock:
             score = (2 if white_sni_only else 1) if is_priority else 0
             added = False
             
-            # Сохраняем в vlm2 (как есть, с udp443)
-            if len(vlm2_data) < MAX_CONFIGS:
-                vlm2_data[base_final] = score
+            if len(vlm_data2) < MAX_CONFIGS:
+                vlm_data2[base_final] = score
                 added = True
             
-            # Сохраняем в vlm (БЕЗ udp443)
             if "xhttp" not in base_final.lower() and len(vlm_data) < MAX_CONFIGS:
                 vlm_clean = remove_udp443(base_final)
                 vlm_data[vlm_clean] = score
@@ -243,7 +256,7 @@ def main():
                 if is_ru: ru_count -= 1
 
     def process_step(urls, is_priority, white_sni_only):
-        if len(vlm2_data) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
+        if len(vlm_data2) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
         all_raw = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as gatherer:
             futures = [gatherer.submit(fetch_raw_configs, u) for u in urls]
@@ -254,7 +267,7 @@ def main():
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         process_step(p_url, p_url == extra_urls, p_sni)
 
-    final_vlm2 = [k for k, v in sorted(vlm2_data.items(), key=lambda x: x[1], reverse=True)]
+    final_vlm2 = [k for k, v in sorted(vlm_data2.items(), key=lambda x: x[1], reverse=True)]
     final_vlm = [k for k, v in sorted(vlm_data.items(), key=lambda x: x[1], reverse=True)]
 
     try:
