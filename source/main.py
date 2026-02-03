@@ -87,7 +87,7 @@ def check_isp_info(ip_str):
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
                 if not is_hosting:
-                    bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host"]
+                    bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers"]
                     if any(x in full_info_text for x in bad_keywords):
                         is_hosting = True
                 ip_cache[ip_str] = (country, full_info_text, is_hosting)
