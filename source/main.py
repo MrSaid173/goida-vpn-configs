@@ -16,6 +16,7 @@ MAX_RU_CONFIGS = 6
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
+MAX_FAILED_PER_SUBNET = 5 # Лимит неудачных попыток для подсети
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
 MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 430.0
@@ -44,6 +45,7 @@ lock = threading.Lock()
 api_semaphore = threading.Semaphore(3)
 bad_networks = []
 ip_cache = {}
+failed_subnets = {} # { "217.13.104": кол-во_неудач }
 last_api_call = 0
 
 # --- УТИЛИТЫ ---
@@ -78,15 +80,12 @@ def get_network_list(file_path, url, name):
 def check_isp_info(ip_str):
     global last_api_call
     if ip_str in ip_cache: return ip_cache[ip_str]
-    
     with api_semaphore:
         try:
-            # Умная задержка только перед запросом
             with lock:
                 elapsed = time.perf_counter() - last_api_call
                 if elapsed < 1.1: time.sleep(1.1 - elapsed)
                 last_api_call = time.perf_counter()
-
             r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=4).json()
             if r.get("status") == "success":
                 isp_data = [str(r.get(k, "")) for k in ["isp", "org", "as", "asname"]]
@@ -94,9 +93,7 @@ def check_isp_info(ip_str):
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
                 bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers"]
-                if not is_hosting:
-                    is_hosting = any(x in full_info_text for x in bad_keywords)
-                
+                if not is_hosting: is_hosting = any(x in full_info_text for x in bad_keywords)
                 res = (country, full_info_text, is_hosting)
                 with lock: ip_cache[ip_str] = res
                 return res
@@ -106,16 +103,12 @@ def check_isp_info(ip_str):
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
     c_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
-    if not is_ru and is_hosting:
-        c_max = min(MAX_WORLD_PING / 3.0, 150.0)
-    else:
-        c_max = MAX_RU_PING if is_ru else MAX_WORLD_PING
+    c_max = min(MAX_WORLD_PING / 3.0, 150.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
 
     try:
         context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        for i in range(2): # Уменьшено до 2 попыток для скорости
+        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
+        for i in range(2):
             start = time.perf_counter()
             with socket.create_connection((host, port), timeout=1.0) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
@@ -147,10 +140,12 @@ def fetch_raw_configs(url):
         return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
     except: return []
 
+# --- ГЛАВНАЯ ЛОГИКА ---
+
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [OPTIMIZED SPEED] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [SUBNET SMART DETECTOR ON] [{offset}] ---", flush=True)
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -176,63 +171,63 @@ def main():
         if not host or not sni or (sni in sni_domains) != white_sni_only: return
         if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
+        subnet = ".".join(host.split(".")[:3])
+
+        # 1. ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА (Включая черный список подсетей)
         with lock:
+            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET:
+                return # Эта подсеть уже показала себя плохо, пропускаем без проверок
+            
             if host in seen_ips: return
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
+            if id_counts.get(cid, 0) >= MAX_PER_ID: return
+            if sni_counts.get(sni, 0) >= MAX_PER_SNI: return
             seen_ips.add(host)
 
+        # 2. ПРОВЕРКА ЧЕРНЫХ СПИСКОВ (IP ranges)
         try:
             ip_obj = ipaddress.ip_address(host)
-            if any(ip_obj in net for net in bad_networks):
-                return
+            if any(ip_obj in net for net in bad_networks): return
         except: return
 
+        # 3. GEO / ISP (С кэшем по IP работает мгновенно)
         country_code, isp_info, is_hosting = check_isp_info(host)
         if not country_code: return
         
-        name_u = name.upper()
-        is_ru = (country_code == "RU")
-        name_has_ru = any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"])
-
-        if is_ru != name_has_ru: return
-        if not is_ru and not (sni in sni_domains):
-            valid_geo = False
-            for code, data in COUNTRY_MAP.items():
-                if code != "RU" and any(a in name_u for a in data['aliases']):
-                    if country_code == code: valid_geo = True
-                    break
-            else: valid_geo = True # Если в имени нет страны, считаем валидным
-            if not valid_geo: return
-
-        subnet = ".".join(host.split(".")[:3])
-        with lock:
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID or \
-               sni_counts.get(sni, 0) >= MAX_PER_SNI or (is_ru and ru_count >= MAX_RU_CONFIGS):
-                return
-            if is_ru: ru_count += 1
-
+        name_u, is_ru = name.upper(), (country_code == "RU")
+        if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
+        
+        # 4. ПИНГ
         ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
+        
         if ping_res is None:
-            if is_ru: 
-                with lock: ru_count -= 1
+            with lock:
+                # Наращиваем счетчик неудач для подсети
+                failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
+                if failed_subnets[subnet] == MAX_FAILED_PER_SUBNET:
+                    print(f"  [!] SUBNET BLACKLISTED: {subnet}.x", flush=True)
             return
 
+        # 5. ФИНАЛЬНАЯ ЗАПИСЬ (Если пинг прошел)
         print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
         final_link = apply_random_fp(config)
         
         with lock:
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return 
             res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
             vlm2_results.append(res_obj)
             if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
+            if is_ru: ru_count += 1
 
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         step_links = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
             f = [g.submit(fetch_raw_configs, u) for u in p_url]
             for fut in concurrent.futures.as_completed(f): step_links.extend(fut.result())
-        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v: # Увеличено количество воркеров
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
             for c in step_links: v.submit(validate_one_config, c, p_url == extra_urls, p_sni)
 
     def finalize_list(results, is_vlm1=False):
@@ -244,14 +239,11 @@ def main():
     try:
         repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
-            path = f"githubmirror/{fn}"
-            content = "\n".join(lst)
+            path, content = f"githubmirror/{fn}", "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
-            try:
-                repo.update_file(path, msg, content, repo.get_contents(path).sha)
+            try: repo.update_file(path, msg, content, repo.get_contents(path).sha)
             except: repo.create_file(path, msg, content)
     except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
-
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
 
 if __name__ == "__main__":
