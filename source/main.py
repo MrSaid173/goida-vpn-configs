@@ -17,7 +17,6 @@ MAX_PER_SUBNET = 3
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
 
-# Настройки пинга (в мс)
 MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
 MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 430.0
 
@@ -26,16 +25,17 @@ session = requests.Session()
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
+# Словарь для проверки и маппинга названий
 COUNTRY_MAP = {
-    "RU": ["RUSSIA", "РОССИЯ", "RUS", "🇷🇺"],
-    "US": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"],
-    "DE": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"],
-    "NL": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"],
-    "GB": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"],
-    "TR": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "ТҮРКИЕ", "🇹🇷"],
-    "KZ": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"],
-    "FI": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"],
-    "PL": ["POLAND", "ПОЛЬША", "🇵🇱"],
+    "RU": {"aliases": ["RUSSIA", "РОССИЯ", "RUS", "🇷🇺"], "full": "Russia", "flag": "🇷🇺"},
+    "US": {"aliases": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"], "full": "USA", "flag": "🇺🇸"},
+    "DE": {"aliases": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"], "full": "Germany", "flag": "🇩🇪"},
+    "NL": {"aliases": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"], "full": "The Netherlands", "flag": "🇳🇱"},
+    "GB": {"aliases": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"], "full": "United Kingdom", "flag": "🇬🇧"},
+    "TR": {"aliases": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "ТҮРКИЕ", "Türkiye", "🇹🇷"], "full": "Turkey", "flag": "🇹🇷"},
+    "KZ": {"aliases": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"], "full": "Kazakhstan", "flag": "🇰🇿"},
+    "FI": {"aliases": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"], "full": "Finland", "flag": "🇫🇮"},
+    "PL": {"aliases": ["POLAND", "ПОЛЬША", "🇵🇱"], "full": "Poland", "flag": "🇵🇱"},
 }
 
 lock = threading.Lock()
@@ -44,6 +44,13 @@ bad_networks = []
 ip_cache = {}
 
 # --- УТИЛИТЫ ---
+
+def rename_config(link, country_code, index):
+    """Удаляет старое имя и ставит новое: 🇳🇱 The Netherlands — #1"""
+    base_part = link.split('#')[0]
+    country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
+    new_name = f"{country_info['flag']} {country_info['full']} — #{index}"
+    return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_random_fp(config_link):
     return re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
@@ -71,28 +78,16 @@ def check_isp_info(ip_str):
     with api_semaphore:
         try:
             time.sleep(1.35)
-            # Запрашиваем расширенный набор полей, включая hosting и asname
             r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5).json()
             if r.get("status") == "success":
-                # Собираем всю текстовую информацию об ASN и провайдере в одну строку для поиска
-                isp_data = [
-                    str(r.get("isp", "")),
-                    str(r.get("org", "")),
-                    str(r.get("as", "")),
-                    str(r.get("asname", ""))
-                ]
+                isp_data = [str(r.get("isp", "")), str(r.get("org", "")), str(r.get("as", "")), str(r.get("asname", ""))]
                 full_info_text = " ".join(isp_data).lower()
                 country = r.get("countryCode", "")
-                
-                # 1. Проверка флага hosting напрямую из API
                 is_hosting = r.get("hosting", False)
-                
-                # 2. Если API говорит False, проверяем текстовые триггеры (AlexHost, Hosting и т.д.)
                 if not is_hosting:
                     bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host"]
                     if any(x in full_info_text for x in bad_keywords):
                         is_hosting = True
-                
                 ip_cache[ip_str] = (country, full_info_text, is_hosting)
                 return ip_cache[ip_str]
         except: pass
@@ -102,24 +97,20 @@ def smart_ping(host, port, sni, is_ru=False):
     pings = []
     current_max = MAX_RU_PING if is_ru else MAX_WORLD_PING
     current_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
-    
     try:
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        
         for i in range(3):
             start = time.perf_counter()
             with socket.create_connection((host, port), timeout=1.2) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
                     p = int((time.perf_counter() - start) * 1000)
-                    if p > current_max or p < current_min:
-                        return None
+                    if p > current_max or p < current_min: return None
                     pings.append(p)
             if i < 2: time.sleep(0.15)
         return sum(pings) // len(pings)
-    except:
-        return None
+    except: return None
 
 def get_config_details(link):
     try:
@@ -149,7 +140,7 @@ def fetch_raw_configs(url):
 def main():
     global bad_networks
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [OPTIMIZED STRICT FILTER] [{offset}] ---")
+    print(f"--- 🟢 ЗАПУСК [RENAME & SORT MODE] [{offset}] ---")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as init_executor:
         f_src = init_executor.submit(session.get, REMOTE_SOURCE_URL)
@@ -166,17 +157,18 @@ def main():
     std_urls = get_list_by_name("URLS")
     sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
 
-    vlm_data, vlm_data2 = {}, {}
+    # Списки для хранения объектов: {"link": str, "ping": int, "country": str, "is_priority": bool, "white_sni": bool}
+    vlm_results = []
+    vlm2_results = []
+
     seen_ips, sni_counts, subnet_counts, id_counts = set(), {}, {}, {}
     ru_count = 0
 
     def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
-        if len(vlm_data2) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
         
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
-        
         if (sni in sni_domains) != white_sni_only: return
 
         garbage = ["cloudflare"] 
@@ -195,15 +187,14 @@ def main():
             return
 
         country_code, isp_info, is_hosting = check_isp_info(host)
-        
-        # Фильтр хостинга по API и по ключевому слову "host"
         if not country_code or is_hosting:
             with lock: seen_ips.discard(host)
             return
         
+        # Проверка соответствия названия и GeoIP
         name_u = name.upper()
-        for code, aliases in COUNTRY_MAP.items():
-            if any(a in name_u for a in aliases) and country_code != code:
+        for code, data in COUNTRY_MAP.items():
+            if any(a in name_u for a in data['aliases']) and country_code != code:
                 with lock: seen_ips.discard(host)
                 return
 
@@ -224,56 +215,72 @@ def main():
         ping_res = smart_ping(host, port, sni, is_ru=is_ru)
         
         if ping_res is None:
-            print(f"[❌ BAD] {country_code} | Ping: Loss/Strict | Host: {host}")
             with lock:
                 seen_ips.discard(host)
                 if is_ru: ru_count -= 1
             return
 
-        print(f"[✅ OK] {country_code} | Ping (avg): {ping_res}ms | Host: {host}")
+        print(f"[✅ OK] {country_code} | {ping_res}ms | {host}")
         
-        base_final = apply_random_fp(config)
-
+        final_link = apply_random_fp(config)
+        
         with lock:
-            score = (2 if white_sni_only else 1) if is_priority else 0
-            added = False
+            # Сохраняем данные для последующей сортировки и переименования
+            res_obj = {
+                "link": final_link,
+                "ping": ping_res,
+                "country": country_code,
+                "is_priority": is_priority,
+                "white_sni": white_sni_only
+            }
+            vlm2_results.append(res_obj)
+            if "xhttp" not in final_link.lower():
+                vlm_results.append(res_obj)
             
-            if len(vlm_data2) < MAX_CONFIGS:
-                vlm_data2[base_final] = score
-                added = True
-            
-            if "xhttp" not in base_final.lower() and len(vlm_data) < MAX_CONFIGS:
-                vlm_clean = remove_udp443(base_final)
-                vlm_data[vlm_clean] = score
-                added = True
-            
-            if added:
-                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                id_counts[cid] = id_counts.get(cid, 0) + 1
-                sni_counts[sni] = sni_counts.get(sni, 0) + 1
-            else:
-                seen_ips.discard(host)
-                if is_ru: ru_count -= 1
+            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+            id_counts[cid] = id_counts.get(cid, 0) + 1
+            sni_counts[sni] = sni_counts.get(sni, 0) + 1
 
-    def process_step(urls, is_priority, white_sni_only):
-        if len(vlm_data2) >= MAX_CONFIGS and len(vlm_data) >= MAX_CONFIGS: return
-        all_raw = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as gatherer:
-            futures = [gatherer.submit(fetch_raw_configs, u) for u in urls]
-            for f in concurrent.futures.as_completed(futures): all_raw.extend(f.result())
-        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as validator:
-            for config in all_raw: validator.submit(validate_one_config, config, is_priority, white_sni_only)
-
+    # Запуск валидации
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
-        process_step(p_url, p_url == extra_urls, p_sni)
+        process_step_urls = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as gatherer:
+            futures = [gatherer.submit(fetch_raw_configs, u) for u in p_url]
+            for f in concurrent.futures.as_completed(futures): process_step_urls.extend(f.result())
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as validator:
+            for config in process_step_urls:
+                validator.submit(validate_one_config, config, p_url == extra_urls, p_sni)
 
-    final_vlm2 = [k for k, v in sorted(vlm_data2.items(), key=lambda x: x[1], reverse=True)]
-    final_vlm = [k for k, v in sorted(vlm_data.items(), key=lambda x: x[1], reverse=True)]
+    # --- ФИНАЛЬНАЯ СОРТИРОВКА И ПЕРЕИМЕНОВАНИЕ ---
+    def finalize_list(results):
+        # 1. Сортируем: сначала Приоритетные (score), внутри них — по Пингу (от быстрого к медленному)
+        # Score: Приоритет + WhiteSNI (как в вашем коде)
+        results.sort(key=lambda x: (
+            (2 if x['white_sni'] else 1) if x['is_priority'] else 0,
+            -x['ping'] # Минус, так как reverse=True в общем итоге даст быстрые сверху
+        ), reverse=True)
+        
+        # 2. Обрезаем до лимита
+        final_subset = results[:MAX_CONFIGS]
+        
+        # 3. Переименовываем согласно позиции в финальном списке
+        renamed_list = []
+        for i, item in enumerate(final_subset, 1):
+            new_link = rename_config(item['link'], item['country'], i)
+            if results is vlm_results: # Для VLM удаляем udp443
+                new_link = remove_udp443(new_link)
+            renamed_list.append(new_link)
+        return renamed_list
 
+    final_vlm2_links = finalize_list(vlm2_results)
+    final_vlm_links = finalize_list(vlm_results)
+
+    # --- ОТПРАВКА В GITHUB ---
     try:
         g = Github(auth=Auth.Token(GITHUB_TOKEN))
         repo = g.get_repo(REPO_NAME)
-        for fn, lst in [(FILENAME_VLM, final_vlm), (FILENAME_VLM2, final_vlm2)]:
+        for fn, lst in [(FILENAME_VLM, final_vlm_links), (FILENAME_VLM2, final_vlm2_links)]:
             path = f"githubmirror/{fn}"
             msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | {offset}"
             try:
