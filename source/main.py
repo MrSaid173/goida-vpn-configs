@@ -1,4 +1,4 @@
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, secrets
+import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -19,8 +19,8 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
-MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 500.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
+MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 430.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -67,37 +67,19 @@ stop_all = False
 
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     base_part = link.split('#')[0]
-    base_part = base_part.replace("/?", "?").replace("/#", "#")
-    
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
+    
     tags = []
     if is_hosting: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
+    
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     
-    # УБРАНО: unique_suffix со скобками и частью IP
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
-def apply_clean_params(config_link):
-    # Устанавливаем fp=random
-    link = re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
-    link = link.replace("/?", "?")
-    link = re.sub(r'(?<!:)/{2,}', '/', link)
-    
-    # Генерируем уникальный sid для каждой ссылки, чтобы Hiddify не объединял их
-    random_sid = secrets.token_hex(4)
-    if "sid=" in link:
-        link = re.sub(r'sid=[^&?#]*', f'sid={random_sid}', link)
-    else:
-        sep = "&" if "?" in link else "?"
-        # Вставляем sid перед якорем (#)
-        if "#" in link:
-            link = link.replace("#", f"{sep}sid={random_sid}#")
-        else:
-            link += f"{sep}sid={random_sid}"
-            
-    return link
+def apply_random_fp(config_link):
+    return re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
 
 def remove_udp443(config_link):
     return config_link.replace("-udp443", "")
@@ -142,7 +124,8 @@ def check_isp_info(ip_str):
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
     c_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
-    c_max = min(MAX_WORLD_PING / 2.0, 200.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
+    c_max = min(MAX_WORLD_PING / 3.0, 150.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
+
     try:
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
@@ -210,14 +193,17 @@ def main():
         if stop_all: return
 
         host, port, sni, cid, name = get_config_details(config)
-        if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): return
+        
+        if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host):
+            return
+
         if not sni or (sni in sni_domains) != white_sni_only: return
         if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
         subnet = ".".join(host.split(".")[:3])
 
         with lock:
-            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+            if len(vlm2_results) >= MAX_CONFIGS: 
                 stop_all = True
                 return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return 
@@ -250,27 +236,29 @@ def main():
             return
 
         with lock:
-            is_xhttp = "xhttp" in config.lower()
-            if is_xhttp and len(vlm2_results) >= MAX_CONFIGS:
+            if len(vlm2_results) >= MAX_CONFIGS or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET:
                 if is_ru: ru_count -= 1
                 else: country_counts[country_code] -= 1
-                return
-            if not is_xhttp and len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
-                if is_ru: ru_count -= 1
-                else: country_counts[country_code] -= 1
-                return
+                return 
 
             print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
-            final_link = apply_clean_params(config)
-            res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
+            final_link = apply_random_fp(config)
+            res_obj = {
+                "link": final_link, 
+                "ping": ping_res, 
+                "country": country_code, 
+                "is_priority": is_priority, 
+                "white_sni": white_sni_only, 
+                "is_hosting": is_hosting
+            }
             
-            if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_obj)
-            if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_obj)
+            vlm2_results.append(res_obj)
+            if "xhttp" not in final_link.lower(): vlm_results.append(res_obj)
             
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
-            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: stop_all = True
+            if len(vlm2_results) >= MAX_CONFIGS: stop_all = True
 
     for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         if stop_all: break
@@ -289,11 +277,13 @@ def main():
         return [
             remove_udp443(rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])) 
             if is_vlm1 else rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni']) 
-            for i, r in enumerate(results, 1)
+            for i, r in enumerate(results[:MAX_CONFIGS], 1)
         ]
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
-    sni_ru_final_count = sum(1 for r in vlm2_results if r['white_sni'])
+    
+    # Считаем количество SNI-RU среди финальных 100 конфигов в vlm2
+    sni_ru_final_count = sum(1 for r in vlm2_results[:MAX_CONFIGS] if r['white_sni'])
 
     try:
         repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
@@ -305,7 +295,7 @@ def main():
     except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
     
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
-    print(f"--- Итого vlm: {len(f_v1)}, vlm2: {len(f_v2)} ---", flush=True)
+    print(f"--- Итого в списке SNI-RU конфигов: {sni_ru_final_count} ---", flush=True)
 
 if __name__ == "__main__":
     main()
