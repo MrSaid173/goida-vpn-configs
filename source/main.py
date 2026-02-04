@@ -19,7 +19,7 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 380.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 350.0
 MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 500.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -54,6 +54,8 @@ COUNTRY_MAP = {
     "BR": {"aliases": ["BRAZIL", "БРАЗИЛИЯ", "🇧🇷"], "full": "Brazil", "flag": "🇧🇷"},
     "JP": {"aliases": ["JAPAN", "ЯПОНИЯ", "🇯🇵"], "full": "Japan", "flag": "🇯🇵"},
     "IE": {"aliases": ["IRELAND", "ИРЛАНДИЯ", "🇮🇪"], "full": "Ireland", "flag": "🇮🇪"},
+    "HK": {"aliases": ["HONG KONG", "ГОНКОНГ", "🇭🇰"], "full": "Hong Kong", "flag": "🇭🇰"},
+    "IS": {"aliases": ["ICELAND", "ИСЛАНДИЯ", "🇮🇸"], "full": "Iceland", "flag": "🇮🇸"},
 }
 
 lock = threading.Lock()
@@ -76,11 +78,8 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     if is_white_sni: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     
-    # Уникальный суффикс для Hiddify
-    ip_match = re.search(r'@([\d\.]+)', base_part)
-    unique_suffix = f" ({ip_match.group(1).split('.')[-1]})" if ip_match else ""
-    
-    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{unique_suffix}{tag_str}"
+    # ИЗМЕНЕНО: unique_suffix удален, чтобы не мозолить глаза концом IP
+    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
