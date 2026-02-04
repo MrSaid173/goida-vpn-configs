@@ -19,7 +19,7 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 380.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 350.0
 MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 500.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
