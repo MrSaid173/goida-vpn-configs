@@ -19,8 +19,8 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
-MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 430.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 430.0
+MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 500.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -129,7 +129,7 @@ def check_isp_info(ip_str):
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
     c_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
-    c_max = min(MAX_WORLD_PING / 3.0, 150.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
+    c_max = min(MAX_WORLD_PING / 2.0, 200.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
     try:
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
