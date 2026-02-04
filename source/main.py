@@ -1,4 +1,4 @@
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl
+import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, secrets
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -51,6 +51,8 @@ COUNTRY_MAP = {
     "SG": {"aliases": ["SINGAPORE", "СИНГАПУР", "🇸🇬"], "full": "Singapore", "flag": "🇸🇬"},
     "BG": {"aliases": ["BULGARIA", "БОЛГАРИЯ", "🇧🇬"], "full": "Bulgaria", "flag": "🇧🇬"},
     "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
+    "BR": {"aliases": ["BRAZIL", "БРАЗИЛИЯ", "🇧🇷"], "full": "Brazil", "flag": "🇧🇷"},
+    "JP": {"aliases": ["JAPAN", "ЯПОНИЯ", "🇯🇵"], "full": "Japan", "flag": "🇯🇵"},
 }
 
 lock = threading.Lock()
@@ -73,17 +75,28 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     if is_white_sni: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     
-    # Уникальный суффикс для Hiddify
-    ip_match = re.search(r'@([\d\.]+)', base_part)
-    unique_suffix = f" ({ip_match.group(1).split('.')[-1]})" if ip_match else ""
-    
-    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{unique_suffix}{tag_str}"
+    # УБРАНО: unique_suffix со скобками и частью IP
+    new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
+    # Устанавливаем fp=random
     link = re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
     link = link.replace("/?", "?")
     link = re.sub(r'(?<!:)/{2,}', '/', link)
+    
+    # Генерируем уникальный sid для каждой ссылки, чтобы Hiddify не объединял их
+    random_sid = secrets.token_hex(4)
+    if "sid=" in link:
+        link = re.sub(r'sid=[^&?#]*', f'sid={random_sid}', link)
+    else:
+        sep = "&" if "?" in link else "?"
+        # Вставляем sid перед якорем (#)
+        if "#" in link:
+            link = link.replace("#", f"{sep}sid={random_sid}#")
+        else:
+            link += f"{sep}sid={random_sid}"
+            
     return link
 
 def remove_udp443(config_link):
