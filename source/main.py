@@ -11,8 +11,8 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
-MAX_CONFIGS = 100 
-MAX_RU_CONFIGS = 6
+MAX_CONFIGS = 50 
+MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
@@ -20,7 +20,7 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 350.0
-MIN_WORLD_PING, MAX_WORLD_PING = 30.0, 500.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 450.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
