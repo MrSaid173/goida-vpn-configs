@@ -121,7 +121,7 @@ def check_isp_info(ip_str):
                 full_info_text = " ".join(isp_data).lower()
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
-                bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers", "world"]
+                bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers", "work"]
                 if not is_hosting: is_hosting = any(x in full_info_text for x in bad_keywords)
                 res = (country, full_info_text, is_hosting)
                 with lock: ip_cache[ip_str] = res
