@@ -12,14 +12,13 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-# Расширенный список для исключения мусорных хостингов
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
-MAX_PER_SUBNET = 2 # Уменьшил до 2 для большего разнообразия сетей
+MAX_PER_SUBNET = 2 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
@@ -81,28 +80,23 @@ stop_all = False
 # --- УТИЛИТЫ ---
 
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
-    # Очищаем базовую часть ссылки от старых имен и лишних знаков
     base_part = link.split('#')[0].rstrip('/')
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
-    
     tags = []
     if is_hosting is True: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
-    
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
     parts = config_link.split("#", 1)
     base = parts[0]
-    # Удаляем любой fp и добавляем fp=random
     base = re.sub(r'[&?]fp=[^&?#]+', '', base)
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    # Чистка URL
     base = base.replace("/?", "?").replace("/&", "&").replace("//", "/")
-    base = base.replace(":/", "://") # возвращаем протокол
+    base = base.replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 def check_isp_info(ip_str):
@@ -112,21 +106,13 @@ def check_isp_info(ip_str):
         try:
             with lock:
                 elapsed = time.perf_counter() - last_api_call
-                if elapsed < 1.1: time.sleep(1.1 - elapsed)
+                if elapsed < 1.15: time.sleep(1.15 - elapsed)
                 last_api_call = time.perf_counter()
-            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=4).json()
+            r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=3).json()
             if r.get("status") == "success":
-                isp_fields = [str(r.get(k, "")) for k in ["isp", "org", "as", "asname"]]
-                full_info_text = " ".join(isp_fields).lower()
-                country = r.get("countryCode", "")
-                is_hosting = r.get("hosting", False)
-
-                # Жёсткая проверка по списку ключевых слов
-                if any(word in full_info_text for word in BAD_HOSTING_KEYWORDS):
-                    res = (country, full_info_text, "BANNED")
-                else:
-                    res = (country, full_info_text, is_hosting)
-                
+                full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
+                is_banned = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                res = (r.get("countryCode"), full_info, "BANNED" if is_banned else r.get("hosting", False))
                 with lock: ip_cache[ip_str] = res
                 return res
         except: pass
@@ -137,7 +123,7 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
         start = time.perf_counter()
-        with socket.create_connection((host, port), timeout=1.0) as sock:
+        with socket.create_connection((host, port), timeout=0.7) as sock:
             with context.wrap_socket(sock, server_hostname=sni):
                 return int((time.perf_counter() - start) * 1000)
     except: return None
@@ -147,15 +133,14 @@ def full_ping_analysis(host, port, sni, initial_ping):
     try:
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-        for _ in range(3):
+        for _ in range(2):
             start = time.perf_counter()
-            with socket.create_connection((host, port), timeout=1.0) as sock:
+            with socket.create_connection((host, port), timeout=0.8) as sock:
                 with context.wrap_socket(sock, server_hostname=sni):
                     pings.append(int((time.perf_counter() - start) * 1000))
-            time.sleep(0.05)
-        avg_ping = sum(pings) // len(pings)
-        jitter = sum(abs(p - avg_ping) for p in pings) // len(pings)
-        return avg_ping, jitter
+        avg = sum(pings) // len(pings)
+        jit = sum(abs(p - avg) for p in pings) // len(pings)
+        return avg, jit
     except: return None
 
 def get_config_details(link):
@@ -187,7 +172,6 @@ def main():
     print(f"--- 🟢 ЗАПУСК [REACTIVE MODE] [{offset}] ---", flush=True)
     
     src_text = session.get(REMOTE_SOURCE_URL).text
-
     def get_list_by_name(var_name):
         m = re.search(rf'{var_name}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
         return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
@@ -200,100 +184,78 @@ def main():
     ru_count = 0
 
     def validate_one_config(config, is_priority, white_sni_only):
-        global stop_all
         nonlocal ru_count
-        if stop_all: return
-
         host, port, sni, cid, name = get_config_details(config)
-        if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): return
-        if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
+        if not host or any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != white_sni_only: return
         
         subnet = ".".join(host.split(".")[:3])
         with lock:
             if host in seen_ips or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
-            if id_counts.get(cid, 0) >= MAX_PER_ID: return
 
-        initial_p = fast_ping(host, port, sni)
-        if not initial_p or initial_p > MAX_WORLD_PING: 
+        # ШАГ 1: Пинг (быстро)
+        p1 = fast_ping(host, port, sni)
+        if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        country_code, isp_info, host_status = check_isp_info(host)
-        if not country_code or host_status == "BANNED": return
-        
-        # Динамический лимит для хостинга
-        current_limit = min(MAX_WORLD_PING // 3, 200) if host_status is True else MAX_WORLD_PING
-        if initial_p > current_limit: return
+        # ШАГ 2: ISP (медленно)
+        cc, isp, h_stat = check_isp_info(host)
+        if not cc or h_stat == "BANNED": return
+        if h_stat is True and p1 > 200: return
 
-        name_u, is_ru = name.upper(), (country_code == "RU")
-        if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
+        is_ru = (cc == "RU")
+        if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
 
         with lock:
-            limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
-            current = ru_count if is_ru else country_counts.get(country_code, 0)
-            if current >= limit: return
-            # Резервируем место
+            if is_ru and ru_count >= MAX_RU_CONFIGS: return
+            if not is_ru and country_counts.get(cc, 0) >= MAX_PER_COUNTRY: return
+
+        # ШАГ 3: Финальный замер
+        full = full_ping_analysis(host, port, sni, p1)
+        if not full or full[1] > MAX_JITTER: return
+        
+        with lock:
             if is_ru: ru_count += 1
-            else: country_counts[country_code] = current + 1
+            else: country_counts[cc] = country_counts.get(cc, 0) + 1
             seen_ips.add(host)
-
-        full_analysis = full_ping_analysis(host, port, sni, initial_p)
-        if not full_analysis or full_analysis[1] > MAX_JITTER:
-            with lock:
-                if is_ru: ru_count -= 1
-                else: country_counts[country_code] -= 1
-                seen_ips.remove(host)
-            return
-        
-        avg_p = full_analysis[0]
-        with lock:
-            is_xhttp = "xhttp" in config.lower()
-            final_link = apply_clean_params(config)
-            res_obj = {"link": final_link, "ping": avg_p, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": host_status}
-            vlm2_results.append(res_obj)
-            if not is_xhttp: vlm_results.append(res_obj)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            id_counts[cid] = id_counts.get(cid, 0) + 1
+            
+            res = {"link": apply_clean_params(config), "ping": full[0], "country": cc, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": h_stat}
+            vlm2_results.append(res)
+            if "xhttp" not in config.lower(): vlm_results.append(res)
+            print(f"[FOUND] {cc} | {full[0]}ms | {host}", flush=True)
 
-    # ПРОВЕРКА ГРУПП (Исправлена последовательность)
+    # ПРОВЕРКА
     raw_extra, raw_std = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
-        for u in extra_urls: raw_extra.extend(fetch_raw_configs(u))
-        for u in std_urls: raw_std.extend(fetch_raw_configs(u))
+        for u in set(extra_urls): raw_extra.extend(fetch_raw_configs(u))
+        for u in set(std_urls): raw_std.extend(fetch_raw_configs(u))
 
-    # Сначала EXTRA с белым SNI, потом STD с белым SNI, потом остальные
     groups = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
     for group, priority, is_white in groups:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=35) as v:
-            for c in group: v.submit(validate_one_config, c, priority, is_white)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
+            for c in set(group): v.submit(validate_one_config, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # Сортировка: Сначала по приоритету (EXTRA+SNI), потом ПО ВОЗРАСТАНИЮ ПИНГА (самые быстрые сверху)
-        results.sort(key=lambda x: (
-            -(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), 
-            x['ping']
-        ))
-        trimmed = results[:MAX_CONFIGS]
-        return [
-            rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni']).replace("-udp443", "") if is_vlm1
-            else rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
-            for i, r in enumerate(trimmed, 1)
-        ]
+        results.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
+        return [rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni']).replace("-udp443", "") if is_vlm1
+                else rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
+                for i, r in enumerate(results[:MAX_CONFIGS], 1)]
 
-    f_v1 = finalize_list(vlm_results, True)
-    f_v2 = finalize_list(vlm2_results)
+    f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
 
     try:
         repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
-            msg = f"🚀 {fn} | T: {len(lst)} | Jitter: {MAX_JITTER}ms | {offset}"
+            msg = f"🚀 {fn} | T: {len(lst)} | {offset}"
             try: repo.update_file(path, msg, content, repo.get_contents(path).sha)
             except: repo.create_file(path, msg, content)
-    except Exception as e: print(f" ❌ GitHub Error: {e}")
-    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---")
+    except Exception as e: print(f"GH Error: {e}")
+    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
     main()
+    
