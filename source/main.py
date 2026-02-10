@@ -12,8 +12,8 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-# Список для ПРИНУДИТЕЛЬНОГО исключения (теперь в начале кода)
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers", "work"]
+# Список для ПРИНУДИТЕЛЬНОГО исключения
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
@@ -83,7 +83,7 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     base_part = link.split('#')[0].replace("/?", "?").replace("/#", "#")
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
-    if is_hosting: tags.append("HOST")
+    if is_hosting is True: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
@@ -106,16 +106,12 @@ def check_isp_info(ip_str):
                 last_api_call = time.perf_counter()
             r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=4).json()
             if r.get("status") == "success":
-                # Склейка ВСЕХ полей и приведение к нижнему регистру для надежного поиска
                 isp_fields = [r.get(k, "") for k in ["isp", "org", "as", "asname"]]
                 full_info_text = " ".join(map(str, isp_fields)).lower()
-                
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
 
-                # Проверка черного списка ключевых слов
                 is_banned = any(word.lower() in full_info_text for word in BAD_HOSTING_KEYWORDS)
-                
                 if is_banned:
                     res = (country, full_info_text, "BANNED")
                 else:
@@ -201,7 +197,6 @@ def main():
         host, port, sni, cid, name = get_config_details(config)
         if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): return
         
-        # --- ЭТАП 1: ФИЛЬТРЫ И ЖЕСТКАЯ БЛОКИРОВКА IP ---
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != white_sni_only: return
         
@@ -210,10 +205,10 @@ def main():
             if host in seen_ips or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
             if id_counts.get(cid, 0) >= MAX_PER_ID: return
-            seen_ips.add(host) # Бронируем IP мгновенно
+            seen_ips.add(host)
 
-        # --- ЭТАП 2: БЫСТРЫЙ ПИНГ ---
         initial_p = fast_ping(host, port, sni)
+        # Первичная проверка на общий лимит, чтобы не делать лишних API запросов
         if not initial_p or initial_p > MAX_WORLD_PING: 
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
@@ -223,6 +218,15 @@ def main():
         if not country_code or host_status == "BANNED": 
             return
         
+        # --- ДИНАМИЧЕСКИЙ ЛИМИТ ПИНГА ---
+        # Если это хостинг (но не запрещенный), лимит = min(MAX_WORLD_PING // 3, 200)
+        current_limit = MAX_WORLD_PING
+        if host_status is True:
+            current_limit = min(MAX_WORLD_PING // 3, 200)
+        
+        if initial_p > current_limit:
+            return
+
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
 
@@ -230,14 +234,12 @@ def main():
             limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
             current = ru_count if is_ru else country_counts.get(country_code, 0)
             if current >= limit: return
-            # Предварительное бронирование лимита
             if is_ru: ru_count += 1
             else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
-        # --- ЭТАП 4: ГЛУБОКИЙ АНАЛИЗ (JITTER) ---
         full_analysis = full_ping_analysis(host, port, sni, initial_p)
         if not full_analysis or full_analysis[1] > MAX_JITTER:
-            with lock: # Снимаем бронь лимита при неудаче
+            with lock:
                 if is_ru: ru_count -= 1
                 else: country_counts[country_code] -= 1
             return
