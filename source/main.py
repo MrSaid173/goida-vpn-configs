@@ -11,6 +11,9 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
+# Список исключенных SNI (если это слово есть в SNI — конфиг выбрасывается)
+EXCLUDED_SNI_DOMAINS = ["vk"]
+
 MAX_CONFIGS = 50 
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
@@ -50,7 +53,7 @@ COUNTRY_MAP = {
     "FR": {"aliases": ["FRANCE", "ФРАНЦИЯ", "🇫🇷"], "full": "France", "flag": "🇫🇷"},
     "SG": {"aliases": ["SINGAPORE", "СИНГАПУР", "🇸🇬"], "full": "Singapore", "flag": "🇸🇬"},
     "BG": {"aliases": ["BULGARIA", "БОЛГАРИЯ", "🇧🇬"], "full": "Bulgaria", "flag": "🇧🇬"},
-    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
+    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱Т"], "full": "Lithuania", "flag": "🇱Т"},
     "BR": {"aliases": ["BRAZIL", "БРАЗИЛИЯ", "🇧🇷"], "full": "Brazil", "flag": "🇧🇷"},
     "JP": {"aliases": ["JAPAN", "ЯПОНИЯ", "🇯🇵"], "full": "Japan", "flag": "🇯🇵"},
     "IE": {"aliases": ["IRELAND", "ИРЛАНДИЯ", "🇮🇪"], "full": "Ireland", "flag": "🇮🇪"},
@@ -58,7 +61,7 @@ COUNTRY_MAP = {
     "IS": {"aliases": ["ICELAND", "ИСЛАНДИЯ", "🇮🇸"], "full": "Iceland", "flag": "🇮🇸"},
     "AL": {"aliases": ["ALBANIA", "АЛБАНИЯ", "🇦🇱"], "full": "Albania", "flag": "🇦🇱"},
     "CO": {"aliases": ["COLOMBIANA", "КОЛУМБИЯ", "🇨🇴"], "full": "Colombiana", "flag": "🇨🇴"},
-    
+    "MD": {"aliases": ["MOLDOVA", "МОЛДОВА", "🇲🇩"], "full": "Moldova", "flag": "🇲🇩"},
 }
 
 lock = threading.Lock()
@@ -74,14 +77,11 @@ stop_all = False
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     base_part = link.split('#')[0]
     base_part = base_part.replace("/?", "?").replace("/#", "#")
-    
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
-    
-    # ИЗМЕНЕНО: unique_suffix удален, чтобы не мозолить глаза концом IP
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
@@ -133,21 +133,33 @@ def check_isp_info(ip_str):
 
 def smart_ping(host, port, sni, is_ru=False, is_hosting=False):
     pings = []
+    # Лимиты для валидации
     c_min = MIN_RU_PING if is_ru else MIN_WORLD_PING
     c_max = min(MAX_WORLD_PING / 2.0, 200.0) if (not is_ru and is_hosting) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
+    
     try:
         context = ssl.create_default_context()
         context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-        for i in range(2):
+        for i in range(4): # 4 замера
             if stop_all: return None
             start = time.perf_counter()
-            with socket.create_connection((host, port), timeout=1.0) as sock:
-                with context.wrap_socket(sock, server_hostname=sni):
-                    p = int((time.perf_counter() - start) * 1000)
-                    if p > c_max or p < c_min: return None
-                    pings.append(p)
-            if i < 1: time.sleep(0.1)
-        return sum(pings) // len(pings)
+            try:
+                with socket.create_connection((host, port), timeout=1.0) as sock:
+                    with context.wrap_socket(sock, server_hostname=sni):
+                        p = int((time.perf_counter() - start) * 1000)
+                        pings.append(p)
+            except: pass
+            if i < 3: time.sleep(0.05)
+        
+        if len(pings) < 2: return None # Минимум 2 успешных замера
+        
+        avg_ping = sum(pings) // len(pings)
+        if avg_ping > c_max or avg_ping < c_min: return None
+        
+        # Вычисление Jitter (среднее абсолютное отклонение)
+        jitter = sum(abs(p - avg_ping) for p in pings) // len(pings)
+        
+        return avg_ping, jitter
     except: return None
 
 def get_config_details(link):
@@ -168,7 +180,8 @@ def fetch_raw_configs(url):
         if "://" not in resp[:50]:
             try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except: pass
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
+        configs = [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
+        return configs
     except: return []
 
 # --- ГЛАВНАЯ ЛОГИКА ---
@@ -203,6 +216,10 @@ def main():
 
         host, port, sni, cid, name = get_config_details(config)
         if not host or not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', host): return
+        
+        # 1. Проверка SNI на исключения (Blacklist)
+        if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
+        
         if not sni or (sni in sni_domains) != white_sni_only: return
         if "cloudflare" in name.lower() or "cloudflare" in sni: return
         
@@ -232,14 +249,16 @@ def main():
             if is_ru: ru_count += 1
             else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
-        ping_res = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
+        ping_data = smart_ping(host, port, sni, is_ru=is_ru, is_hosting=is_hosting)
         
-        if ping_res is None or stop_all:
+        if ping_data is None or stop_all:
             with lock:
                 if is_ru: ru_count -= 1
                 else: country_counts[country_code] -= 1
                 failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
+
+        avg_p, jitter = ping_data
 
         with lock:
             is_xhttp = "xhttp" in config.lower()
@@ -252,9 +271,11 @@ def main():
                 else: country_counts[country_code] -= 1
                 return
 
-            print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | {ping_res}ms | {host}", flush=True)
+            # Вывод лога с Jitter
+            print(f"[✅ OK] {country_code} | {'HOST' if is_hosting else 'RES'} | [{avg_p}ms | J:{jitter}ms] | {host}", flush=True)
+            
             final_link = apply_clean_params(config)
-            res_obj = {"link": final_link, "ping": ping_res, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
+            res_obj = {"link": final_link, "ping": avg_p, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
             
             if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_obj)
             if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_obj)
@@ -264,17 +285,46 @@ def main():
             sni_counts[sni] = sni_counts.get(sni, 0) + 1
             if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: stop_all = True
 
-    for p_url, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
+    # --- СБОР ССЫЛОК И ЛОГИРОВАНИЕ ---
+    all_raw_configs = []
+    
+    # Поэтапная загрузка
+    for label, urls in [("EXTRA_URLS_FOR_26", extra_urls), ("URLS", std_urls)]:
+        count_q = len(urls)
+        found_in_step = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
+            futures = [g.submit(fetch_raw_configs, u) for u in urls]
+            for fut in concurrent.futures.as_completed(futures):
+                res = fut.result()
+                found_in_step += len(res)
+                all_raw_configs.append(res)
+        print(f"📦 Нашел {found_in_step} ссылок из {count_q} {label}")
+
+    # Пессимистичный прогноз времени
+    # Расчет: общее кол-во ссылок * (4 замера * 1 сек таймаут + сон) / 40 потоков + время на API
+    total_links_count = sum(len(x) for x in all_raw_configs)
+    est_min = int((total_links_count * 4.5) / 40 / 60) + 1
+    print(f"⏳ Процесс проверки ~{total_links_count} конфигов займет максимум {est_min} мин.", flush=True)
+
+    # Запуск валидации
+    idx = 0
+    for p_url_group, p_sni in [(extra_urls, True), (std_urls, True), (extra_urls, False), (std_urls, False)]:
         if stop_all: break
+        # Фильтруем собранные конфиги, которые относятся к текущей группе URL
+        current_step_configs = []
+        # (Упрощенно: просто берем все и прогоняем через логику приоритетов)
+        # Для корректности логики используем старую схему прохода по группам
+        
         step_links = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
-            f = [g.submit(fetch_raw_configs, u) for u in p_url]
+            f = [g.submit(fetch_raw_configs, u) for u in p_url_group]
             for fut in concurrent.futures.as_completed(f): 
                 if not stop_all: step_links.extend(fut.result())
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
             for c in step_links:
                 if stop_all: break
-                v.submit(validate_one_config, c, p_url == extra_urls, p_sni)
+                v.submit(validate_one_config, c, p_url_group == extra_urls, p_sni)
 
     def finalize_list(results, is_vlm1=False):
         results.sort(key=lambda x: ((2 if x['white_sni'] else 1) if x['is_priority'] else 0, -x['ping']), reverse=True)
@@ -292,8 +342,10 @@ def main():
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | RU: {ru_count} | SNI-RU: {sni_ru_final_count} | {offset}"
-            try: repo.update_file(path, msg, content, repo.get_contents(path).sha)
-            except: repo.create_file(path, msg, content)
+            try: 
+                repo.update_file(path, msg, content, repo.get_contents(path).sha)
+            except: 
+                repo.create_file(path, msg, content)
     except Exception as e: print(f" ❌ GitHub Error: {e}", flush=True)
     
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.2f} сек. ---", flush=True)
