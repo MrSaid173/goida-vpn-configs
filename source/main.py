@@ -91,10 +91,24 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
-    link = re.sub(r'fp=[^&?#]+', 'fp=random', config_link)
-    link = link.replace("/?", "?")
-    link = re.sub(r'(?<!:)/{2,}', '/', link)
-    return link
+    # Разделяем ссылку на базовую часть и имя (после #)
+    parts = config_link.split("#", 1)
+    base = parts[0]
+    
+    # 1. Удаляем любой существующий fp (будь то chrome, firefox или что-то еще)
+    base = re.sub(r'[&?]fp=[^&?#]+', '', base)
+    
+    # 2. Добавляем fp=random принудительно
+    # Если в ссылке уже есть параметры (есть '?'), добавляем через '&', иначе через '?'
+    separator = "&" if "?" in base else "?"
+    base = f"{base}{separator}fp=random"
+    
+    # Чистка URL от двойных слешей и кривых стыков
+    base = base.replace("/?", "?").replace("/&", "&")
+    base = re.sub(r'(?<!:)/{2,}', '/', base)
+    
+    # Собираем обратно с именем, если оно было
+    return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 def check_isp_info(ip_str):
     global last_api_call
@@ -209,18 +223,14 @@ def main():
             seen_ips.add(host)
 
         initial_p = fast_ping(host, port, sni)
-        # Первичная проверка на общий лимит, чтобы не делать лишних API запросов
         if not initial_p or initial_p > MAX_WORLD_PING: 
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        # --- ЭТАП 3: IP-API ---
         country_code, isp_info, host_status = check_isp_info(host)
         if not country_code or host_status == "BANNED": 
             return
         
-        # --- ДИНАМИЧЕСКИЙ ЛИМИТ ПИНГА ---
-        # Если это хостинг (но не запрещенный), лимит = min(MAX_WORLD_PING // 3, 200)
         current_limit = MAX_WORLD_PING
         if host_status is True:
             current_limit = min(MAX_WORLD_PING // 3, 200)
