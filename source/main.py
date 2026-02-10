@@ -12,8 +12,10 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-MAX_JITTER = 50  
+# Список для ПРИНУДИТЕЛЬНОГО исключения (теперь в начале кода)
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers", "work"]
 
+MAX_JITTER = 50  
 MAX_CONFIGS = 50 
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
@@ -103,13 +105,21 @@ def check_isp_info(ip_str):
                 last_api_call = time.perf_counter()
             r = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=4).json()
             if r.get("status") == "success":
-                isp_data = [str(r.get(k, "")) for k in ["isp", "org", "as", "asname"]]
-                full_info_text = " ".join(isp_data).lower()
+                # Склейка ВСЕХ полей и приведение к нижнему регистру для надежного поиска
+                isp_fields = [r.get(k, "") for k in ["isp", "org", "as", "asname"]]
+                full_info_text = " ".join(map(str, isp_fields)).lower()
+                
                 country = r.get("countryCode", "")
                 is_hosting = r.get("hosting", False)
-                bad_keywords = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "host", "servers", "work"]
-                if not is_hosting: is_hosting = any(x in full_info_text for x in bad_keywords)
-                res = (country, full_info_text, is_hosting)
+
+                # Проверка черного списка ключевых слов
+                is_banned = any(word.lower() in full_info_text for word in BAD_HOSTING_KEYWORDS)
+                
+                if is_banned:
+                    res = (country, full_info_text, "BANNED")
+                else:
+                    res = (country, full_info_text, is_hosting)
+                
                 with lock: ip_cache[ip_str] = res
                 return res
         except: pass
@@ -199,7 +209,7 @@ def main():
             if host in seen_ips or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
             if id_counts.get(cid, 0) >= MAX_PER_ID: return
-            seen_ips.add(host) # Блокируем IP сразу!
+            seen_ips.add(host) # Бронируем IP мгновенно
 
         # --- ЭТАП 2: БЫСТРЫЙ ПИНГ ---
         initial_p = fast_ping(host, port, sni)
@@ -208,8 +218,9 @@ def main():
             return
 
         # --- ЭТАП 3: IP-API ---
-        country_code, isp_info, is_hosting = check_isp_info(host)
-        if not country_code: return
+        country_code, isp_info, host_status = check_isp_info(host)
+        if not country_code or host_status == "BANNED": 
+            return
         
         name_u, is_ru = name.upper(), (country_code == "RU")
         if is_ru != any(a in name_u for a in COUNTRY_MAP["RU"]["aliases"]): return
@@ -218,14 +229,14 @@ def main():
             limit = MAX_RU_CONFIGS if is_ru else MAX_PER_COUNTRY
             current = ru_count if is_ru else country_counts.get(country_code, 0)
             if current >= limit: return
-            # Бронируем место в лимитах страны
+            # Предварительное бронирование лимита
             if is_ru: ru_count += 1
             else: country_counts[country_code] = country_counts.get(country_code, 0) + 1
 
         # --- ЭТАП 4: ГЛУБОКИЙ АНАЛИЗ (JITTER) ---
         full_analysis = full_ping_analysis(host, port, sni, initial_p)
         if not full_analysis or full_analysis[1] > MAX_JITTER:
-            with lock: # Возвращаем бронь, если не прошел Jitter
+            with lock: # Снимаем бронь лимита при неудаче
                 if is_ru: ru_count -= 1
                 else: country_counts[country_code] -= 1
             return
@@ -241,7 +252,7 @@ def main():
             print(f"[✅ OK] {country_code} | [{avg_p}ms | J:{jitter}ms] | {host}", flush=True)
             
             final_link = apply_clean_params(config)
-            res_obj = {"link": final_link, "ping": avg_p, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": is_hosting}
+            res_obj = {"link": final_link, "ping": avg_p, "country": country_code, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": host_status}
             
             if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_obj)
             if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_obj)
