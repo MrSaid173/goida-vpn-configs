@@ -75,9 +75,6 @@ api_semaphore = threading.Semaphore(3)
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
-stop_flag = False
-
-# --- УТИЛИТЫ ---
 
 def is_valid_ipv4(ip):
     try:
@@ -171,50 +168,53 @@ def fetch_raw_configs(url):
         return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
     except: return []
 
-# --- ГЛАВНАЯ ЛОГИКА ---
-
 def main():
-    global stop_flag
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
     src_text = session.get(REMOTE_SOURCE_URL).text
-    def get_list_by_name(var_name):
-        m = re.search(rf'{var_name}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
+    def get_list(var):
+        m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
         return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
         
-    extra_urls, std_urls = get_list_by_name("EXTRA_URLS_FOR_26"), get_list_by_name("URLS")
-    sni_domains = set(s.lower() for s in get_list_by_name("SNI_DOMAINS"))
+    extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
+    sni_domains = set(s.lower() for s in get_list("SNI_DOMAINS"))
 
-    vlm_results, vlm2_results = [], []
+    vlm2_results = []
+    vlm_results = []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
     ru_count = 0
 
-    def validate_one_config(config, is_priority, white_sni_only):
+    def validate(config, is_priority, is_white):
         nonlocal ru_count
-        if stop_flag: return
+        # Проверяем лимит уже найденных (с небольшим запасом)
+        if len(vlm2_results) >= (MAX_CONFIGS + 10): return
 
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
         
-        # РЕЗЕРВИРУЕМ IP СРАЗУ
+        # Предварительная проверка IP
         with lock:
             if host in seen_ips: return
-            seen_ips.add(host)
 
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
-        if not sni or (sni in sni_domains) != white_sni_only: return
+        if not sni or (sni in sni_domains) != is_white: return
         
         subnet = ".".join(host.split(".")[:3])
         with lock:
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
-            if id_counts.get(cid, 0) >= MAX_PER_ID: return
 
+        # Быстрый пинг ПЕРЕД резервированием IP
         p1 = fast_ping(host, port, sni)
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
+
+        # Резервируем IP (раз уж он ответил на пинг)
+        with lock:
+            if host in seen_ips: return
+            seen_ips.add(host)
 
         cc, isp, h_stat = check_isp_info(host)
         if not cc or h_stat == "BANNED": return
@@ -231,46 +231,66 @@ def main():
         if not full or full[1] > MAX_JITTER: return
         
         with lock:
+            # Двойная проверка лимита внутри лока
+            if len(vlm2_results) >= (MAX_CONFIGS + 20): return
+            
             if is_ru: ru_count += 1
             else: country_counts[cc] = country_counts.get(cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             
-            res = {"link": apply_clean_params(config), "ping": full[0], "country": cc, "is_priority": is_priority, "white_sni": white_sni_only, "is_hosting": h_stat}
+            res = {"link": apply_clean_params(config), "ping": full[0], "country": cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": h_stat}
             vlm2_results.append(res)
             if "xhttp" not in config.lower(): vlm_results.append(res)
             print(f"[FOUND] {cc} | {full[0]}ms | {host}", flush=True)
-            
-            if len(vlm2_results) >= 70: stop_flag = True
 
-    raw_extra, raw_std = set(), set()
+    # Сбор сырья
+    raw_extra = []
+    raw_std = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
-        for u in set(extra_urls): raw_extra.update(fetch_raw_configs(u))
-        for u in set(std_urls): raw_std.update(fetch_raw_configs(u))
+        futures_extra = [g.submit(fetch_raw_configs, u) for u in set(extra_urls)]
+        futures_std = [g.submit(fetch_raw_configs, u) for u in set(std_urls)]
+        for f in futures_extra: raw_extra.extend(f.result())
+        for f in futures_std: raw_std.extend(f.result())
 
+    print(f"--- Собрано ссылок: Extra={len(raw_extra)}, Std={len(raw_std)} ---")
+
+    # Проверка (без stop_flag, только по счетчику результатов)
     groups = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
     for group, priority, is_white in groups:
-        if stop_flag: break
+        if len(vlm2_results) >= MAX_CONFIGS: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
-            for c in group: v.submit(validate_one_config, c, priority, is_white)
+            for c in group: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
+        # Группируем и сортируем: Сначала Приоритет+БелыйSNI, потом БелыйSNI, потом остальное
         results.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
-        return [rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni']).replace("-udp443", "") if is_vlm1
-                else rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
-                for i, r in enumerate(results[:MAX_CONFIGS], 1)]
+        output = []
+        for i, r in enumerate(results[:MAX_CONFIGS], 1):
+            link = rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
+            if is_vlm1: link = link.replace("-udp443", "")
+            output.append(link)
+        return output
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
+
+    if not f_v2:
+        print("!!! КОНФИГИ НЕ НАЙДЕНЫ !!! Проверь доступность источников или лимиты пинга.")
+        return
 
     try:
         repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | {offset}"
-            try: repo.update_file(path, msg, content, repo.get_contents(path).sha)
+            try:
+                sha = repo.get_contents(path).sha
+                repo.update_file(path, msg, content, sha)
             except: repo.create_file(path, msg, content)
+        print(f"--- Успешно обновлено: {len(f_v2)} конфигов ---")
     except Exception as e: print(f"GH Error: {e}")
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
     main()
+        
