@@ -56,7 +56,7 @@ COUNTRY_MAP = {
     "FR": {"aliases": ["FRANCE", "ФРАНЦИЯ", "🇫🇷"], "full": "France", "flag": "🇫🇷"},
     "SG": {"aliases": ["SINGAPORE", "СИНГАПУР", "🇸🇬"], "full": "Singapore", "flag": "🇸🇬"},
     "BG": {"aliases": ["BULGARIA", "БОЛГАРИЯ", "🇧🇬"], "full": "Bulgaria", "flag": "🇧🇬"},
-    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
+    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱ТУА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
     "BR": {"aliases": ["BRAZIL", "БРАЗИЛИЯ", "🇧🇷"], "full": "Brazil", "flag": "🇧🇷"},
     "JP": {"aliases": ["JAPAN", "ЯПОНИЯ", "🇯🇵"], "full": "Japan", "flag": "🇯🇵"},
     "IE": {"aliases": ["IRELAND", "ИРЛАНДИЯ", "🇮🇪"], "full": "Ireland", "flag": "🇮🇪"},
@@ -189,7 +189,8 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        if len(vlm2_results) >= MAX_CONFIGS: return
+        # Проверяем лимиты без запаса
+        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
 
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
@@ -210,34 +211,25 @@ def main():
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        # Получаем данные строго в локальные переменные потока
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
         if ip_h_stat is True and p1 > 200: return
 
         is_ru = (ip_cc == "RU")
-        # Проверка соответствия имени и страны (строго локально)
         is_name_ru = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
         if is_ru != is_name_ru: return
 
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
-            if host in seen_ips: return # Double check
+            if host in seen_ips: return 
             seen_ips.add(host)
 
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
         
         with lock:
-            if len(vlm2_results) >= MAX_CONFIGS: return
-            
-            if is_ru: ru_count += 1
-            else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            id_counts[cid] = id_counts.get(cid, 0) + 1
-            
-            # Сохраняем все данные в словарь СРАЗУ
+            is_xhttp = "xhttp" in config.lower()
             res_entry = {
                 "link": apply_clean_params(config), 
                 "ping": full[0], 
@@ -246,9 +238,21 @@ def main():
                 "white_sni": is_white, 
                 "is_hosting": ip_h_stat
             }
-            vlm2_results.append(res_entry)
-            if "xhttp" not in config.lower(): vlm_results.append(res_entry)
-            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            
+            # Добавляем в vlm2, если список еще не полон
+            if len(vlm2_results) < MAX_CONFIGS:
+                vlm2_results.append(res_entry)
+            
+            # Добавляем в vlm, если это не xhttp и список не полон
+            if not is_xhttp and len(vlm_results) < MAX_CONFIGS:
+                vlm_results.append(res_entry)
+            
+            if is_ru: ru_count += 1
+            else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
+            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+            id_counts[cid] = id_counts.get(cid, 0) + 1
+            
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {'(xHTTP)' if is_xhttp else ''}", flush=True)
 
     # Сбор
     raw_extra, raw_std = [], []
@@ -262,17 +266,14 @@ def main():
 
     groups = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
     for group, priority, is_white in groups:
-        if len(vlm2_results) >= MAX_CONFIGS: break
+        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
-            # Используем set() здесь, чтобы не гонять один конфиг 40 раз
             for c in set(group): v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # Сортировка по приоритету и пингу
         results.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
         output = []
         for i, r in enumerate(results[:MAX_CONFIGS], 1):
-            # Берем страну ТОЛЬКО из сохраненного словаря
             link = rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
             if is_vlm1: link = link.replace("-udp443", "")
             output.append(link)
@@ -289,10 +290,9 @@ def main():
                 sha = repo.get_contents(path).sha
                 repo.update_file(path, msg, content, sha)
             except: repo.create_file(path, msg, content)
-        print(f"--- Обновлено успешно [{len(f_v2)}] ---")
+        print(f"--- Обновлено успешно [vlm: {len(f_v1)}, vlm2: {len(f_v2)}] ---")
     except Exception as e: print(f"GH Error: {e}")
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
     main()
-    
