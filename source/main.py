@@ -192,6 +192,9 @@ def main():
         # Проверяем лимиты без запаса
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
 
+        # Фильтр на наличие заполненного параметра host=
+        if re.search(r'[?&]host=[^&#\s]+', config.lower()): return
+
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
         
@@ -296,3 +299,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
