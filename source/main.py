@@ -75,6 +75,7 @@ api_semaphore = threading.Semaphore(3)
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
+stop_flag = False
 
 # --- УТИЛИТЫ ---
 
@@ -82,8 +83,7 @@ def is_valid_ipv4(ip):
     try:
         ipaddress.IPv4Address(ip)
         return True
-    except:
-        return False
+    except: return False
 
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     base_part = link.split('#')[0].rstrip('/')
@@ -101,8 +101,7 @@ def apply_clean_params(config_link):
     base = re.sub(r'[&?]fp=[^&?#]+', '', base)
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    base = base.replace("/?", "?").replace("/&", "&").replace("//", "/")
-    base = base.replace(":/", "://")
+    base = base.replace("/?", "?").replace("/&", "&").replace("//", "/").replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 def check_isp_info(ip_str):
@@ -153,20 +152,13 @@ def get_config_details(link):
     try:
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
-        # Извлечение CID (ID пользователя)
         cid_match = re.search(r'://([^@]+)@', clean_link)
         cid = cid_match.group(1) if cid_match else ""
-        # Извлечение хоста и порта
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        # Извлечение SNI
         s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', clean_link)
         sni = s_m.group(1).lower() if s_m else ""
-        
-        if h_m:
-            host = h_m.group(1)
-            # ПРОВЕРКА: ТОЛЬКО IP (Никаких доменов)
-            if is_valid_ipv4(host):
-                return host, int(h_m.group(2)), sni, cid, name
+        if h_m and is_valid_ipv4(h_m.group(1)):
+            return h_m.group(1), int(h_m.group(2)), sni, cid, name
     except: pass
     return None, None, None, None, None
 
@@ -182,8 +174,9 @@ def fetch_raw_configs(url):
 # --- ГЛАВНАЯ ЛОГИКА ---
 
 def main():
+    global stop_flag
     start_total = time.perf_counter()
-    print(f"--- 🟢 ЗАПУСК [REACTIVE MODE] [{offset}] ---", flush=True)
+    print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
     src_text = session.get(REMOTE_SOURCE_URL).text
     def get_list_by_name(var_name):
@@ -199,27 +192,30 @@ def main():
 
     def validate_one_config(config, is_priority, white_sni_only):
         nonlocal ru_count
+        if stop_flag: return
+
         host, port, sni, cid, name = get_config_details(config)
-        
-        # Если host=None (значит это был домен), выходим
         if not host: return
         
+        # РЕЗЕРВИРУЕМ IP СРАЗУ
+        with lock:
+            if host in seen_ips: return
+            seen_ips.add(host)
+
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != white_sni_only: return
         
         subnet = ".".join(host.split(".")[:3])
         with lock:
-            if host in seen_ips or subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
             if id_counts.get(cid, 0) >= MAX_PER_ID: return
 
-        # ШАГ 1: Пинг
         p1 = fast_ping(host, port, sni)
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        # ШАГ 2: ISP
         cc, isp, h_stat = check_isp_info(host)
         if not cc or h_stat == "BANNED": return
         if h_stat is True and p1 > 200: return
@@ -231,14 +227,12 @@ def main():
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(cc, 0) >= MAX_PER_COUNTRY: return
 
-        # ШАГ 3: Финальный замер
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
         
         with lock:
             if is_ru: ru_count += 1
             else: country_counts[cc] = country_counts.get(cc, 0) + 1
-            seen_ips.add(host)
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
             
@@ -246,17 +240,19 @@ def main():
             vlm2_results.append(res)
             if "xhttp" not in config.lower(): vlm_results.append(res)
             print(f"[FOUND] {cc} | {full[0]}ms | {host}", flush=True)
+            
+            if len(vlm2_results) >= 70: stop_flag = True
 
-    # СБОР И ПРОВЕРКА
-    raw_extra, raw_std = [], []
+    raw_extra, raw_std = set(), set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as g:
-        for u in set(extra_urls): raw_extra.extend(fetch_raw_configs(u))
-        for u in set(std_urls): raw_std.extend(fetch_raw_configs(u))
+        for u in set(extra_urls): raw_extra.update(fetch_raw_configs(u))
+        for u in set(std_urls): raw_std.update(fetch_raw_configs(u))
 
     groups = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
     for group, priority, is_white in groups:
+        if stop_flag: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=40) as v:
-            for c in set(group): v.submit(validate_one_config, c, priority, is_white)
+            for c in group: v.submit(validate_one_config, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
         results.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
@@ -278,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
