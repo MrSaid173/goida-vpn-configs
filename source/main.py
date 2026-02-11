@@ -15,7 +15,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "mevspace", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
