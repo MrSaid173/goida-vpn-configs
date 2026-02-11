@@ -128,24 +128,21 @@ def check_isp_info(ip_str):
 
 def fast_ping(host, port, sni):
     try:
-        context = ssl.create_default_context()
-        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
         start = time.perf_counter()
-        with socket.create_connection((host, port), timeout=0.8) as sock:
-            with context.wrap_socket(sock, server_hostname=sni):
-                return int((time.perf_counter() - start) * 1000)
+        # Reality-friendly ping: TCP Connect + Client Hello Byte
+        with socket.create_connection((host, port), timeout=1.2) as sock:
+            sock.sendall(b'\x16\x03\x01\x00\x00') 
+            return int((time.perf_counter() - start) * 1000)
     except: return None
 
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
     try:
-        context = ssl.create_default_context()
-        context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
         for _ in range(2):
             start = time.perf_counter()
-            with socket.create_connection((host, port), timeout=1.0) as sock:
-                with context.wrap_socket(sock, server_hostname=sni):
-                    pings.append(int((time.perf_counter() - start) * 1000))
+            with socket.create_connection((host, port), timeout=1.2) as sock:
+                sock.sendall(b'\x16\x03\x01\x00\x00')
+                pings.append(int((time.perf_counter() - start) * 1000))
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         return avg, jit
@@ -185,7 +182,7 @@ def main():
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
-    # 1. Загрузка основного источника
+    # 1. Загрузка SNI
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
         def get_list(var):
@@ -195,56 +192,13 @@ def main():
         std_urls = get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
         print(f"--- Основной источник SNI: OK ({len(sni_domains)}) ---")
-    except:
-        print("--- ⚠️ ОШИБКА: Основной репозиторий недоступен ---")
-
-    # 2. Загрузка вторичного источника
-    try:
+        
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
         sni_domains.update(sec_snis)
         print(f"--- Вторичный источник SNI: OK (Всего: {len(sni_domains)}) ---")
-    except:
-        print("--- ⚠️ ОШИБКА: Вторичный репозиторий недоступен ---")
-
-    # 3. FALLBACK: Если интернет упал, берем кэш
-    if not sni_domains and gh_repo:
-        try:
-            cache_file = gh_repo.get_contents(CACHE_PATH)
-            cache_data = json.loads(cache_file.decoded_content)
-            sni_domains.update(cache_data.get("snis", []))
-            extra_urls = cache_data.get("extra_urls", [])
-            std_urls = cache_data.get("std_urls", [])
-            print(f"--- 🔄 ИСПОЛЬЗОВАН ЛОКАЛЬНЫЙ КЭШ: {len(sni_domains)} SNI ---")
-        except:
-            print("--- 🚨 КРИТИЧЕСКАЯ ОШИБКА: Кэш недоступен ---")
-
-    # 4. УМНОЕ ОБНОВЛЕНИЕ КЭША (только если данные изменились)
-    if sni_domains and gh_repo:
-        try:
-            new_cache_dict = {
-                "snis": sorted(list(sni_domains)),
-                "extra_urls": sorted(extra_urls),
-                "std_urls": sorted(std_urls)
-            }
-            try:
-                cache_file_gh = gh_repo.get_contents(CACHE_PATH)
-                old_cache_content = cache_file_gh.decoded_content.decode('utf-8')
-                old_cache_dict = json.loads(old_cache_content)
-                old_cache_dict.pop("updated", None) # Убираем дату для честного сравнения
-                
-                if json.dumps(old_cache_dict, sort_keys=True) == json.dumps(new_cache_dict, sort_keys=True):
-                    print("--- ℹ️ Данные SNI идентичны кэшу. Обновление пропущено. ---")
-                else:
-                    new_cache_dict["updated"] = offset
-                    gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache (content changed)", json.dumps(new_cache_dict, indent=2, ensure_ascii=False), cache_file_gh.sha)
-                    print("--- ✅ Кэш SNI успешно обновлен новыми данными. ---")
-            except:
-                new_cache_dict["updated"] = offset
-                gh_repo.create_file(CACHE_PATH, "🛠 Initial SNI cache create", json.dumps(new_cache_dict, indent=2, ensure_ascii=False))
-                print("--- 🆕 Создан новый файл кэша SNI. ---")
-        except Exception as e:
-            print(f"--- ⚠️ Не удалось обновить кэш: {e} ---")
+    except Exception as e:
+        print(f"--- ⚠️ ОШИБКА загрузки SNI: {e} ---")
 
     vlm2_results, vlm_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
@@ -252,8 +206,6 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
-        if re.search(r'[?&]host=[^&#\s]*', config.lower()): return
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
         with lock:
@@ -264,22 +216,27 @@ def main():
         with lock:
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
+        
         p1 = fast_ping(host, port, sni)
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
+            
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
         is_ru = (ip_cc == "RU")
         is_name_ru = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
         if is_ru != is_name_ru: return
+        
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return 
             seen_ips.add(host)
+            
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
+        
         with lock:
             is_xhttp = "xhttp" in config.lower()
             res_entry = {
@@ -290,8 +247,8 @@ def main():
                 "white_sni": is_white, 
                 "is_hosting": ip_h_stat
             }
-            if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_entry)
-            if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_entry)
+            vlm2_results.append(res_entry)
+            if not is_xhttp: vlm_results.append(res_entry)
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
@@ -300,16 +257,11 @@ def main():
 
     def fetch_group(urls):
         raw = []
-        if not urls: return []
-        # ПЕРЕМЕШИВАНИЕ ИСТОЧНИКОВ
         shuffled_urls = list(set(urls))
         random.shuffle(shuffled_urls)
-        
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
             futures = [g.submit(fetch_raw_configs, u) for u in shuffled_urls]
             for f in futures: raw.extend(f.result())
-            
-        # ПЕРЕМЕШИВАНИЕ СОДЕРЖИМОГО (КОНФИГОВ)
         unique_raw = list(set(raw))
         random.shuffle(unique_raw)
         return unique_raw
@@ -318,7 +270,6 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
@@ -326,29 +277,39 @@ def main():
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         current_sni_ru_count = len(top_ru) 
+        
         buckets = {i: [] for i in range(4)}
         for r in results:
             if r['link'] in top_ru_links: continue
             if r['is_priority']: b_idx = 0 if r['white_sni'] else 1
             else: b_idx = 2 if r['white_sni'] else 3
             buckets[b_idx].append(r)
+        
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
         others_sorted = []
-        for b_sni, b_no in [(buckets[0], buckets[1]), (buckets[2], buckets[3])]:
-            while b_sni or b_no:
+        # ГЛАВНЫЙ ЦИКЛ ДОБОРА: крутимся пока не наберем MAX_CONFIGS или не опустеют все корзины
+        while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
+            added_in_round = False
+            for i in range(4):
+                is_white_bucket = (i == 0 or i == 2)
                 for _ in range(INTERLEAVE_STEP):
-                    if b_no: others_sorted.append(b_no.pop(0))
-                for _ in range(INTERLEAVE_STEP):
-                    if b_sni:
-                        if current_sni_ru_count < MAX_TOTAL_SNI_RU:
-                            others_sorted.append(b_sni.pop(0))
-                            current_sni_ru_count += 1
-                        else: b_sni.pop(0)
+                    if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
+                    if buckets[i]:
+                        if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU:
+                            break # Превышен лимит белых для этой корзины, идем к следующей
+                        
+                        config = buckets[i].pop(0)
+                        others_sorted.append(config)
+                        added_in_round = True
+                        if is_white_bucket: current_sni_ru_count += 1
+                    else: break
+            if not added_in_round: break
 
         final_selection = (top_ru + others_sorted)[:MAX_CONFIGS]
         ranked_by_ping = sorted(final_selection, key=lambda x: x['ping'])
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked_by_ping)}
+        
         output = []
         for r in final_selection:
             link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
