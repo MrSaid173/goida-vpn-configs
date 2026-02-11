@@ -265,7 +265,7 @@ def main():
 
     def finalize_list(results, is_vlm1=False):
         # 1. Отбираем топ-3 RU с SNI-RU по пингу
-        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:3]
+        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:5]
         top_ru_links = [r['link'] for r in top_ru]
         
         # 2. Все остальные конфиги сортируем по обычной логике
