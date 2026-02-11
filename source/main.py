@@ -18,18 +18,18 @@ EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
-MAX_CONFIGS = 50 
+MAX_CONFIGS = 75 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = 5
 MAX_RU_CONFIGS = 5
-MAX_PER_COUNTRY = 15 
-MAX_PER_SUBNET = 2 
+MAX_PER_COUNTRY = 20 
+MAX_PER_SUBNET = 3 
 MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 370.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 400.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 450.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
