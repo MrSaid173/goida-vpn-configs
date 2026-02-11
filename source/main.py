@@ -191,7 +191,6 @@ def main():
         nonlocal ru_count
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
         
-        # Исправленный фильтр: отсекаем даже если host= пустой
         if re.search(r'[?&]host=[^&#\s]*', config.lower()): return
 
         host, port, sni, cid, name = get_config_details(config)
@@ -249,29 +248,44 @@ def main():
             id_counts[cid] = id_counts.get(cid, 0) + 1
             print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {'(xHTTP)' if is_xhttp else ''}", flush=True)
 
-    # Сбор
-    raw_extra, raw_std = [], []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
-        f_extra = [g.submit(fetch_raw_configs, u) for u in set(extra_urls)]
-        f_std = [g.submit(fetch_raw_configs, u) for u in set(std_urls)]
-        for f in f_extra: raw_extra.extend(f.result())
-        for f in f_std: raw_std.extend(f.result())
+    # --- СБОР И ВАЛИДАЦИЯ С ПРИОРИТЕТОМ ---
+    # Сначала качаем EXTRA и STD отдельно
+    def fetch_group(urls):
+        raw = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
+            futures = [g.submit(fetch_raw_configs, u) for u in set(urls)]
+            for f in futures: raw.extend(f.result())
+        return list(set(raw))
+
+    raw_extra = fetch_group(extra_urls)
+    raw_std = fetch_group(std_urls)
 
     print(f"--- Собрано: Extra={len(raw_extra)}, Std={len(raw_std)} ---")
 
-    groups = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
-    for group, priority, is_white in groups:
-        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
+    # Последовательные группы проверки: Сначала EXTRA + SNI-RU, затем STD + SNI-RU и т.д.
+    check_order = [
+        (raw_extra, True, True),   # Extra + SNI-RU
+        (raw_std, False, True),    # Std + SNI-RU
+        (raw_extra, True, False),  # Extra (без SNI-RU)
+        (raw_std, False, False)    # Std (без SNI-RU)
+    ]
+
+    for group_configs, priority, is_white in check_order:
+        # Проверяем лимиты перед запуском новой группы
+        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+            break
+            
+        print(f"--- Начинаем проверку группы: Priority={priority}, SNI-RU={is_white} ---")
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
-            for c in set(group): v.submit(validate, c, priority, is_white)
+            for c in group_configs:
+                v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # 1. Отбираем топ-3 RU с SNI-RU по пингу
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:5]
         top_ru_links = [r['link'] for r in top_ru]
         
-        # 2. Все остальные конфиги по стандартной логике
         others = [r for r in results if r['link'] not in top_ru_links]
+        # Сортировка: приоритет (EXTRA + SNI-RU) > SNI-RU > остальные, внутри по пингу
         others.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
         
         final_sorted = top_ru + others
