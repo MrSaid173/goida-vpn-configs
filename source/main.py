@@ -101,7 +101,8 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
 def apply_clean_params(config_link):
     parts = config_link.split("#", 1)
     base = parts[0]
-    base = re.sub(r'[&?]fp=[^&?#]+', '', base)
+    # Удаляем старый fp и udp443 (часто ломает Hiddify на моб. инете)
+    base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', base)
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
     base = base.replace("/?", "?").replace("/&", "&").replace("//", "/").replace(":/", "://")
@@ -128,22 +129,24 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def fast_ping(host, port, sni):
+    """Улучшенная проверка: TCP + TLS Handshake"""
     try:
         start = time.perf_counter()
-        # Reality-friendly: TCP + TLS Hello Header
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         with socket.create_connection((host, port), timeout=1.2) as sock:
-            sock.sendall(b'\x16\x03\x01\x00\x00') 
-            return int((time.perf_counter() - start) * 1000)
+            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                return int((time.perf_counter() - start) * 1000)
     except: return None
 
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
     try:
         for _ in range(2):
-            start = time.perf_counter()
-            with socket.create_connection((host, port), timeout=1.2) as sock:
-                sock.sendall(b'\x16\x03\x01\x00\x00')
-                pings.append(int((time.perf_counter() - start) * 1000))
+            p = fast_ping(host, port, sni)
+            if p: pings.append(p)
+        if not pings: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         return avg, jit
@@ -183,7 +186,6 @@ def main():
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
-    # Загрузка SNI источников
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
         def get_list(var):
@@ -206,7 +208,6 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        # СТОП-КРАН: Если уже нашли с небольшим запасом (для перемешивания), выходим
         if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10:
             return
 
@@ -275,7 +276,6 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        # Проверка лимитов перед запуском нового потока
         if len(vlm_results) >= MAX_CONFIGS + 5 and len(vlm2_results) >= MAX_CONFIGS + 5:
             break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
@@ -296,7 +296,6 @@ def main():
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
         others_sorted = []
-        # Добор по кругу до MAX_CONFIGS
         while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
             added_in_round = False
             for i in range(4):
@@ -320,7 +319,7 @@ def main():
         output = []
         for r in final_selection:
             link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
-            if is_vlm1: link = link.replace("-udp443", "")
+            # Убираем udp443 в vlm1
             output.append(link)
         return output
 
