@@ -11,6 +11,7 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
+INTERLEAVE_STEP = 3 # Шаг чередования (через сколько конфигов менять тип SNI)
 EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
@@ -248,8 +249,6 @@ def main():
             id_counts[cid] = id_counts.get(cid, 0) + 1
             print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {'(xHTTP)' if is_xhttp else ''}", flush=True)
 
-    # --- СБОР И ВАЛИДАЦИЯ С ПРИОРИТЕТОМ ---
-    # Сначала качаем EXTRA и STD отдельно
     def fetch_group(urls):
         raw = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
@@ -262,38 +261,56 @@ def main():
 
     print(f"--- Собрано: Extra={len(raw_extra)}, Std={len(raw_std)} ---")
 
-    # Последовательные группы проверки: Сначала EXTRA + SNI-RU, затем STD + SNI-RU и т.д.
     check_order = [
-        (raw_extra, True, True),   # Extra + SNI-RU
-        (raw_std, False, True),    # Std + SNI-RU
-        (raw_extra, True, False),  # Extra (без SNI-RU)
-        (raw_std, False, False)    # Std (без SNI-RU)
+        (raw_extra, True, True), (raw_std, False, True),
+        (raw_extra, True, False), (raw_std, False, False)
     ]
 
     for group_configs, priority, is_white in check_order:
-        # Проверяем лимиты перед запуском новой группы
-        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
-            break
-            
-        print(f"--- Начинаем проверку группы: Priority={priority}, SNI-RU={is_white} ---")
+        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
-            for c in group_configs:
-                v.submit(validate, c, priority, is_white)
+            for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:5]
-        top_ru_links = [r['link'] for r in top_ru]
+        # 1. Отбор Топ-5 RU SNI-RU по пингу
+        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_RU_CONFIGS]
+        top_ru_links = {r['link'] for r in top_ru}
         
-        others = [r for r in results if r['link'] not in top_ru_links]
-        # Сортировка: приоритет (EXTRA + SNI-RU) > SNI-RU > остальные, внутри по пингу
-        others.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
+        # 2. Определение категорий для чередования
+        def get_cat(r):
+            if r['link'] in top_ru_links: return None
+            p_idx = 0 if r['is_priority'] else 2
+            s_idx = 0 if r['white_sni'] else 1
+            return p_idx + s_idx
+
+        # Сортируем каждую корзину отдельно по скорости
+        buckets = {i: sorted([r for r in results if get_cat(r) == i], key=lambda x: x['ping']) for i in range(4)}
         
-        final_sorted = top_ru + others
+        # 3. Применяем логику чередования 3+3
+        others_sorted = []
+        for base in [0, 2]: # Сначала блоки Extra (0,1), потом блоки Std (2,3)
+            b_sni, b_no = buckets[base], buckets[base+1]
+            while b_sni or b_no:
+                for _ in range(INTERLEAVE_STEP):
+                    if b_sni: others_sorted.append(b_sni.pop(0))
+                for _ in range(INTERLEAVE_STEP):
+                    if b_no: others_sorted.append(b_no.pop(0))
+
+        # Наш итоговый набор из 50 конфигов в нужном ПОРЯДКЕ
+        final_selection = (top_ru + others_sorted)[:MAX_CONFIGS]
+
+        # 4. РАСЧЕТ РЕЙТИНГА СКОРОСТИ (теперь самое быстрое — #1 независимо от позиции)
+        ranked_by_ping = sorted(final_selection, key=lambda x: x['ping'])
+        speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked_by_ping)}
+
         output = []
-        for i, r in enumerate(final_sorted[:MAX_CONFIGS], 1):
-            link = rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
+        for r in final_selection:
+            # Берем честный номер из общего рейтинга 50 отобранных
+            current_rank = speed_rating[r['link']]
+            link = rename_config(r['link'], r['country'], current_rank, r['is_hosting'], r['white_sni'])
             if is_vlm1: link = link.replace("-udp443", "")
             output.append(link)
+            
         return output
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
