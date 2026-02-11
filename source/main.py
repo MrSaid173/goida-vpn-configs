@@ -11,12 +11,13 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 
-INTERLEAVE_STEP = 3 # Шаг чередования (через сколько конфигов менять тип SNI)
+INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
+MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 2 
@@ -106,7 +107,6 @@ def check_isp_info(ip_str):
     global last_api_call
     with lock:
         if ip_str in ip_cache: return ip_cache[ip_str]
-    
     with api_semaphore:
         try:
             with lock:
@@ -191,45 +191,33 @@ def main():
     def validate(config, is_priority, is_white):
         nonlocal ru_count
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
-        
         if re.search(r'[?&]host=[^&#\s]*', config.lower()): return
-
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
-        
         with lock:
             if host in seen_ips: return
-
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != is_white: return
-        
         subnet = ".".join(host.split(".")[:3])
         with lock:
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
-
         p1 = fast_ping(host, port, sni)
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
-
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
-        if ip_h_stat is True and p1 > 200: return
-
         is_ru = (ip_cc == "RU")
         is_name_ru = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
         if is_ru != is_name_ru: return
-
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return 
             seen_ips.add(host)
-
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
-        
         with lock:
             is_xhttp = "xhttp" in config.lower()
             res_entry = {
@@ -242,12 +230,11 @@ def main():
             }
             if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_entry)
             if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_entry)
-            
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
-            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {'(xHTTP)' if is_xhttp else ''}", flush=True)
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -256,15 +243,8 @@ def main():
             for f in futures: raw.extend(f.result())
         return list(set(raw))
 
-    raw_extra = fetch_group(extra_urls)
-    raw_std = fetch_group(std_urls)
-
-    print(f"--- Собрано: Extra={len(raw_extra)}, Std={len(raw_std)} ---")
-
-    check_order = [
-        (raw_extra, True, True), (raw_std, False, True),
-        (raw_extra, True, False), (raw_std, False, False)
-    ]
+    raw_extra, raw_std = fetch_group(extra_urls), fetch_group(std_urls)
+    check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
@@ -272,45 +252,60 @@ def main():
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # 1. Отбор Топ-5 RU SNI-RU по пингу
+        # 1. Первая очередь: RU + SNI-RU (ТОП-5)
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_RU_CONFIGS]
         top_ru_links = {r['link'] for r in top_ru}
         
-        # 2. Определение категорий для чередования
-        def get_cat(r):
-            if r['link'] in top_ru_links: return None
-            p_idx = 0 if r['is_priority'] else 2
-            s_idx = 0 if r['white_sni'] else 1
-            return p_idx + s_idx
-
-        # Сортируем каждую корзину отдельно по скорости
-        buckets = {i: sorted([r for r in results if get_cat(r) == i], key=lambda x: x['ping']) for i in range(4)}
+        current_sni_ru_count = len(top_ru) # Счетчик для контроля лимита SNI-RU
         
-        # 3. Применяем логику чередования 3+3
+        # 2. Корзины для чередования
+        buckets = {i: [] for i in range(4)}
+        for r in results:
+            if r['link'] in top_ru_links: continue
+            if r['is_priority']: b_idx = 0 if r['white_sni'] else 1
+            else: b_idx = 2 if r['white_sni'] else 3
+            buckets[b_idx].append(r)
+
+        for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
+        
+        # 3. Сборка с чередованием и лимитом
         others_sorted = []
-        for base in [0, 2]: # Сначала блоки Extra (0,1), потом блоки Std (2,3)
-            b_sni, b_no = buckets[base], buckets[base+1]
-            while b_sni or b_no:
-                for _ in range(INTERLEAVE_STEP):
-                    if b_sni: others_sorted.append(b_sni.pop(0))
-                for _ in range(INTERLEAVE_STEP):
-                    if b_no: others_sorted.append(b_no.pop(0))
+        
+        # Группа EXTRA
+        b0_sni, b1_no = buckets[0], buckets[1]
+        while b0_sni or b1_no:
+            for _ in range(INTERLEAVE_STEP):
+                if b1_no: others_sorted.append(b1_no.pop(0))
+            for _ in range(INTERLEAVE_STEP):
+                if b0_sni:
+                    # Проверка лимита перед добавлением SNI-RU
+                    if current_sni_ru_count < MAX_TOTAL_SNI_RU:
+                        others_sorted.append(b0_sni.pop(0))
+                        current_sni_ru_count += 1
+                    else: b0_sni.pop(0) # Удаляем, но не добавляем в список
 
-        # Наш итоговый набор из 50 конфигов в нужном ПОРЯДКЕ
+        # Группа STD
+        b2_sni, b3_no = buckets[2], buckets[3]
+        while b2_sni or b3_no:
+            for _ in range(INTERLEAVE_STEP):
+                if b3_no: others_sorted.append(b3_no.pop(0))
+            for _ in range(INTERLEAVE_STEP):
+                if b2_sni:
+                    if current_sni_ru_count < MAX_TOTAL_SNI_RU:
+                        others_sorted.append(b2_sni.pop(0))
+                        current_sni_ru_count += 1
+                    else: b2_sni.pop(0)
+
         final_selection = (top_ru + others_sorted)[:MAX_CONFIGS]
-
-        # 4. РАСЧЕТ РЕЙТИНГА СКОРОСТИ (теперь самое быстрое — #1 независимо от позиции)
         ranked_by_ping = sorted(final_selection, key=lambda x: x['ping'])
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked_by_ping)}
 
         output = []
         for r in final_selection:
-            # Берем честный номер из общего рейтинга 50 отобранных
             current_rank = speed_rating[r['link']]
             link = rename_config(r['link'], r['country'], current_rank, r['is_hosting'], r['white_sni'])
             if is_vlm1: link = link.replace("-udp443", "")
             output.append(link)
-            
         return output
 
     f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
@@ -324,7 +319,6 @@ def main():
                 sha = repo.get_contents(path).sha
                 repo.update_file(path, msg, content, sha)
             except: repo.create_file(path, msg, content)
-        print(f"--- Обновлено успешно [vlm: {len(f_v1)}, vlm2: {len(f_v2)}] ---")
     except Exception as e: print(f"GH Error: {e}")
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
