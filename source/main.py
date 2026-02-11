@@ -154,7 +154,7 @@ def get_config_details(link):
         cid_match = re.search(r'://([^@]+)@', clean_link)
         cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]+)', clean_link)
+        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]*)', clean_link)
         sni = s_m.group(1).lower() if s_m else ""
         if h_m and is_valid_ipv4(h_m.group(1)):
             return h_m.group(1), int(h_m.group(2)), sni, cid, name
@@ -190,7 +190,9 @@ def main():
     def validate(config, is_priority, is_white):
         nonlocal ru_count
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
-        if re.search(r'[?&]host=[^&#\s]+', config.lower()): return
+        
+        # Исправленный фильтр: отсекаем даже если host= пустой
+        if re.search(r'[?&]host=[^&#\s]*', config.lower()): return
 
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
@@ -268,7 +270,7 @@ def main():
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:5]
         top_ru_links = [r['link'] for r in top_ru]
         
-        # 2. Все остальные конфиги сортируем по обычной логике
+        # 2. Все остальные конфиги по стандартной логике
         others = [r for r in results if r['link'] not in top_ru_links]
         others.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
         
