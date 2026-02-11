@@ -29,8 +29,8 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
 # Настройки UDP
-MIN_UDP_CONFIGS = 7
-MAX_UDP_CONFIGS = 12
+MIN_UDP_CONFIGS = 1
+MAX_UDP_CONFIGS = 5
 UDP_CHECK_DNS = "8.8.8.8" # DNS сервер для проверки работоспособности UDP
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
