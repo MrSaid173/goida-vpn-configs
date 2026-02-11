@@ -56,7 +56,7 @@ COUNTRY_MAP = {
     "FR": {"aliases": ["FRANCE", "ФРАНЦИЯ", "🇫🇷"], "full": "France", "flag": "🇫🇷"},
     "SG": {"aliases": ["SINGAPORE", "СИНГАПУР", "🇸🇬"], "full": "Singapore", "flag": "🇸🇬"},
     "BG": {"aliases": ["BULGARIA", "БОЛГАРИЯ", "🇧🇬"], "full": "Bulgaria", "flag": "🇧🇬"},
-    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱ТУА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
+    "LT": {"aliases": ["LITHUANIA", "ЛИТВА", "🇱🇹"], "full": "Lithuania", "flag": "🇱🇹"},
     "BR": {"aliases": ["BRAZIL", "БРАЗИЛИЯ", "🇧🇷"], "full": "Brazil", "flag": "🇧🇷"},
     "JP": {"aliases": ["JAPAN", "ЯПОНИЯ", "🇯🇵"], "full": "Japan", "flag": "🇯🇵"},
     "IE": {"aliases": ["IRELAND", "ИРЛАНДИЯ", "🇮🇪"], "full": "Ireland", "flag": "🇮🇪"},
@@ -189,10 +189,7 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        # Проверяем лимиты без запаса
         if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
-
-        # Фильтр на наличие заполненного параметра host=
         if re.search(r'[?&]host=[^&#\s]+', config.lower()): return
 
         host, port, sni, cid, name = get_config_details(config)
@@ -241,20 +238,13 @@ def main():
                 "white_sni": is_white, 
                 "is_hosting": ip_h_stat
             }
-            
-            # Добавляем в vlm2, если список еще не полон
-            if len(vlm2_results) < MAX_CONFIGS:
-                vlm2_results.append(res_entry)
-            
-            # Добавляем в vlm, если это не xhttp и список не полон
-            if not is_xhttp and len(vlm_results) < MAX_CONFIGS:
-                vlm_results.append(res_entry)
+            if len(vlm2_results) < MAX_CONFIGS: vlm2_results.append(res_entry)
+            if not is_xhttp and len(vlm_results) < MAX_CONFIGS: vlm_results.append(res_entry)
             
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
-            
             print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {'(xHTTP)' if is_xhttp else ''}", flush=True)
 
     # Сбор
@@ -274,9 +264,17 @@ def main():
             for c in set(group): v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        results.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
+        # 1. Отбираем топ-3 RU с SNI-RU по пингу
+        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:3]
+        top_ru_links = [r['link'] for r in top_ru]
+        
+        # 2. Все остальные конфиги сортируем по обычной логике
+        others = [r for r in results if r['link'] not in top_ru_links]
+        others.sort(key=lambda x: (-(2 if (x['is_priority'] and x['white_sni']) else (1 if x['white_sni'] else 0)), x['ping']))
+        
+        final_sorted = top_ru + others
         output = []
-        for i, r in enumerate(results[:MAX_CONFIGS], 1):
+        for i, r in enumerate(final_sorted[:MAX_CONFIGS], 1):
             link = rename_config(r['link'], r['country'], i, r['is_hosting'], r['white_sni'])
             if is_vlm1: link = link.replace("-udp443", "")
             output.append(link)
@@ -299,4 +297,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
