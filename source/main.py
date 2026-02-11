@@ -9,7 +9,7 @@ GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
-CACHE_PATH = "githubmirror/sni_cache.json" # Путь к локальному кэшу в репо
+CACHE_PATH = "githubmirror/sni_cache.json" 
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
@@ -178,7 +178,6 @@ def main():
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
-    # Инициализация переменных
     sni_domains = set()
     extra_urls, std_urls = [], []
     gh_repo = None
@@ -186,7 +185,7 @@ def main():
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
-    # 1. Попытка загрузки основного источника
+    # 1. Загрузка основного источника
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
         def get_list(var):
@@ -199,7 +198,7 @@ def main():
     except:
         print("--- ⚠️ ОШИБКА: Основной репозиторий недоступен ---")
 
-    # 2. Попытка загрузки вторичного источника
+    # 2. Загрузка вторичного источника
     try:
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
@@ -208,7 +207,7 @@ def main():
     except:
         print("--- ⚠️ ОШИБКА: Вторичный репозиторий недоступен ---")
 
-    # 3. FALLBACK: Если интернет-источники упали, берем из кэша GitHub
+    # 3. FALLBACK: Если интернет упал, берем кэш
     if not sni_domains and gh_repo:
         try:
             cache_file = gh_repo.get_contents(CACHE_PATH)
@@ -218,26 +217,35 @@ def main():
             std_urls = cache_data.get("std_urls", [])
             print(f"--- 🔄 ИСПОЛЬЗОВАН ЛОКАЛЬНЫЙ КЭШ: {len(sni_domains)} SNI ---")
         except:
-            print("--- 🚨 КРИТИЧЕСКАЯ ОШИБКА: Кэш недоступен, списки пусты ---")
+            print("--- 🚨 КРИТИЧЕСКАЯ ОШИБКА: Кэш недоступен ---")
 
-    # Сохранение/Обновление кэша в GitHub для будущих запусков (только если что-то скачали)
+    # 4. УМНОЕ ОБНОВЛЕНИЕ КЭША (только если данные изменились)
     if sni_domains and gh_repo:
         try:
-            cache_content = json.dumps({
-                "snis": list(sni_domains),
-                "extra_urls": extra_urls,
-                "std_urls": std_urls,
-                "updated": offset
-            }, indent=2)
+            new_cache_dict = {
+                "snis": sorted(list(sni_domains)),
+                "extra_urls": sorted(extra_urls),
+                "std_urls": sorted(std_urls)
+            }
             try:
-                sha = gh_repo.get_contents(CACHE_PATH).sha
-                gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache", cache_content, sha)
+                cache_file_gh = gh_repo.get_contents(CACHE_PATH)
+                old_cache_dict = json.loads(cache_file_gh.decoded_content.decode('utf-8'))
+                old_cache_dict.pop("updated", None) # Удаляем дату для чистого сравнения
+                
+                if json.dumps(old_cache_dict, sort_keys=True) == json.dumps(new_cache_dict, sort_keys=True):
+                    print("--- ℹ️ Кэш SNI идентичен текущему. Пропускаем обновление. ---")
+                else:
+                    new_cache_dict["updated"] = offset
+                    gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache (data changed)", json.dumps(new_cache_dict, indent=2, ensure_ascii=False), cache_file_gh.sha)
+                    print("--- ✅ Кэш SNI обновлен. ---")
             except:
-                gh_repo.create_file(CACHE_PATH, "🛠 Create SNI cache", cache_content)
-        except: pass
+                new_cache_dict["updated"] = offset
+                gh_repo.create_file(CACHE_PATH, "🛠 Initial SNI cache create", json.dumps(new_cache_dict, indent=2, ensure_ascii=False))
+                print("--- 🆕 Создан новый файл кэша SNI. ---")
+        except Exception as e:
+            print(f"--- ⚠️ Ошибка кэширования: {e} ---")
 
-    vlm2_results = []
-    vlm_results = []
+    vlm2_results, vlm_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
     ru_count = 0
 
@@ -308,7 +316,6 @@ def main():
     def finalize_list(results, is_vlm1=False):
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
-        
         current_sni_ru_count = len(top_ru) 
         buckets = {i: [] for i in range(4)}
         for r in results:
@@ -316,40 +323,26 @@ def main():
             if r['is_priority']: b_idx = 0 if r['white_sni'] else 1
             else: b_idx = 2 if r['white_sni'] else 3
             buckets[b_idx].append(r)
-
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
         others_sorted = []
-        b0_sni, b1_no = buckets[0], buckets[1]
-        while b0_sni or b1_no:
-            for _ in range(INTERLEAVE_STEP):
-                if b1_no: others_sorted.append(b1_no.pop(0))
-            for _ in range(INTERLEAVE_STEP):
-                if b0_sni:
-                    if current_sni_ru_count < MAX_TOTAL_SNI_RU:
-                        others_sorted.append(b0_sni.pop(0))
-                        current_sni_ru_count += 1
-                    else: b0_sni.pop(0)
-
-        b2_sni, b3_no = buckets[2], buckets[3]
-        while b2_sni or b3_no:
-            for _ in range(INTERLEAVE_STEP):
-                if b3_no: others_sorted.append(b3_no.pop(0))
-            for _ in range(INTERLEAVE_STEP):
-                if b2_sni:
-                    if current_sni_ru_count < MAX_TOTAL_SNI_RU:
-                        others_sorted.append(b2_sni.pop(0))
-                        current_sni_ru_count += 1
-                    else: b2_sni.pop(0)
+        for b_sni, b_no in [(buckets[0], buckets[1]), (buckets[2], buckets[3])]:
+            while b_sni or b_no:
+                for _ in range(INTERLEAVE_STEP):
+                    if b_no: others_sorted.append(b_no.pop(0))
+                for _ in range(INTERLEAVE_STEP):
+                    if b_sni:
+                        if current_sni_ru_count < MAX_TOTAL_SNI_RU:
+                            others_sorted.append(b_sni.pop(0))
+                            current_sni_ru_count += 1
+                        else: b_sni.pop(0)
 
         final_selection = (top_ru + others_sorted)[:MAX_CONFIGS]
         ranked_by_ping = sorted(final_selection, key=lambda x: x['ping'])
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked_by_ping)}
-
         output = []
         for r in final_selection:
-            current_rank = speed_rating[r['link']]
-            link = rename_config(r['link'], r['country'], current_rank, r['is_hosting'], r['white_sni'])
+            link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
             if is_vlm1: link = link.replace("-udp443", "")
             output.append(link)
         return output
@@ -358,11 +351,10 @@ def main():
         f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
-            msg = f"🚀 {fn} | T: {len(lst)} | {offset}"
             try:
                 sha = gh_repo.get_contents(path).sha
-                gh_repo.update_file(path, msg, content, sha)
-            except: gh_repo.create_file(path, msg, content)
+                gh_repo.update_file(path, f"🚀 {fn} | {len(lst)} | {offset}", content, sha)
+            except: gh_repo.create_file(path, f"🚀 {fn} | {len(lst)} | {offset}", content)
 
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
