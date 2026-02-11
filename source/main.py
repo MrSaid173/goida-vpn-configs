@@ -9,7 +9,9 @@ GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
+CACHE_PATH = "githubmirror/sni_cache.json" # Путь к локальному кэшу в репо
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
+SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
@@ -176,13 +178,63 @@ def main():
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
-    src_text = session.get(REMOTE_SOURCE_URL).text
-    def get_list(var):
-        m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
-        return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
-        
-    extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
-    sni_domains = set(s.lower() for s in get_list("SNI_DOMAINS"))
+    # Инициализация переменных
+    sni_domains = set()
+    extra_urls, std_urls = [], []
+    gh_repo = None
+    try:
+        gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
+    except: pass
+
+    # 1. Попытка загрузки основного источника
+    try:
+        src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
+        def get_list(var):
+            m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
+            return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
+        extra_urls = get_list("EXTRA_URLS_FOR_26")
+        std_urls = get_list("URLS")
+        sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
+        print(f"--- Основной источник SNI: OK ({len(sni_domains)}) ---")
+    except:
+        print("--- ⚠️ ОШИБКА: Основной репозиторий недоступен ---")
+
+    # 2. Попытка загрузки вторичного источника
+    try:
+        sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
+        sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
+        sni_domains.update(sec_snis)
+        print(f"--- Вторичный источник SNI: OK (Всего: {len(sni_domains)}) ---")
+    except:
+        print("--- ⚠️ ОШИБКА: Вторичный репозиторий недоступен ---")
+
+    # 3. FALLBACK: Если интернет-источники упали, берем из кэша GitHub
+    if not sni_domains and gh_repo:
+        try:
+            cache_file = gh_repo.get_contents(CACHE_PATH)
+            cache_data = json.loads(cache_file.decoded_content)
+            sni_domains.update(cache_data.get("snis", []))
+            extra_urls = cache_data.get("extra_urls", [])
+            std_urls = cache_data.get("std_urls", [])
+            print(f"--- 🔄 ИСПОЛЬЗОВАН ЛОКАЛЬНЫЙ КЭШ: {len(sni_domains)} SNI ---")
+        except:
+            print("--- 🚨 КРИТИЧЕСКАЯ ОШИБКА: Кэш недоступен, списки пусты ---")
+
+    # Сохранение/Обновление кэша в GitHub для будущих запусков (только если что-то скачали)
+    if sni_domains and gh_repo:
+        try:
+            cache_content = json.dumps({
+                "snis": list(sni_domains),
+                "extra_urls": extra_urls,
+                "std_urls": std_urls,
+                "updated": offset
+            }, indent=2)
+            try:
+                sha = gh_repo.get_contents(CACHE_PATH).sha
+                gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache", cache_content, sha)
+            except:
+                gh_repo.create_file(CACHE_PATH, "🛠 Create SNI cache", cache_content)
+        except: pass
 
     vlm2_results = []
     vlm_results = []
@@ -239,6 +291,7 @@ def main():
 
     def fetch_group(urls):
         raw = []
+        if not urls: return []
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
             futures = [g.submit(fetch_raw_configs, u) for u in set(urls)]
             for f in futures: raw.extend(f.result())
@@ -253,13 +306,10 @@ def main():
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # 1. Первая очередь: RU + SNI-RU (ТОП на основе MAX_TOP_RU_SNI)
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         
         current_sni_ru_count = len(top_ru) 
-        
-        # 2. Корзины для чередования
         buckets = {i: [] for i in range(4)}
         for r in results:
             if r['link'] in top_ru_links: continue
@@ -269,10 +319,7 @@ def main():
 
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
-        # 3. Сборка с чередованием и лимитом
         others_sorted = []
-        
-        # Группа EXTRA
         b0_sni, b1_no = buckets[0], buckets[1]
         while b0_sni or b1_no:
             for _ in range(INTERLEAVE_STEP):
@@ -284,7 +331,6 @@ def main():
                         current_sni_ru_count += 1
                     else: b0_sni.pop(0)
 
-        # Группа STD
         b2_sni, b3_no = buckets[2], buckets[3]
         while b2_sni or b3_no:
             for _ in range(INTERLEAVE_STEP):
@@ -308,18 +354,16 @@ def main():
             output.append(link)
         return output
 
-    f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
-
-    try:
-        repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
+    if gh_repo:
+        f_v1, f_v2 = finalize_list(vlm_results, True), finalize_list(vlm2_results)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
             path, content = f"githubmirror/{fn}", "\n".join(lst)
             msg = f"🚀 {fn} | T: {len(lst)} | {offset}"
             try:
-                sha = repo.get_contents(path).sha
-                repo.update_file(path, msg, content, sha)
-            except: repo.create_file(path, msg, content)
-    except Exception as e: print(f"GH Error: {e}")
+                sha = gh_repo.get_contents(path).sha
+                gh_repo.update_file(path, msg, content, sha)
+            except: gh_repo.create_file(path, msg, content)
+
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
