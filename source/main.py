@@ -18,6 +18,7 @@ BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazo
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
+MAX_TOP_RU_SNI = 5
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 2 
@@ -252,11 +253,11 @@ def main():
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # 1. Первая очередь: RU + SNI-RU (ТОП-5)
-        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_RU_CONFIGS]
+        # 1. Первая очередь: RU + SNI-RU (ТОП на основе MAX_TOP_RU_SNI)
+        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         
-        current_sni_ru_count = len(top_ru) # Счетчик для контроля лимита SNI-RU
+        current_sni_ru_count = len(top_ru) 
         
         # 2. Корзины для чередования
         buckets = {i: [] for i in range(4)}
@@ -278,11 +279,10 @@ def main():
                 if b1_no: others_sorted.append(b1_no.pop(0))
             for _ in range(INTERLEAVE_STEP):
                 if b0_sni:
-                    # Проверка лимита перед добавлением SNI-RU
                     if current_sni_ru_count < MAX_TOTAL_SNI_RU:
                         others_sorted.append(b0_sni.pop(0))
                         current_sni_ru_count += 1
-                    else: b0_sni.pop(0) # Удаляем, но не добавляем в список
+                    else: b0_sni.pop(0)
 
         # Группа STD
         b2_sni, b3_no = buckets[2], buckets[3]
