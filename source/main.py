@@ -129,7 +129,7 @@ def check_isp_info(ip_str):
 def fast_ping(host, port, sni):
     try:
         start = time.perf_counter()
-        # Reality-friendly ping: TCP Connect + Client Hello Byte
+        # Reality-friendly: TCP + TLS Hello Header
         with socket.create_connection((host, port), timeout=1.2) as sock:
             sock.sendall(b'\x16\x03\x01\x00\x00') 
             return int((time.perf_counter() - start) * 1000)
@@ -182,7 +182,7 @@ def main():
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
-    # 1. Загрузка SNI
+    # Загрузка SNI источников
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
         def get_list(var):
@@ -191,14 +191,13 @@ def main():
         extra_urls = get_list("EXTRA_URLS_FOR_26")
         std_urls = get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
-        print(f"--- Основной источник SNI: OK ({len(sni_domains)}) ---")
         
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
         sni_domains.update(sec_snis)
-        print(f"--- Вторичный источник SNI: OK (Всего: {len(sni_domains)}) ---")
+        print(f"--- SNI загружены: {len(sni_domains)} шт. ---")
     except Exception as e:
-        print(f"--- ⚠️ ОШИБКА загрузки SNI: {e} ---")
+        print(f"--- ⚠️ Ошибка SNI: {e} ---")
 
     vlm2_results, vlm_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
@@ -206,12 +205,17 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
+        # СТОП-КРАН: Если уже нашли с небольшим запасом (для перемешивания), выходим
+        if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10:
+            return
+
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
         with lock:
             if host in seen_ips: return
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != is_white: return
+        
         subnet = ".".join(host.split(".")[:3])
         with lock:
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
@@ -270,6 +274,9 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
+        # Проверка лимитов перед запуском нового потока
+        if len(vlm_results) >= MAX_CONFIGS + 5 and len(vlm2_results) >= MAX_CONFIGS + 5:
+            break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
@@ -288,7 +295,7 @@ def main():
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
         others_sorted = []
-        # ГЛАВНЫЙ ЦИКЛ ДОБОРА: крутимся пока не наберем MAX_CONFIGS или не опустеют все корзины
+        # Добор по кругу до MAX_CONFIGS
         while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
             added_in_round = False
             for i in range(4):
@@ -297,8 +304,7 @@ def main():
                     if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
                     if buckets[i]:
                         if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU:
-                            break # Превышен лимит белых для этой корзины, идем к следующей
-                        
+                            break 
                         config = buckets[i].pop(0)
                         others_sorted.append(config)
                         added_in_round = True
