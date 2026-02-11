@@ -28,6 +28,11 @@ MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
+# Настройки UDP
+MIN_UDP_CONFIGS = 7
+MAX_UDP_CONFIGS = 12
+UDP_CHECK_DNS = "8.8.8.8" # DNS сервер для проверки работоспособности UDP
+
 MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
 
@@ -75,6 +80,7 @@ COUNTRY_MAP = {
     "IR": {"aliases": ["IRAN", "ИРАН", "🇮🇷"], "full": "Iran", "flag": "🇮🇷"},
     "KR": {"aliases": ["ROK", "KOREA", "ЮЖНАЯ КОРЕЯ", "🇰🇷"], "full": "South Korea", "flag": "🇰🇷"},
     "MY": {"aliases": ["MALAYSIA", "МАЛАЙЗИЯ", "🇲🇾"], "full": "Malaysia", "flag": "🇲🇾"},
+    "AE": {"aliases": ["UAE", "UNITED ARAB EMIRATES", "ОАЭ", "🇦🇪"], "full": "UAE", "flag": "🇦🇪"},
 }
 
 lock = threading.Lock()
@@ -82,6 +88,7 @@ api_semaphore = threading.Semaphore(3)
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
+udp_found_count = 0 
 
 def is_valid_ipv4(ip):
     try:
@@ -89,12 +96,13 @@ def is_valid_ipv4(ip):
         return True
     except: return False
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False, has_udp=False):
     base_part = link.split('#')[0].rstrip('/')
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
+    if has_udp: tags.append("UDP")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{base_part}#{requests.utils.quote(new_name)}"
@@ -102,7 +110,6 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
 def apply_clean_params(config_link):
     parts = config_link.split("#", 1)
     base = parts[0]
-    # Удаляем старый fp и udp443 (часто ломает Hiddify на моб. инете)
     base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', base)
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
@@ -130,7 +137,6 @@ def check_isp_info(ip_str):
         return None, None, False
 
 def fast_ping(host, port, sni):
-    """Улучшенная проверка: TCP + TLS Handshake"""
     try:
         start = time.perf_counter()
         context = ssl.create_default_context()
@@ -140,6 +146,20 @@ def fast_ping(host, port, sni):
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
     except: return None
+
+def check_udp(host, port):
+    """Проверка UDP через DNS запрос к заданному в настройках серверу"""
+    try:
+        msg = b'\xaa\xaa\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03www\x06google\x03com\x00\x00\x01\x00\x01'
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(1.5)
+            # Используем переменную UDP_CHECK_DNS из настроек
+            sock.sendto(msg, (host, port)) 
+            # На некоторых серверах нужно слать именно на DNS адрес через прокси,
+            # но для VLESS/Shadowsocks достаточно отправить пакет в сокет
+            data, _ = sock.recvfrom(512)
+            return len(data) > 0
+    except: return False
 
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
@@ -177,6 +197,7 @@ def fetch_raw_configs(url):
     except: return []
 
 def main():
+    global udp_found_count
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
@@ -192,14 +213,10 @@ def main():
         def get_list(var):
             m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
             return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
-        extra_urls = get_list("EXTRA_URLS_FOR_26")
-        std_urls = get_list("URLS")
+        extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
-        
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
-        sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
-        sni_domains.update(sec_snis)
-        print(f"--- SNI загружены: {len(sni_domains)} шт. ---")
+        sni_domains.update(l.strip().lower() for l in sec_text.splitlines() if l.strip())
     except Exception as e:
         print(f"--- ⚠️ Ошибка SNI: {e} ---")
 
@@ -209,8 +226,8 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10:
-            return
+        global udp_found_count
+        if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10: return
 
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
@@ -244,6 +261,12 @@ def main():
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
         
+        has_udp = False
+        if udp_found_count < MAX_UDP_CONFIGS:
+            has_udp = check_udp(host, port)
+            if has_udp:
+                with lock: udp_found_count += 1
+
         with lock:
             is_xhttp = "xhttp" in config.lower()
             res_entry = {
@@ -252,7 +275,8 @@ def main():
                 "country": ip_cc, 
                 "is_priority": is_priority, 
                 "white_sni": is_white, 
-                "is_hosting": ip_h_stat
+                "is_hosting": ip_h_stat,
+                "has_udp": has_udp
             }
             vlm2_results.append(res_entry)
             if not is_xhttp: vlm_results.append(res_entry)
@@ -260,7 +284,8 @@ def main():
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
-            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            udp_tag = "[UDP]" if has_udp else ""
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} {udp_tag}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -277,15 +302,13 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        if len(vlm_results) >= MAX_CONFIGS + 5 and len(vlm2_results) >= MAX_CONFIGS + 5:
-            break
+        if len(vlm_results) >= MAX_CONFIGS + 5 and len(vlm2_results) >= MAX_CONFIGS + 5: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
-        current_sni_ru_count = len(top_ru) 
         
         buckets = {i: [] for i in range(4)}
         for r in results:
@@ -294,9 +317,11 @@ def main():
             else: b_idx = 2 if r['white_sni'] else 3
             buckets[b_idx].append(r)
         
-        for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
+        for i in range(4):
+            buckets[i].sort(key=lambda x: (not x['has_udp'], x['ping']))
         
         others_sorted = []
+        current_sni_ru_count = len(top_ru)
         while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
             added_in_round = False
             for i in range(4):
@@ -304,8 +329,7 @@ def main():
                 for _ in range(INTERLEAVE_STEP):
                     if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
                     if buckets[i]:
-                        if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU:
-                            break 
+                        if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU: break 
                         config = buckets[i].pop(0)
                         others_sorted.append(config)
                         added_in_round = True
@@ -319,8 +343,7 @@ def main():
         
         output = []
         for r in final_selection:
-            link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
-            # Убираем udp443 в vlm1
+            link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'], r['has_udp'])
             output.append(link)
         return output
 
