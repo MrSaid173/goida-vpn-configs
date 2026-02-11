@@ -1,4 +1,4 @@
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl
+import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -229,21 +229,22 @@ def main():
             }
             try:
                 cache_file_gh = gh_repo.get_contents(CACHE_PATH)
-                old_cache_dict = json.loads(cache_file_gh.decoded_content.decode('utf-8'))
-                old_cache_dict.pop("updated", None) # Удаляем дату для чистого сравнения
+                old_cache_content = cache_file_gh.decoded_content.decode('utf-8')
+                old_cache_dict = json.loads(old_cache_content)
+                old_cache_dict.pop("updated", None) # Убираем дату для честного сравнения
                 
                 if json.dumps(old_cache_dict, sort_keys=True) == json.dumps(new_cache_dict, sort_keys=True):
-                    print("--- ℹ️ Кэш SNI идентичен текущему. Пропускаем обновление. ---")
+                    print("--- ℹ️ Данные SNI идентичны кэшу. Обновление пропущено. ---")
                 else:
                     new_cache_dict["updated"] = offset
-                    gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache (data changed)", json.dumps(new_cache_dict, indent=2, ensure_ascii=False), cache_file_gh.sha)
-                    print("--- ✅ Кэш SNI обновлен. ---")
+                    gh_repo.update_file(CACHE_PATH, "🛠 Update SNI cache (content changed)", json.dumps(new_cache_dict, indent=2, ensure_ascii=False), cache_file_gh.sha)
+                    print("--- ✅ Кэш SNI успешно обновлен новыми данными. ---")
             except:
                 new_cache_dict["updated"] = offset
                 gh_repo.create_file(CACHE_PATH, "🛠 Initial SNI cache create", json.dumps(new_cache_dict, indent=2, ensure_ascii=False))
                 print("--- 🆕 Создан новый файл кэша SNI. ---")
         except Exception as e:
-            print(f"--- ⚠️ Ошибка кэширования: {e} ---")
+            print(f"--- ⚠️ Не удалось обновить кэш: {e} ---")
 
     vlm2_results, vlm_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
@@ -300,10 +301,18 @@ def main():
     def fetch_group(urls):
         raw = []
         if not urls: return []
+        # ПЕРЕМЕШИВАНИЕ ИСТОЧНИКОВ
+        shuffled_urls = list(set(urls))
+        random.shuffle(shuffled_urls)
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
-            futures = [g.submit(fetch_raw_configs, u) for u in set(urls)]
+            futures = [g.submit(fetch_raw_configs, u) for u in shuffled_urls]
             for f in futures: raw.extend(f.result())
-        return list(set(raw))
+            
+        # ПЕРЕМЕШИВАНИЕ СОДЕРЖИМОГО (КОНФИГОВ)
+        unique_raw = list(set(raw))
+        random.shuffle(unique_raw)
+        return unique_raw
 
     raw_extra, raw_std = fetch_group(extra_urls), fetch_group(std_urls)
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
