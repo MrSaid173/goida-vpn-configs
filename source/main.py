@@ -18,8 +18,8 @@ EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_CONFIGS = 50 
-LIMIT_WHITE = MAX_CONFIGS // 2 # 25
-LIMIT_OTHER = MAX_CONFIGS - LIMIT_WHITE # 25
+LIMIT_WHITE = MAX_CONFIGS // 2
+LIMIT_OTHER = MAX_CONFIGS - LIMIT_WHITE
 
 MAX_JITTER = 50  
 MAX_TOP_RU_SNI = 5
@@ -97,6 +97,9 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
+    # --- ИЗМЕНЕНИЕ: Блокируем конфиги с подменой host ---
+    if "host=" in l: return True
+    # --------------------------------------------------
     if "packetencoding=" in l: return True
     if "pbk=" in l and "security=tls" in l: return True
     if "pbk=" in l and ":80?" in l: return True
@@ -180,8 +183,10 @@ def get_config_details(link):
         cid_match = re.search(r'://([^@]+)@', clean_link)
         cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]*)', clean_link)
+        # --- ИЗМЕНЕНИЕ: Убираем поиск host из параметров, ищем только sni ---
+        s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
         sni = s_m.group(1).lower() if s_m else ""
+        # -------------------------------------------------------------------
         if h_m and is_valid_ipv4(h_m.group(1)):
             return h_m.group(1), int(h_m.group(2)), sni, cid, name
     except: pass
