@@ -17,14 +17,15 @@ INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
-MAX_JITTER = 50  
 MAX_CONFIGS = 50 
-MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
+LIMIT_WHITE = MAX_CONFIGS // 2 # 25
+LIMIT_OTHER = MAX_CONFIGS - LIMIT_WHITE # 25
+
+MAX_JITTER = 50  
 MAX_TOP_RU_SNI = 5
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 3 
-MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
@@ -84,6 +85,10 @@ ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
 
+# Счетчики для контроля лимитов в реальном времени
+vlm_stats = {"white": 0, "other": 0}
+vlm2_stats = {"white": 0, "other": 0}
+
 def is_valid_ipv4(ip):
     try:
         ipaddress.IPv4Address(ip)
@@ -131,6 +136,9 @@ def check_isp_info(ip_str):
                     if elapsed < 1.4: time.sleep(1.4 - elapsed)
                     last_api_call = time.perf_counter()
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
+                if resp.status_code == 429:
+                    time.sleep(2)
+                    continue
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
@@ -219,9 +227,13 @@ def main():
     def validate(config, is_priority, is_white):
         nonlocal ru_count
         
-        # [ОПТИМИЗАЦИЯ] Сразу выходим, если оба списка уже полны
+        target_type = "white" if is_white else "other"
+        
+        # [ПРЕДВАРИТЕЛЬНЫЙ ЛИМИТ] Проверяем, нужны ли нам еще такие конфиги
         with lock:
-            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+            need_vlm = (vlm_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER))
+            need_vlm2 = (vlm2_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER))
+            if not need_vlm and not need_vlm2:
                 return
 
         if is_technically_broken(config): return
@@ -231,7 +243,12 @@ def main():
         
         with lock:
             if host in seen_ips: return
-            subnet = ".".join(host.split(".")[:3])
+        
+        if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
+        if not sni or (sni in sni_domains) != is_white: return
+        
+        subnet = ".".join(host.split(".")[:3])
+        with lock:
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
         
@@ -239,11 +256,7 @@ def main():
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
-
-        # [ОПТИМИЗАЦИЯ] Проверка перед IP-API
-        with lock:
-            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
-
+            
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
             
@@ -271,13 +284,19 @@ def main():
                 "is_hosting": ip_h_stat
             }
             
-            # Наполняем списки независимо до 50
             added = False
-            if len(vlm2_results) < MAX_CONFIGS:
+            limit = LIMIT_WHITE if is_white else LIMIT_OTHER
+            
+            # Наполняем vlm2
+            if vlm2_stats[target_type] < limit:
                 vlm2_results.append(res_entry)
+                vlm2_stats[target_type] += 1
                 added = True
-            if not is_xhttp and len(vlm_results) < MAX_CONFIGS:
+            
+            # Наполняем vlm
+            if not is_xhttp and vlm_stats[target_type] < limit:
                 vlm_results.append(res_entry)
+                vlm_stats[target_type] += 1
                 added = True
             
             if added:
@@ -285,7 +304,7 @@ def main():
                 else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
                 subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                 id_counts[cid] = id_counts.get(cid, 0) + 1
-                print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
+                print(f"[FOUND] {ip_cc} | {target_type} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -294,56 +313,31 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
             futures = [g.submit(fetch_raw_configs, u) for u in shuffled_urls]
             for f in futures: raw.extend(f.result())
-        return list(set(raw))
+        unique_raw = list(set(raw))
+        random.shuffle(unique_raw)
+        return unique_raw
 
     raw_extra, raw_std = fetch_group(extra_urls), fetch_group(std_urls)
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
         with lock:
-            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
-        random.shuffle(group_configs)
+            # Прекращаем весь цикл, если оба файла забиты под завязку
+            if all(vlm_stats[t] >= (LIMIT_WHITE if t=="white" else LIMIT_OTHER) for t in ["white", "other"]) and \
+               all(vlm2_stats[t] >= (LIMIT_WHITE if t=="white" else LIMIT_OTHER) for t in ["white", "other"]):
+                break
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # Твоя оригинальная сортировка с бакетами и интерливингом
-        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
-        top_ru_links = {r['link'] for r in top_ru}
-        current_sni_ru_count = len(top_ru) 
-        
-        buckets = {i: [] for i in range(4)}
-        for r in results:
-            if r['link'] in top_ru_links: continue
-            if r['is_priority']: b_idx = 0 if r['white_sni'] else 1
-            else: b_idx = 2 if r['white_sni'] else 3
-            buckets[b_idx].append(r)
-        
-        for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
-        
-        others_sorted = []
-        while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
-            added_in_round = False
-            for i in range(4):
-                is_white_bucket = (i == 0 or i == 2)
-                for _ in range(INTERLEAVE_STEP):
-                    if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
-                    if buckets[i]:
-                        if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU:
-                            break 
-                        config = buckets[i].pop(0)
-                        others_sorted.append(config)
-                        added_in_round = True
-                        if is_white_bucket: current_sni_ru_count += 1
-                    else: break
-            if not added_in_round: break
-
-        final_selection = (top_ru + others_sorted)[:MAX_CONFIGS]
-        ranked_by_ping = sorted(final_selection, key=lambda x: x['ping'])
+        # Лимиты уже соблюдены в validate, просто сортируем для красоты
+        ranked_by_ping = sorted(results, key=lambda x: x['ping'])
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked_by_ping)}
         
         output = []
-        for r in final_selection:
+        # Сохраняем порядок, в котором конфиги были найдены (или можно тоже по пингу)
+        for r in results:
             link = rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
             output.append(link)
         return output
