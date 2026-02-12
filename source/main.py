@@ -14,9 +14,12 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 # ЛИМИТЫ XHTTP (ДЛЯ VLM2)
 MIN_XHTTP = 5   
-MAX_XHTTP = 15  # Теперь это жесткий потолок. Больше этого числа в списке не будет.
+MAX_XHTTP = 5  # Жесткий максимум xhttp конфигов
 
-MAX_WORLD_PING = 1200 # Добавил переменную, если она была потеряна
+# ЛИМИТЫ ПИНГА (ТВОИ ИЗНАЧАЛЬНЫЕ)
+MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
+
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
 INTERLEAVE_STEP = 3 
@@ -38,6 +41,7 @@ session.headers.update({'Connection': 'keep-alive'})
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
+# ПОЛНЫЙ СПИСОК СТРАН ВОССТАНОВЛЕН
 COUNTRY_MAP = {
     "RU": {"aliases": ["RUSSIA", "РОССИЯ", "RUS", "🇷🇺"], "full": "Russia", "flag": "🇷🇺"},
     "US": {"aliases": ["USA", "UNITED STATES", "AMERICA", "🇺🇸"], "full": "USA", "flag": "🇺🇸"},
@@ -69,7 +73,7 @@ COUNTRY_MAP = {
     "IS": {"aliases": ["ICELAND", "ИСЛАНДИЯ", "🇮🇸"], "full": "Iceland", "flag": "🇮🇸"},
     "AL": {"aliases": ["ALBANIA", "АЛБАНИЯ", "🇦🇱"], "full": "Albania", "flag": "🇦🇱"},
     "CO": {"aliases": ["COLOMBIANA", "КОЛУМБИЯ", "🇨🇴"], "full": "Colombiana", "flag": "🇨🇴"},
-    "MD": {"aliases": ["MOLDOVA", "МОЛДОВА", "🇲🇩"], "full": "Moldova", "flag": "🇲🇩"},
+    "MD": {"aliases": ["MOLDOVA", "МОВДОА", "🇲🇩"], "full": "Moldova", "flag": "🇲🇩"},
     "HU": {"aliases": ["HUNGARY", "ВЕНГРИЯ", "🇭🇺"], "full": "Hungary", "flag": "🇭🇺"},
     "ES": {"aliases": ["SPAIN", "ИСПАНИЯ", "🇪🇸"], "full": "Spain", "flag": "🇪🇸"},
     "IR": {"aliases": ["IRAN", "ИРАН", "🇮🇷"], "full": "Iran", "flag": "🇮🇷"},
@@ -218,13 +222,10 @@ def main():
         is_xhttp = "xhttp" in config.lower()
 
         with lock:
-            total_vlm2 = len(vlm2_results)
-            # Если xhttp уже в лимите, просто выходим
-            if is_xhttp and xhttp_count >= MAX_XHTTP:
-                return
-            # Если не xhttp, но мы держим места под минимум xhttp
-            if not is_xhttp and total_vlm2 >= (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
-                return
+            # 1. Жесткий лимит на xhttp
+            if is_xhttp and xhttp_count >= MAX_XHTTP: return
+            # 2. Бронирование мест под xhttp в vlm2
+            if not is_xhttp and len(vlm2_results) >= (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)): return
 
         if is_technically_broken(config): return
         host, port, sni, cid, name = get_config_details(config)
@@ -238,21 +239,26 @@ def main():
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
 
         p1 = fast_ping(host, port, sni)
-        if not p1 or p1 > MAX_WORLD_PING:
-            with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
-            return
+        if not p1: return
             
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
+        
+        # ПРОВЕРКА ПИНГА С УЧЕТОМ РЕГИОНА
         is_ru = (ip_cc == "RU")
+        if is_ru:
+            if p1 < MIN_RU_PING or p1 > MAX_RU_PING: return
+        else:
+            if p1 < MIN_WORLD_PING or p1 > MAX_WORLD_PING: return
+
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
         
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
 
         with lock:
-            # Двойная проверка лимита перед записью
-            if is_xhttp and xhttp_count >= MAX_XHTTP: return
+            if is_ru and ru_count >= MAX_RU_CONFIGS: return
+            if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return
             
             seen_ips.add(host)
@@ -262,20 +268,19 @@ def main():
                 "is_xhttp": is_xhttp
             }
             
-            # Наполнение списков
+            # Набиваем vlm2 (все подряд до лимитов)
             if len(vlm2_results) < MAX_CONFIGS + 5: 
                 vlm2_results.append(res_entry)
                 if is_xhttp: xhttp_count += 1
             
+            # Набиваем vlm (только не xhttp)
             if not is_xhttp and len(vlm_results) < MAX_CONFIGS + 5: 
                 vlm_results.append(res_entry)
 
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
-            
-            found_tag = f"[FOUND{' (X)' if is_xhttp else ''}]"
-            print(f"{found_tag} {ip_cc} | {full[0]}ms | {host}", flush=True)
+            print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group_data(urls):
         raw = []
@@ -298,15 +303,18 @@ def main():
                 v.submit(validate, c, priority, white)
 
     def finalize_list(results, is_vlm2=False):
-        # 1. Сначала отбираем ТОП-RU
+        # 1. Топ-RU всегда первые
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         
-        # 2. XHTTP просто берем те, что уже есть в списке (без доп. сортировки по пингу, чтобы сохранить порядок нахождения)
-        xhttp_bucket = [r for r in results if r.get('is_xhttp') and r['link'] not in top_ru_links][:MAX_XHTTP]
-        xhttp_links = {r['link'] for r in xhttp_bucket}
+        # 2. XHTTP в vlm2 идут сразу за RU
+        xhttp_bucket = []
+        if is_vlm2:
+            xhttp_bucket = [r for r in results if r.get('is_xhttp') and r['link'] not in top_ru_links][:MAX_XHTTP]
         
+        xhttp_links = {r['link'] for r in xhttp_bucket}
         current_sni_ru_count, buckets = len(top_ru), {i: [] for i in range(4)}
+        
         for r in results:
             if r['link'] in top_ru_links or r['link'] in xhttp_links: continue
             b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
