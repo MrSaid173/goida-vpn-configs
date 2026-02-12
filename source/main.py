@@ -15,7 +15,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "mevspace", "m247", "akamai", "host"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
@@ -91,27 +91,13 @@ def is_valid_ipv4(ip):
     except: return False
 
 def is_technically_broken(link):
-    """Только проверяет. Если конфиг кривой — возвращает True, и он игнорируется."""
     l = link.lower()
-    # 1. Запрещенный мусор (xudp), который вешает парсеры
     if "packetencoding=" in l: return True
-    
-    # 2. Конфликт TLS и Reality (pbk есть, а security=tls)
-    # Оригинальный конфиг ошибочен, не берем его
     if "pbk=" in l and "security=tls" in l: return True
-    
-    # 3. Reality на порту 80 — технический нонсенс
     if "pbk=" in l and ":80?" in l: return True
-    
-    # 4. Flow без транспорта tcp — Hiddify не импортирует такое
     if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: return True
-    
-    # 5. Отсутствие транспорта для Reality (pbk есть, а type нет)
     if "pbk=" in l and "type=" not in l: return True
-
-    # 6. Нестандартные типы
     if "type=raw" in l: return True
-    
     return False
 
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
@@ -125,17 +111,11 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
-    """Минимальная очистка без изменения логики протокола."""
     parts = config_link.split("#", 1)
     base = parts[0]
-    
-    # Удаляем только мусорные/конфликтные обертки
     base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', base)
-    
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    
-    # Чистим дубли символов после склейки
     base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
@@ -150,12 +130,7 @@ def check_isp_info(ip_str):
                     elapsed = time.perf_counter() - last_api_call
                     if elapsed < 1.4: time.sleep(1.4 - elapsed)
                     last_api_call = time.perf_counter()
-                
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
-                if resp.status_code == 429:
-                    time.sleep(2)
-                    continue
-                
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
@@ -232,10 +207,8 @@ def main():
         extra_urls = get_list("EXTRA_URLS_FOR_26")
         std_urls = get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
-        
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
-        sec_snis = [l.strip().lower() for l in sec_text.splitlines() if l.strip()]
-        sni_domains.update(sec_snis)
+        sni_domains.update(l.strip().lower() for l in sec_text.splitlines() if l.strip())
     except Exception as e:
         print(f"--- ⚠️ Ошибка SNI: {e} ---")
 
@@ -245,18 +218,20 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        # 1. ТЕХНИЧЕСКИЙ ФИЛЬТР (Теперь строго пропускает только корректные)
+        
+        # [ОПТИМИЗАЦИЯ] Сразу выходим, если оба списка уже полны
+        with lock:
+            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+                return
+
         if is_technically_broken(config): return
 
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
+        
         with lock:
             if host in seen_ips: return
-        if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
-        if not sni or (sni in sni_domains) != is_white: return
-        
-        subnet = ".".join(host.split(".")[:3])
-        with lock:
+            subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
         
@@ -264,7 +239,11 @@ def main():
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
-            
+
+        # [ОПТИМИЗАЦИЯ] Проверка перед IP-API
+        with lock:
+            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: return
+
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
             
@@ -291,13 +270,22 @@ def main():
                 "white_sni": is_white, 
                 "is_hosting": ip_h_stat
             }
-            vlm2_results.append(res_entry)
-            if not is_xhttp: vlm_results.append(res_entry)
-            if is_ru: ru_count += 1
-            else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-            id_counts[cid] = id_counts.get(cid, 0) + 1
-            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            
+            # Наполняем списки независимо до 50
+            added = False
+            if len(vlm2_results) < MAX_CONFIGS:
+                vlm2_results.append(res_entry)
+                added = True
+            if not is_xhttp and len(vlm_results) < MAX_CONFIGS:
+                vlm_results.append(res_entry)
+                added = True
+            
+            if added:
+                if is_ru: ru_count += 1
+                else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
+                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                id_counts[cid] = id_counts.get(cid, 0) + 1
+                print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -306,20 +294,20 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as g:
             futures = [g.submit(fetch_raw_configs, u) for u in shuffled_urls]
             for f in futures: raw.extend(f.result())
-        unique_raw = list(set(raw))
-        random.shuffle(unique_raw)
-        return unique_raw
+        return list(set(raw))
 
     raw_extra, raw_std = fetch_group(extra_urls), fetch_group(std_urls)
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        if len(vlm_results) >= MAX_CONFIGS + 5 and len(vlm2_results) >= MAX_CONFIGS + 5:
-            break
+        with lock:
+            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS: break
+        random.shuffle(group_configs)
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
+        # Твоя оригинальная сортировка с бакетами и интерливингом
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         current_sni_ru_count = len(top_ru) 
