@@ -9,7 +9,6 @@ GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
-CACHE_PATH = "githubmirror/sni_cache.json" 
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
@@ -20,6 +19,16 @@ MAX_XHTTP = 5   # Максимум xhttp в vlm2
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
+BANNED_ASNAME_PATTERNS = [
+    "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
+    "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
+    "-de", "-nl", "-gb", "-uk", "-fr", "-it", "-es", "-pl", "-at", "-ch", "-se", "-no",
+    "-fi", "-dk", "-ie", "-pt", "-be", "-cz", "-hu", "-ro", "-bg", "-gr", "-tr", "-ee",
+    "-lv", "-lt", "-si", "-sk", "-hr", "-rs", "-me", "-ba", "-al", "-is", "-lu", "-mt",
+    "-cn", "-hk", "-sg", "-jp", "-kr", "-in", "-tw", "-vn", "-th", "-my", "-ph", "-id",
+    "-ae", "-il", "-sa", "-ir", "-iq", "-jo", "-kw", "-qa", "-om", "-ye",
+    "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn"
+]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
@@ -156,7 +165,9 @@ def check_isp_info(ip_str):
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    is_banned = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
+                    is_banned = is_banned_hosting or is_banned_pattern
                     res = (r.get("countryCode"), full_info, "BANNED" if is_banned else r.get("hosting", False))
                     with lock: ip_cache[ip_str] = res
                     return res
@@ -382,4 +393,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
