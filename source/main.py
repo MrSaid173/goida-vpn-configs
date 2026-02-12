@@ -43,7 +43,7 @@ COUNTRY_MAP = {
     "DE": {"aliases": ["GERMANY", "ГЕРМАНИЯ", "DEUTSCHLAND", "🇩🇪"], "full": "Germany", "flag": "🇩🇪"},
     "NL": {"aliases": ["NETHERLANDS", "НИДЕРЛАНДЫ", "HOLLAND", "🇳🇱"], "full": "The Netherlands", "flag": "🇳🇱"},
     "GB": {"aliases": ["UNITED KINGDOM", "ENGLAND", "🇬🇧"], "full": "United Kingdom", "flag": "🇬🇧"},
-    "TR": {"aliases": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "ТҮРКИЕ", "TÜRKIYE", "🇹🇷"], "full": "Turkey", "flag": "🇹🇷"},
+    "TR": {"aliases": ["TURKEY", "ТУРЦИЯ", "TURKIYE", "ТҮРКИЕ", "TÜRKIYE", "ТR", "🇹🇷"], "full": "Turkey", "flag": "🇹🇷"},
     "KZ": {"aliases": ["KAZAKHSTAN", "КАЗАХСТАН", "🇰🇿"], "full": "Kazakhstan", "flag": "🇰🇿"},
     "FI": {"aliases": ["FINLAND", "ФИНЛЯНДИЯ", "🇫🇮"], "full": "Finland", "flag": "🇫🇮"},
     "PL": {"aliases": ["POLAND", "ПОЛЬША", "🇵🇱"], "full": "Poland", "flag": "🇵🇱"},
@@ -226,6 +226,9 @@ def main():
         if not host: return
         with lock:
             if host in seen_ips: return
+            # Не тратим время на проверку, если оба списка уже набрали жирный запас
+            if len(vlm_results) >= 80 and len(vlm2_results) >= 80: return
+
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
         if not sni or (sni in sni_domains) != is_white: return
         
@@ -248,21 +251,27 @@ def main():
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return 
-            seen_ips.add(host)
             
-        full = full_ping_analysis(host, port, sni, p1)
-        if not full or full[1] > MAX_JITTER: return
-        
-        with lock:
+            full = full_ping_analysis(host, port, sni, p1)
+            if not full or full[1] > MAX_JITTER: return
+
+            seen_ips.add(host)
             is_xhttp = "xhttp" in config.lower()
             res_entry = {"link": apply_clean_params(config), "ping": full[0], "country": ip_cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": ip_h_stat}
-            vlm2_results.append(res_entry)
-            if not is_xhttp: vlm_results.append(res_entry)
+            
+            # Добавляем в vlm2 всегда (пока есть место для запаса)
+            if len(vlm2_results) < 100:
+                vlm2_results.append(res_entry)
+            
+            # Добавляем в vlm только если не xhttp
+            if not is_xhttp and len(vlm_results) < 100:
+                vlm_results.append(res_entry)
+
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
-            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host} | V1:{len(vlm_results)} V2:{len(vlm2_results)}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -275,12 +284,17 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        # Даем запас +15, чтобы vlm (без xhttp) тоже успел набраться
-        if len(vlm_results) >= MAX_CONFIGS + 15 and len(vlm2_results) >= MAX_CONFIGS + 15: break
-        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
+        # ВАЖНО: Продолжаем, пока В ОБОИХ списках не будет минимум по MAX_CONFIGS (50)
+        with lock:
+            if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+                # Но если мы набрали уже большой запас (например 70), то точно выходим
+                if len(vlm_results) >= 70 or len(vlm2_results) >= 70: break
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=35) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results):
+        if not results: return []
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         current_sni_ru_count = len(top_ru) 
@@ -311,8 +325,10 @@ def main():
         return [rename_config(r['link'], r['country'], speed[r['link']], r['is_hosting'], r['white_sni']) for r in final]
 
     if gh_repo:
-        f_v1, f_v2 = finalize_list(vlm_results), finalize_list(vlm2_results)
+        f_v1 = finalize_list(vlm_results)
+        f_v2 = finalize_list(vlm2_results)
         for fn, lst in [(FILENAME_VLM, f_v1), (FILENAME_VLM2, f_v2)]:
+            if not lst: continue
             path, content = f"githubmirror/{fn}", "\n".join(lst)
             try:
                 sha = gh_repo.get_contents(path).sha
