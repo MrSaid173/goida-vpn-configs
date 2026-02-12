@@ -14,8 +14,9 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 # ЛИМИТЫ XHTTP (ДЛЯ VLM2)
 MIN_XHTTP = 5   
-MAX_XHTTP = 5  
+MAX_XHTTP = 15  # Теперь это жесткий потолок. Больше этого числа в списке не будет.
 
+MAX_WORLD_PING = 1200 # Добавил переменную, если она была потеряна
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
 INTERLEAVE_STEP = 3 
@@ -190,7 +191,8 @@ def main():
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
-    sni_domains, extra_urls, std_urls, gh_repo = set(), [], [], None
+    sni_domains = set()
+    extra_urls, std_urls, gh_repo = [], [], None
     try: gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
@@ -213,38 +215,28 @@ def main():
         nonlocal ru_count, xhttp_count
         if stop_event.is_set(): return
 
-        # 1. Быстрый технический фильтр
+        is_xhttp = "xhttp" in config.lower()
+
+        with lock:
+            total_vlm2 = len(vlm2_results)
+            # Если xhttp уже в лимите, просто выходим
+            if is_xhttp and xhttp_count >= MAX_XHTTP:
+                return
+            # Если не xhttp, но мы держим места под минимум xhttp
+            if not is_xhttp and total_vlm2 >= (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
+                return
+
         if is_technically_broken(config): return
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
-        is_xhttp = "xhttp" in config.lower()
 
-        # 2. ПРОВЕРКА ЛИМИТОВ В ПРОЦЕССЕ (ДО ТЯЖЕЛЫХ ОПЕРАЦИЙ)
         with lock:
-            total_v2 = len(vlm2_results)
-            # Если это обычный конфиг, проверяем, не нужно ли придержать место для xhttp
-            if not is_xhttp:
-                needed_xhttp = max(0, MIN_XHTTP - xhttp_count)
-                if total_v2 >= (MAX_CONFIGS - needed_xhttp):
-                    return # Сбрасываем обычный, так как нужны xhttp
-
-            # Если это xhttp, проверяем не перебрали ли мы их
-            if is_xhttp and xhttp_count >= MAX_XHTTP:
-                return
-
-            # Проверка глобальных лимитов
-            if total_v2 >= MAX_CONFIGS + 2 and len(vlm_results) >= MAX_CONFIGS + 2:
-                stop_event.set()
-                return
-
-            # Проверка IP и SNI
             if host in seen_ips or (sni in sni_domains) != is_white: return
             if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
             subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
 
-        # 3. ТОЛЬКО ТЕПЕРЬ ПИНГ И ISP
         p1 = fast_ping(host, port, sni)
         if not p1 or p1 > MAX_WORLD_PING:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
@@ -258,13 +250,9 @@ def main():
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER: return
 
-        # 4. ФИНАЛЬНОЕ ДОБАВЛЕНИЕ (ПОД ЛОКОМ)
         with lock:
-            if len(vlm2_results) >= MAX_CONFIGS + 5 and len(vlm_results) >= MAX_CONFIGS + 5:
-                stop_event.set()
-                return
-            if is_ru and ru_count >= MAX_RU_CONFIGS: return
-            if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
+            # Двойная проверка лимита перед записью
+            if is_xhttp and xhttp_count >= MAX_XHTTP: return
             if host in seen_ips: return
             
             seen_ips.add(host)
@@ -274,6 +262,7 @@ def main():
                 "is_xhttp": is_xhttp
             }
             
+            # Наполнение списков
             if len(vlm2_results) < MAX_CONFIGS + 5: 
                 vlm2_results.append(res_entry)
                 if is_xhttp: xhttp_count += 1
@@ -284,7 +273,9 @@ def main():
             if is_ru: ru_count += 1
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
-            print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            
+            found_tag = f"[FOUND{' (X)' if is_xhttp else ''}]"
+            print(f"{found_tag} {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group_data(urls):
         raw = []
@@ -307,18 +298,20 @@ def main():
                 v.submit(validate, c, priority, white)
 
     def finalize_list(results, is_vlm2=False):
+        # 1. Сначала отбираем ТОП-RU
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
-        xhttp_bucket = []
-        if is_vlm2:
-            xhttp_bucket = sorted([r for r in results if r.get('is_xhttp') and r['link'] not in top_ru_links], key=lambda x: x['ping'])[:MAX_XHTTP]
         
+        # 2. XHTTP просто берем те, что уже есть в списке (без доп. сортировки по пингу, чтобы сохранить порядок нахождения)
+        xhttp_bucket = [r for r in results if r.get('is_xhttp') and r['link'] not in top_ru_links][:MAX_XHTTP]
         xhttp_links = {r['link'] for r in xhttp_bucket}
+        
         current_sni_ru_count, buckets = len(top_ru), {i: [] for i in range(4)}
         for r in results:
             if r['link'] in top_ru_links or r['link'] in xhttp_links: continue
             b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
             buckets[b_idx].append(r)
+            
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
         final_list = top_ru + xhttp_bucket
@@ -337,6 +330,7 @@ def main():
                         if is_w: current_sni_ru_count += 1
                     else: break
             if not added: break
+            
         final = (final_list + others)[:MAX_CONFIGS]
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
         return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
@@ -348,10 +342,11 @@ def main():
             try:
                 sha = gh_repo.get_contents(path).sha
                 gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
-            except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+            except: 
+                try: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+                except: pass
 
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
     main()
-        
