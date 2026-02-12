@@ -317,43 +317,58 @@ def main():
                 v.submit(validate, c, priority, white)
 
     def finalize_list(results, is_vlm2=False):
-        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
-        top_ru_links = {r['link'] for r in top_ru}
-        
+        all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
+        top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
+        remaining_ru_sni = all_ru_sni[MAX_TOP_RU_SNI:]
+
         xhttp_bucket = []
         if is_vlm2:
-            xhttp_bucket = [r for r in results if r.get('is_xhttp') and r['link'] not in top_ru_links][:MAX_XHTTP]
+            xhttp_bucket = sorted([r for r in results if r.get('is_xhttp') and r not in top_fixed], key=lambda x: x['ping'])
         
-        xhttp_links = {r['link'] for r in xhttp_bucket}
-        current_sni_ru_count, buckets = len(top_ru), {i: [] for i in range(4)}
-        
+        normal_buckets = []
+        sni_ru_extra_buckets = [remaining_ru_sni]
+
+        buckets = {i: [] for i in range(4)}
         for r in results:
-            if r['link'] in top_ru_links or r['link'] in xhttp_links: continue
+            if r in top_fixed or r in xhttp_bucket or (r['country'] == 'RU' and r['white_sni']):
+                continue
             b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
             buckets[b_idx].append(r)
-            
-        for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
-        final_list = top_ru + xhttp_bucket
-        others = []
-        while (len(final_list) + len(others)) < MAX_CONFIGS:
-            added = False
-            for i in range(4):
-                is_w = (i == 0 or i == 2)
-                for _ in range(INTERLEAVE_STEP):
-                    if (len(final_list) + len(others)) >= MAX_CONFIGS: break
-                    if buckets[i]:
-                        if is_w and current_sni_ru_count >= MAX_TOTAL_SNI_RU: break 
-                        config = buckets[i].pop(0)
-                        others.append(config)
-                        added = True
-                        if is_w: current_sni_ru_count += 1
-                    else: break
-            if not added: break
-        final = (final_list + others)[:MAX_CONFIGS]
+        for i in range(4):
+            buckets[i].sort(key=lambda x: x['ping'])
+            if i == 0 or i == 2:
+                sni_ru_extra_buckets.append(buckets[i])
+            else:
+                normal_buckets.append(buckets[i])
+
+        final = list(top_fixed)
+        current_ru_sni_total = len(top_fixed)
+
+        sources_order = []
+        if is_vlm2: sources_order.append(xhttp_bucket)
+        sources_order.extend(normal_buckets)
+        sources_order.extend(sni_ru_extra_buckets)
+
+        while len(final) < MAX_CONFIGS:
+            added_any = False
+            for src in sources_order:
+                is_sni_ru_src = (src in sni_ru_extra_buckets)
+                count = 0
+                while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and src:
+                    if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU:
+                        break
+                    config = src.pop(0)
+                    final.append(config)
+                    count += 1
+                    added_any = True
+                    if is_sni_ru_src:
+                        current_ru_sni_total += 1
+            if not added_any: break
+
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
         return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
-
+        
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
