@@ -12,13 +12,14 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
-# --- НОВЫЕ НАСТРОЙКИ XHTTP ---
-MIN_XHTTP = 5   # Минимум/Бронь мест в vlm2
-MAX_XHTTP = 5   # Максимум xhttp в vlm2
+MIN_XHTTP = 5   
+MAX_XHTTP = 5   
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
+
+# Полный список паттернов для жесткого бана провайдеров
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
@@ -130,15 +131,12 @@ def full_ping_analysis(host, port, sni, initial_ping):
             if stop_event.is_set(): return None
             time.sleep(0.2)
             p = fast_ping(host, port, sni)
-            if p:
-                pings.append(p)
-        if len(pings) < 3:
-            return None
+            if p: pings.append(p)
+        if len(pings) < 3: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         return avg, jit
-    except:
-        return None
+    except: return None
 
 def get_config_details(link):
     try:
@@ -172,8 +170,11 @@ def check_isp_info(ip_str):
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
                     is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
+                    
+                    # Если провайдер в черном списке — ставим статус BANNED сразу
                     is_banned = is_banned_hosting or is_banned_pattern
                     res = (r.get("countryCode"), full_info, "BANNED" if is_banned else r.get("hosting", False))
+                    
                     with lock: ip_cache[ip_str] = res
                     return res
                 break
@@ -261,14 +262,15 @@ def main():
             return
             
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
+        
+        # ЕСЛИ ПРОВАЙДЕР ЗАБАНЕН — ОТСЕИВАЕМ СРАЗУ (Счетчики не сработают ниже)
         if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
+        
         is_ru = (ip_cc == "RU")
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
         
-        # --- ПРОВЕРКА ПИНГА С ИСПОЛЬЗОВАНИЕМ ВСЕХ ПАРАМЕТРОВ (MIN/MAX) ---
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
         max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
-        
         if not (min_p <= p1 <= max_p): return
 
         full = full_ping_analysis(host, port, sni, p1)
@@ -336,52 +338,40 @@ def main():
         all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
         top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
         remaining_ru_sni = all_ru_sni[MAX_TOP_RU_SNI:]
-
         xhttp_bucket = []
         if is_vlm2:
             xhttp_bucket = sorted([r for r in results if r.get('is_xhttp') and r not in top_fixed], key=lambda x: x['ping'])
-        
         normal_buckets = []
         sni_ru_extra_buckets = [remaining_ru_sni]
-
         buckets = {i: [] for i in range(4)}
         for r in results:
             if r in top_fixed or r in xhttp_bucket or (r['country'] == 'RU' and r['white_sni']):
                 continue
             b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
             buckets[b_idx].append(r)
-        
         for i in range(4):
             buckets[i].sort(key=lambda x: x['ping'])
-            if i == 0 or i == 2:
-                sni_ru_extra_buckets.append(buckets[i])
-            else:
-                normal_buckets.append(buckets[i])
-
+            if i == 0 or i == 2: sni_ru_extra_buckets.append(buckets[i])
+            else: normal_buckets.append(buckets[i])
         final = list(top_fixed)
         current_ru_sni_total = len(top_fixed)
-
         sources_order = []
         if is_vlm2: sources_order.append(xhttp_bucket)
         sources_order.extend(normal_buckets)
         sources_order.extend(sni_ru_extra_buckets)
-
         while len(final) < MAX_CONFIGS:
             added_any = False
             for src in sources_order:
                 is_sni_ru_src = (src in sni_ru_extra_buckets)
                 count = 0
                 while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and src:
-                    if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU:
-                        break
+                    if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU: break
                     config = src.pop(0)
                     final.append(config)
                     count += 1
                     added_any = True
-                    if is_sni_ru_src:
-                        current_ru_sni_total += 1
+                    if is_sni_ru_src: current_ru_sni_total += 1
             if not added_any: break
-
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
         return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
         
