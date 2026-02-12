@@ -19,7 +19,7 @@ MAX_XHTTP = 5   # Максимум xhttp в vlm2
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "mevspace", "m247", "akamai", "host"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
@@ -224,7 +224,6 @@ def main():
             if is_xhttp:
                 if xhttp_count >= MAX_XHTTP: return
             else:
-                # Если обычные конфиги уже набраны для обоих файлов, скипаем их сразу
                 vlm_done = len(vlm_results) >= (MAX_CONFIGS + 2)
                 vlm2_normal_done = len(vlm2_results) >= (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count))
                 if vlm_done and vlm2_normal_done: return
@@ -250,8 +249,14 @@ def main():
         is_ru = (ip_cc == "RU")
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
         
+        # --- ПРОВЕРКА ПИНГА С ИСПОЛЬЗОВАНИЕМ ВСЕХ ПАРАМЕТРОВ (MIN/MAX) ---
+        min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
+        max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
+        
+        if not (min_p <= p1 <= max_p): return
+
         full = full_ping_analysis(host, port, sni, p1)
-        if not full or full[1] > MAX_JITTER: return
+        if not full or full[1] > MAX_JITTER or not (min_p <= full[0] <= max_p): return
 
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
@@ -362,4 +367,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+            
