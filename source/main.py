@@ -91,22 +91,25 @@ def is_valid_ipv4(ip):
     except: return False
 
 def is_technically_broken(link):
-    """Отсеивает конфиги, которые Hiddify гарантированно не примет."""
+    """Только проверяет. Если конфиг кривой — возвращает True, и он игнорируется."""
     l = link.lower()
-    # 1. Запрещенный мусор в ссылке
+    # 1. Запрещенный мусор (xudp), который вешает парсеры
     if "packetencoding=" in l: return True
     
     # 2. Конфликт TLS и Reality (pbk есть, а security=tls)
+    # Оригинальный конфиг ошибочен, не берем его
     if "pbk=" in l and "security=tls" in l: return True
     
-    # 3. Reality на странных портах (обычно Reality работает на 443)
-    # Если есть pbk и порт 80 — это почти всегда мусор
+    # 3. Reality на порту 80 — технический нонсенс
     if "pbk=" in l and ":80?" in l: return True
     
-    # 4. Некорректный flow без tcp (Hiddify бракует flow если не указан транспорт)
-    if "flow=xtls-rprx-vision" in l and "type=tcp" not in l and "type=" in l: return True
+    # 4. Flow без транспорта tcp — Hiddify не импортирует такое
+    if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: return True
     
-    # 5. Странные типы транспорта
+    # 5. Отсутствие транспорта для Reality (pbk есть, а type нет)
+    if "pbk=" in l and "type=" not in l: return True
+
+    # 6. Нестандартные типы
     if "type=raw" in l: return True
     
     return False
@@ -122,20 +125,17 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     return f"{base_part}#{requests.utils.quote(new_name)}"
 
 def apply_clean_params(config_link):
+    """Минимальная очистка без изменения логики протокола."""
     parts = config_link.split("#", 1)
     base = parts[0]
-    # Удаляем мусорные параметры
-    base = re.sub(r'[&?](?:fp|udp443|packetEncoding|type|flow)=[^&?#]+', '', base)
     
-    # Исправляем security для Reality
-    if "pbk=" in base:
-        base = base.replace("security=tls", "security=reality")
-        if "security=" not in base: base += "&security=reality"
-        # Для Reality и Flow (если он был) обязательно нужен tcp
-        base += "&type=tcp"
+    # Удаляем только мусорные/конфликтные обертки
+    base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', base)
     
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
+    
+    # Чистим дубли символов после склейки
     base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
@@ -245,7 +245,7 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        # 1. ПЕРВИЧНЫЙ ТЕХНИЧЕСКИЙ ФИЛЬТР (Новое)
+        # 1. ТЕХНИЧЕСКИЙ ФИЛЬТР (Теперь строго пропускает только корректные)
         if is_technically_broken(config): return
 
         host, port, sni, cid, name = get_config_details(config)
@@ -373,4 +373,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
