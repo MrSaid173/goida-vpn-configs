@@ -14,23 +14,21 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
 INTERLEAVE_STEP = 3 
-EXCLUDED_SNI_DOMAINS = ["vk", "resetnet", "adguard"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
-
-MAX_CONFIGS = 50 
-LIMIT_WHITE = MAX_CONFIGS // 2 # 25
-LIMIT_OTHER = MAX_CONFIGS - LIMIT_WHITE # 25
+EXCLUDED_SNI_DOMAINS = ["vk"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "mevspace", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
+MAX_CONFIGS = 50 
+MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = 5
 MAX_RU_CONFIGS = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 3 
+MAX_PER_SNI = 15
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
+MAX_WORLD_PING = 500.0
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -85,10 +83,6 @@ ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
 
-# Счетчики для контроля лимитов в реальном времени
-vlm_stats = {"white": 0, "other": 0}
-vlm2_stats = {"white": 0, "other": 0}
-
 def is_valid_ipv4(ip):
     try:
         ipaddress.IPv4Address(ip)
@@ -97,7 +91,6 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
-    if "host=" in l: return True
     if "packetencoding=" in l: return True
     if "pbk=" in l and "security=tls" in l: return True
     if "pbk=" in l and ":80?" in l: return True
@@ -181,7 +174,7 @@ def get_config_details(link):
         cid_match = re.search(r'://([^@]+)@', clean_link)
         cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
+        s_m = re.search(r'[?&](?:sni|host)=([^&#\s]*)', clean_link)
         sni = s_m.group(1).lower() if s_m else ""
         if h_m and is_valid_ipv4(h_m.group(1)):
             return h_m.group(1), int(h_m.group(2)), sni, cid, name
@@ -197,7 +190,13 @@ def fetch_raw_configs(url):
         return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
     except: return []
 
+vlm_results = []
+vlm2_results = []
+seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
+ru_count = 0
+
 def main():
+    global ru_count
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
@@ -213,30 +212,18 @@ def main():
         def get_list(var):
             m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
             return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
-        extra_urls = get_list("EXTRA_URLS_FOR_26")
-        std_urls = get_list("URLS")
+        extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update(l.strip().lower() for l in sec_text.splitlines() if l.strip())
-    except: pass
-
-    vlm2_results, vlm_results = [], []
-    seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
-    ru_count = 0
+    except Exception as e:
+        print(f"--- ⚠️ Ошибка SNI: {e} ---")
 
     def validate(config, is_priority, is_white):
-        nonlocal ru_count
-        target_type = "white" if is_white else "other"
-        
-        with lock:
-            need_vlm = (vlm_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER))
-            need_vlm2 = (vlm2_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER))
-            if not need_vlm and not need_vlm2: return
-
+        global ru_count
         if is_technically_broken(config): return
         host, port, sni, cid, name = get_config_details(config)
         if not host: return
-        
         with lock:
             if host in seen_ips: return
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
@@ -254,17 +241,12 @@ def main():
             
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED": return
-            
         is_ru = (ip_cc == "RU")
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
         
         with lock:
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
-            # Еще раз проверяем, нужен ли этот конфиг хоть куда-то прямо сейчас
-            can_vlm2 = vlm2_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER)
-            can_vlm = ("xhttp" not in config.lower()) and (vlm_stats[target_type] < (LIMIT_WHITE if is_white else LIMIT_OTHER))
-            if not can_vlm and not can_vlm2: return
             if host in seen_ips: return 
             seen_ips.add(host)
             
@@ -274,28 +256,13 @@ def main():
         with lock:
             is_xhttp = "xhttp" in config.lower()
             res_entry = {"link": apply_clean_params(config), "ping": full[0], "country": ip_cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": ip_h_stat}
-            
-            added_any = False
-            limit = LIMIT_WHITE if is_white else LIMIT_OTHER
-            
-            # Наполняем vlm2 независимо
-            if vlm2_stats[target_type] < limit:
-                vlm2_results.append(res_entry)
-                vlm2_stats[target_type] += 1
-                added_any = True
-            
-            # Наполняем vlm независимо (только если не xhttp)
-            if not is_xhttp and vlm_stats[target_type] < limit:
-                vlm_results.append(res_entry)
-                vlm_stats[target_type] += 1
-                added_any = True
-            
-            if added_any:
-                if is_ru: ru_count += 1
-                else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                id_counts[cid] = id_counts.get(cid, 0) + 1
-                print(f"[FOUND] {ip_cc} | {target_type} | {full[0]}ms | {host}", flush=True)
+            vlm2_results.append(res_entry)
+            if not is_xhttp: vlm_results.append(res_entry)
+            if is_ru: ru_count += 1
+            else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
+            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+            id_counts[cid] = id_counts.get(cid, 0) + 1
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -308,17 +275,40 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        with lock:
-            if all(vlm_stats[t] >= (LIMIT_WHITE if t=="white" else LIMIT_OTHER) for t in ["white", "other"]) and \
-               all(vlm2_stats[t] >= (LIMIT_WHITE if t=="white" else LIMIT_OTHER) for t in ["white", "other"]):
-                break
+        # Даем запас +15, чтобы vlm (без xhttp) тоже успел набраться
+        if len(vlm_results) >= MAX_CONFIGS + 15 and len(vlm2_results) >= MAX_CONFIGS + 15: break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results):
-        ranked = sorted(results, key=lambda x: x['ping'])
-        speed_rating = {r['link']: rank + 1 for rank, r in enumerate(ranked)}
-        return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in results]
+        top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
+        top_ru_links = {r['link'] for r in top_ru}
+        current_sni_ru_count = len(top_ru) 
+        buckets = {i: [] for i in range(4)}
+        for r in results:
+            if r['link'] in top_ru_links: continue
+            if r['is_priority']: b_idx = 0 if r['white_sni'] else 1
+            else: b_idx = 2 if r['white_sni'] else 3
+            buckets[b_idx].append(r)
+        for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
+        others_sorted = []
+        while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
+            added_any = False
+            for i in range(4):
+                is_white_bucket = (i == 0 or i == 2)
+                for _ in range(INTERLEAVE_STEP):
+                    if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
+                    if buckets[i]:
+                        if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU: break 
+                        others_sorted.append(buckets[i].pop(0))
+                        added_any = True
+                        if is_white_bucket: current_sni_ru_count += 1
+                    else: break
+            if not added_any: break
+        final = (top_ru + others_sorted)[:MAX_CONFIGS]
+        ranked = sorted(final, key=lambda x: x['ping'])
+        speed = {r['link']: rank + 1 for rank, r in enumerate(ranked)}
+        return [rename_config(r['link'], r['country'], speed[r['link']], r['is_hosting'], r['white_sni']) for r in final]
 
     if gh_repo:
         f_v1, f_v2 = finalize_list(vlm_results), finalize_list(vlm2_results)
