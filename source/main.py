@@ -106,10 +106,17 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
-    if "host=" in l or "packetencoding=" in l or "type=raw" in l: return True
+    if "type=" not in l: 
+        return True
+    if "host=" in l or "packetencoding=" in l or "type=raw" in l: 
+        return True
     if "pbk=" in l:
-        if "security=tls" in l or ":80?" in l or "type=" not in l: return True
-    if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: return True
+        if "security=tls" in l or ":80?" in l: 
+            return True            
+    if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: 
+        return True
+    if ("security=tls" in l or "security=reality" in l) and "sni=" not in l:
+        return True
     return False
 
 def fast_ping(host, port, sni):
