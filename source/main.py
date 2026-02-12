@@ -4,7 +4,7 @@ import zoneinfo
 from github import Github, Auth
 import threading
 
-# --- НАСТРОЙКИ ---
+# --- НАСТРОЙКИ (ВСЕ СОХРАНЕНО) ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
@@ -14,7 +14,7 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
 INTERLEAVE_STEP = 3 
-EXCLUDED_SNI_DOMAINS = ["vk", "resetnet", "adguard"]
+EXCLUDED_SNI_DOMAINS = ["vk"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "mevspace", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
@@ -92,8 +92,9 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
-    # ИСКЛЮЧАЕМ host=
+    # ИСКЛЮЧАЕМ host= (ПОЛНОСТЬЮ)
     if "host=" in l: return True
+    # Остальные проверки сохранены
     if "packetencoding=" in l: return True
     if "pbk=" in l and "security=tls" in l: return True
     if "pbk=" in l and ":80?" in l: return True
@@ -177,10 +178,9 @@ def get_config_details(link):
         cid_match = re.search(r'://([^@]+)@', clean_link)
         cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        # ОСТАВЛЯЕМ ТОЛЬКО SNI
+        # Ищем только sni=
         s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
         sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
-        
         if h_m and is_valid_ipv4(h_m.group(1)):
             return h_m.group(1), int(h_m.group(2)), sni, cid, name
     except: pass
@@ -199,7 +199,6 @@ def main():
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
-    global sni_domains
     sni_domains = set()
     extra_urls, std_urls = [], []
     gh_repo = None
@@ -228,11 +227,6 @@ def main():
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count
-        
-        # СТРОГИЙ СТОП: Если мы уже нашли с запасом (например, 75), перестаем тратить ресурсы
-        with lock:
-            if len(vlm2_results) >= MAX_CONFIGS + 25: return
-
         if is_technically_broken(config): return
 
         host, port, sni, cid, name = get_config_details(config)
@@ -284,7 +278,7 @@ def main():
             else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
             id_counts[cid] = id_counts.get(cid, 0) + 1
-            print(f"[FOUND] {ip_cc} | {'WHITE' if is_white else 'OTHER'} | {full[0]}ms | {host}", flush=True)
+            print(f"[FOUND] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group(urls):
         raw = []
@@ -301,19 +295,16 @@ def main():
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
 
     for group_configs, priority, is_white in check_order:
-        with lock:
-            if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10:
-                break
+        if len(vlm_results) >= MAX_CONFIGS + 10 and len(vlm2_results) >= MAX_CONFIGS + 10:
+            break
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as v:
             for c in group_configs: v.submit(validate, c, priority, is_white)
 
     def finalize_list(results, is_vlm1=False):
-        # 1. Отбираем Топ-5 RU SNI
         top_ru = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])[:MAX_TOP_RU_SNI]
         top_ru_links = {r['link'] for r in top_ru}
         current_sni_ru_count = len(top_ru) 
         
-        # 2. Раскладываем остальных по бакетам для добора (интерливинга)
         buckets = {i: [] for i in range(4)}
         for r in results:
             if r['link'] in top_ru_links: continue
@@ -323,7 +314,6 @@ def main():
         
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
         
-        # 3. Добор через интерливинг до ровно MAX_CONFIGS (50)
         others_sorted = []
         while (len(top_ru) + len(others_sorted)) < MAX_CONFIGS:
             added_in_round = False
@@ -332,7 +322,6 @@ def main():
                 for _ in range(INTERLEAVE_STEP):
                     if (len(top_ru) + len(others_sorted)) >= MAX_CONFIGS: break
                     if buckets[i]:
-                        # Лимит на общее кол-во белых SNI (25)
                         if is_white_bucket and current_sni_ru_count >= MAX_TOTAL_SNI_RU:
                             break 
                         config = buckets[i].pop(0)
@@ -365,4 +354,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-            
