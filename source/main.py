@@ -221,9 +221,13 @@ def main():
         is_xhttp = "xhttp" in config.lower()
         
         with lock:
-            if is_xhttp and xhttp_count >= MAX_XHTTP: return
-            # Проверяем, нужны ли еще конфиги для vlm или vlm2
-            if len(vlm_results) >= MAX_CONFIGS + 2 and len(vlm2_results) >= MAX_CONFIGS + 2: return
+            if is_xhttp:
+                if xhttp_count >= MAX_XHTTP: return
+            else:
+                # Если обычные конфиги уже набраны для обоих файлов, скипаем их сразу
+                vlm_done = len(vlm_results) >= (MAX_CONFIGS + 2)
+                vlm2_normal_done = len(vlm2_results) >= (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count))
+                if vlm_done and vlm2_normal_done: return
 
         if is_technically_broken(config): return
         host, port, sni, cid, name = get_config_details(config)
@@ -254,7 +258,6 @@ def main():
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return
             
-            seen_ips.add(host)
             res_entry = {
                 "link": apply_clean_params(config), 
                 "ping": full[0], "country": ip_cc, 
@@ -264,32 +267,29 @@ def main():
                 "is_xhttp": is_xhttp
             }
             
-            # Логика добавления в vlm2 (с учетом брони под xhttp)
-            can_add_to_vlm2 = False
+            added = False
             if is_xhttp:
                 if len(vlm2_results) < MAX_CONFIGS + 5:
-                    can_add_to_vlm2 = True
+                    vlm2_results.append(res_entry)
                     xhttp_count += 1
+                    added = True
             else:
-                # Берем обычный в vlm2 только если остались места после учета брони MIN_XHTTP
                 if len(vlm2_results) < (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
-                    can_add_to_vlm2 = True
+                    vlm2_results.append(res_entry)
+                    added = True
+                if len(vlm_results) < MAX_CONFIGS + 5: 
+                    vlm_results.append(res_entry)
+                    added = True
 
-            if can_add_to_vlm2:
-                vlm2_results.append(res_entry)
-                
-            # Логика добавления в vlm (xhttp сюда никогда не идут)
-            if not is_xhttp and len(vlm_results) < MAX_CONFIGS + 5: 
-                vlm_results.append(res_entry)
+            if added:
+                seen_ips.add(host)
+                if is_ru: ru_count += 1
+                else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
+                subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
+                print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
-            if is_ru: ru_count += 1
-            else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-            subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
-            
-            if len(vlm_results) >= MAX_CONFIGS + 2 and len(vlm2_results) >= MAX_CONFIGS + 2:
+            if len(vlm_results) >= MAX_CONFIGS + 2 and xhttp_count >= MAX_XHTTP:
                 stop_event.set()
-                
-            print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
 
     def fetch_group_data(urls):
         raw = []
@@ -362,3 +362,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
