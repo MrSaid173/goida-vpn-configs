@@ -108,6 +108,8 @@ def is_valid_ipv4(ip):
 def is_technically_broken(link):
     l = link.lower()
     if "type=" not in l: return True
+    if "type=http" in l and "type=httpupgrade" not in l: return True
+    if "type=splithttp" in l: return True
     if "host=" in l or "packetencoding=" in l or "type=raw" in l: return True
     if "pbk=" in l:
         if "security=tls" in l or ":80?" in l: return True            
