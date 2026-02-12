@@ -19,7 +19,7 @@ MAX_XHTTP = 5   # Максимум xhttp в vlm2
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["vk"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "world", "oracle", "leaseweb", "m247", "akamai", "host"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 MAX_JITTER = 50  
 MAX_CONFIGS = 50 
