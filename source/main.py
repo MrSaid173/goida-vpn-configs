@@ -198,7 +198,7 @@ def rename_config(link, cc, idx, is_h=False, is_ws=False):
     if is_h is True: tags.append("HOST")
     if is_ws: tags.append("SNI-RU")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
-    return f"{link.split('#')[0]}#{requests.utils.quote(f'{c.get('flag', '🌐')} {c.get('full', cc)} — #{idx}{tag_str}')}"
+    return f"{link.split('#')[0]}#{requests.utils.quote(f"{c.get('flag', '🌐')} {c.get('full', cc)} — #{idx}{tag_str}")}"
 
 def fetch_raw_configs(url):
     try:
