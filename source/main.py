@@ -34,7 +34,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 MAX_JITTER = 50
-MAX_JITTER_RATIO = 0.5  # Коэффициент стабильности (0.5 = 50% от пинга)
+MAX_JITTER_RATIO = 0.4  # Коэффициент стабильности (0.5 = 50% от пинга)
 
 MAX_CONFIGS = 50 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
