@@ -45,8 +45,8 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4
 
 # Новые лимиты на повторение SNI
-MAX_SAME_SNI_RU = 2      # Россия + RU-SNI
-MAX_SAME_SNI_WORLD = 15  # Остальные
+MAX_SAME_SNI_RU = 1      # Россия + RU-SNI
+MAX_SAME_SNI_WORLD = 5  # Остальные
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 480.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 530.0
