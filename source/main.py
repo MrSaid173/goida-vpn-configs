@@ -45,8 +45,8 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4
 
 # Новые лимиты на повторение SNI
-MAX_SAME_SNI_RU = 1      # Россия + RU-SNI
-MAX_SAME_SNI_WORLD = 5  # Остальные
+MAX_SAME_SNI_RU = 2      # Россия + RU-SNI
+MAX_SAME_SNI_WORLD = 15  # Остальные
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
@@ -403,4 +403,13 @@ def main():
         
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
-            output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2
+            output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
+            path, content = f"githubmirror/{fn}", "\n".join(output)
+            try:
+                sha = gh_repo.get_contents(path).sha
+                gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
+            except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
+
+if __name__ == "__main__":
+    main()
