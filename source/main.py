@@ -33,7 +33,9 @@ BANNED_ASNAME_PATTERNS = [
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn"
 ]
 
-MAX_JITTER = 50  
+MAX_JITTER = 50
+MAX_JITTER_RATIO = 0.5  # Коэффициент стабильности (0.5 = 50% от пинга)
+
 MAX_CONFIGS = 50 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = 5
@@ -110,15 +112,28 @@ def is_technically_broken(link):
     if "type=" not in l: return True
     if "type=http" in l and "type=httpupgrade" not in l: return True
     if "type=splithttp" in l: return True
-    
     if ":443/?" in l or ":80/?" in l or "/??" in l: return True
     
-    if "host=" in l or "packetencoding=" in l or "type=raw" in l: return True
+    if "vless://" in l:
+        match = re.search(r'vless://([a-f0-9\-]{32,36})@', l)
+        if not match: return True
+
     if "pbk=" in l:
         if "security=tls" in l or ":80?" in l: return True            
     if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: return True
-    if ("security=tls" in l or "security=reality" in l) and "sni=" not in l: return True
     
+    s_m = re.search(r'[?&]sni=([^&#\s]*)', l)
+    h_m = re.search(r'@([^:/?#\s]+):(\d+)', l)
+    
+    if ("security=tls" in l or "security=reality" in l):
+        if not s_m: return True
+        sni = s_m.group(1)
+        if is_valid_ipv4(sni): return True 
+        
+    if h_m:
+        port = int(h_m.group(2))
+        if not (1 <= port <= 65535): return True
+        
     return False
 
 def fast_ping(host, port, sni):
@@ -127,23 +142,26 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.2) as sock:
+        with socket.create_connection((host, port), timeout=1.1) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
     except: return None
 
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
-    max_attempts = 3
+    max_attempts = 3 
     try:
         for _ in range(max_attempts):
             if stop_event.is_set(): return None
-            time.sleep(0.2)
+            time.sleep(0.15)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
         if len(pings) < 3: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
+        
+        if jit > (avg * MAX_JITTER_RATIO): return None 
+        
         return avg, jit
     except: return None
 
