@@ -48,7 +48,7 @@ MAX_FAILED_PER_SUBNET = 4
 MAX_SAME_SNI_RU = 1      # Россия + RU-SNI
 MAX_SAME_SNI_WORLD = 5  # Остальные
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 480.0
+MIN_RU_PING, MAX_RU_PING = 80.0, 480.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 530.0
 
 # Расширенные лимиты для XHTTP
@@ -108,6 +108,16 @@ stop_event = threading.Event()
 ip_cache = {}
 failed_subnets = {} 
 last_api_call = 0
+
+# --- СТАТИСТИКА ---
+stats = {
+    "total_links_found": 0,
+    "broken_links": 0,
+    "banned_ips": 0,
+    "ping_failed": 0,
+    "checked_configs": 0,
+    "dropped_by_limits": 0
+}
 
 def is_valid_ipv4(ip):
     try:
@@ -236,7 +246,8 @@ def fetch_raw_configs(url):
         if "://" not in resp[:50]:
             try: resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except: pass
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
+        found = [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
+        return found
     except: return []
 
 def main():
@@ -248,6 +259,8 @@ def main():
     try: gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
 
+    # --- ЗАГРУЗКА ИСТОЧНИКОВ ---
+    print("📥 Загрузка списков SNI и URL источников...", end=" ", flush=True)
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
         def get_list(var):
@@ -257,16 +270,20 @@ def main():
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update([l.strip().lower() for l in sec_text.splitlines() if l.strip()])
-    except: pass
+        print(f"OK (SNI: {len(sni_domains)} | URLs: {len(extra_urls) + len(std_urls)})")
+    except Exception as e:
+        print(f"ERROR: {e}")
 
     vlm_results, vlm2_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts, ru_count = set(), {}, {}, {}, 0
-    sni_usage_counts = {} # Счетчик использований SNI
+    sni_usage_counts = {} 
     xhttp_count = 0 
 
     def validate(config, is_priority, is_white):
         nonlocal ru_count, xhttp_count
         if stop_event.is_set(): return
+        
+        with lock: stats["checked_configs"] += 1
         is_xhttp = "xhttp" in config.lower()
         
         with lock:
@@ -274,13 +291,19 @@ def main():
                 if xhttp_count >= MAX_XHTTP: return
             else:
                 vlm_done = len(vlm_results) >= (MAX_CONFIGS + 2)
-                reserved = max(0, MIN_XHTTP - xhttp_count) + max(0, MIN_RU_CONFIGS - ru_count)
-                vlm2_normal_done = len(vlm2_results) >= (MAX_CONFIGS - reserved)
-                if vlm_done and vlm2_normal_done:
-                    is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
-                    if not is_ru_potential or ru_count >= MAX_RU_CONFIGS: return
+                res_x = max(0, MIN_XHTTP - xhttp_count)
+                res_ru = max(0, MIN_RU_CONFIGS - ru_count)
+                vlm2_norm_done = len(vlm2_results) >= (MAX_CONFIGS - res_x - res_ru)
+                if vlm_done and vlm2_norm_done:
+                    is_ru_pot = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+                    if not is_ru_pot or ru_count >= MAX_RU_CONFIGS: 
+                        stats["dropped_by_limits"] += 1
+                        return
 
-        if is_technically_broken(config): return
+        if is_technically_broken(config):
+            with lock: stats["broken_links"] += 1
+            return
+            
         host, port, sni, cid, name = get_config_details(config)
         if not host or not sni: return
 
@@ -288,9 +311,8 @@ def main():
             if host in seen_ips or (sni in sni_domains) != is_white: return
             if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
             
-            # Проверка лимитов на одинаковые SNI
-            is_ru_potential = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
-            sni_limit = MAX_SAME_SNI_RU if (is_ru_potential and is_white) else MAX_SAME_SNI_WORLD
+            is_ru_pot = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+            sni_limit = MAX_SAME_SNI_RU if (is_ru_pot and is_white) else MAX_SAME_SNI_WORLD
             if sni_usage_counts.get(sni, 0) >= sni_limit: return
 
             subnet = ".".join(host.split(".")[:3])
@@ -298,68 +320,73 @@ def main():
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
 
         p1 = fast_ping(host, port, sni)
-        # Первичная проверка пинга с учетом XHTTP лимита
         initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
         if not p1 or p1 > initial_max_p:
-            with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
+            with lock: 
+                failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
+                stats["ping_failed"] += 1
             return
             
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
-        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
+        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+            with lock: stats["banned_ips"] += 1
+            return
+            
         is_ru = (ip_cc == "RU")
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
         
-        # Определение лимитов для конкретного типа и страны
-        if is_ru:
-            min_p, max_p = MIN_RU_PING, (MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING)
-        else:
-            min_p, max_p = MIN_WORLD_PING, (MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING)
-            
+        min_p, max_p = (MIN_RU_PING, MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING) if is_ru else (MIN_WORLD_PING, MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING)
         if not (min_p <= p1 <= max_p): return
+        
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER or not (min_p <= full[0] <= max_p): return
 
         with lock:
-            if is_ru and ru_count >= MAX_RU_CONFIGS: return
+            if is_ru and not is_xhttp and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return
-            
-            # Повторная проверка SNI внутри лока перед финальным добавлением
-            sni_limit = MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
-            if sni_usage_counts.get(sni, 0) >= sni_limit: return
 
             res_entry = {"link": apply_clean_params(config), "ping": full[0], "country": ip_cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": ip_h_stat, "is_xhttp": is_xhttp}
-            added = False
+            
+            added_vlm, added_vlm2 = False, False
             if is_xhttp:
                 if len(vlm2_results) < MAX_CONFIGS + 5:
-                    vlm2_results.append(res_entry); xhttp_count += 1; added = True
+                    vlm2_results.append(res_entry); xhttp_count += 1; added_vlm2 = True
             else:
-                reserved_for_ru = max(0, MIN_RU_CONFIGS - ru_count)
-                reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
-                if is_ru or len(vlm2_results) < (MAX_CONFIGS - reserved_for_ru - reserved_for_xhttp):
-                    vlm2_results.append(res_entry); added = True
-                if len(vlm_results) < MAX_CONFIGS + 5: 
-                    vlm_results.append(res_entry); added = True
+                if len(vlm_results) < MAX_CONFIGS + 5:
+                    vlm_results.append(res_entry); added_vlm = True
+                res_x = max(0, MIN_XHTTP - xhttp_count)
+                if is_ru or len(vlm2_results) < (MAX_CONFIGS - res_x):
+                    vlm2_results.append(res_entry); added_vlm2 = True
             
-            if added:
+            if added_vlm or added_vlm2:
                 seen_ips.add(host)
                 sni_usage_counts[sni] = sni_usage_counts.get(sni, 0) + 1
-                if is_ru: ru_count += 1
-                else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
+                if is_ru and not is_xhttp: ru_count += 1
+                elif not is_ru: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
                 subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
             
-            if len(vlm_results) >= MAX_CONFIGS + 2 and xhttp_count >= MAX_XHTTP and ru_count >= MIN_RU_CONFIGS:
+            if len(vlm_results) >= MAX_CONFIGS and xhttp_count >= MAX_XHTTP and ru_count >= MIN_RU_CONFIGS:
+                print("✅ Все цели достигнуты. Остановка...")
                 stop_event.set()
 
-    def fetch_group_data(urls):
+    def fetch_group_data(urls, label):
+        print(f"📡 Сбор конфигов из {label}...", end=" ", flush=True)
         raw = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
             for f in concurrent.futures.as_completed(futures): raw.extend(f.result())
-        unique = list(set(raw)); random.shuffle(unique); return unique
+        unique = list(set(raw))
+        print(f"найдено: {len(unique)}")
+        with lock: stats["total_links_found"] += len(unique)
+        random.shuffle(unique)
+        return unique
 
-    raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
+    raw_extra = fetch_group_data(extra_urls, "EXTRA_URLS")
+    raw_std = fetch_group_data(std_urls, "STANDARD_URLS")
+
+    print(f"🚀 Начинаю проверку. Очередь: {len(raw_extra) + len(raw_std)} конфигов.")
     check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
     for group, priority, white in check_order:
         if stop_event.is_set(): break
@@ -374,9 +401,7 @@ def main():
         top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
         remaining_ru_sni = all_ru_sni[MAX_TOP_RU_SNI:]
         
-        xhttp_bucket = []
-        if is_vlm2:
-            xhttp_bucket = sorted([r for r in results if r.get('is_xhttp') and r not in top_fixed], key=lambda x: x['ping'])
+        xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping']) if is_vlm2 else []
         
         buckets = {i: [] for i in range(4)}
         for r in results:
@@ -388,14 +413,7 @@ def main():
         
         final = list(top_fixed)
         current_ru_sni_total = len(top_fixed)
-        
-        sources_order = []
-        if is_vlm2: sources_order.append(xhttp_bucket)
-        sources_order.append(buckets[0])     # Приоритетные с белым SNI
-        sources_order.append(remaining_ru_sni) # Оставшиеся RU SNI (даже если медленные)
-        sources_order.append(buckets[2])     # Обычные с белым SNI
-        sources_order.append(buckets[1])     # Остальные зарубежные
-        sources_order.append(buckets[3])
+        sources_order = ([xhttp_bucket] if is_vlm2 else []) + [buckets[0], remaining_ru_sni, buckets[2], buckets[1], buckets[3]]
         
         while len(final) < MAX_CONFIGS:
             added_any = False
@@ -405,22 +423,39 @@ def main():
                 while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and src:
                     if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU: break
                     config = src.pop(0)
-                    final.append(config)
-                    count += 1; added_any = True
-                    if is_sni_ru_src: current_ru_sni_total += 1
+                    if config not in final:
+                        final.append(config); count += 1; added_any = True
+                        if is_sni_ru_src: current_ru_sni_total += 1
             if not added_any: break
-            
+        
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
         return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
         
+    print("\n--- 📊 ИТОГОВАЯ СТАТИСТИКА ---")
+    print(f"Всего ссылок найдено:  {stats['total_links_found']}")
+    print(f"Всего проверено:      {stats['checked_configs']}")
+    print(f"Битые/неверный тип:   {stats['broken_links']}")
+    print(f"Ошибка пинга/таймаут: {stats['ping_failed']}")
+    print(f"Banned/Hosting IP:    {stats['banned_ips']}")
+    print(f"Сброшено лимитами:    {stats['dropped_by_limits']}")
+    print(f"В списке VLM:         {len(vlm_results)}")
+    print(f"В списке VLM2:        {len(vlm2_results)} (из них XHTTP: {xhttp_count})")
+    print(f"RU Универсалов (VLM): {ru_count}")
+    print("----------------------------\n")
+
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
             path, content = f"githubmirror/{fn}", "\n".join(output)
+            print(f"📤 Выгрузка {fn} ({len(output)} конфигов)...", end=" ", flush=True)
             try:
-                sha = gh_repo.get_contents(path).sha
-                gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
-            except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+                try: sha = gh_repo.get_contents(path).sha
+                except: sha = None
+                if sha: gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
+                else: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+                print("OK")
+            except Exception as e: print(f"ERROR: {e}")
+
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 if __name__ == "__main__":
