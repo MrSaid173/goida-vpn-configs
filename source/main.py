@@ -48,8 +48,12 @@ MAX_FAILED_PER_SUBNET = 4
 MAX_SAME_SNI_RU = 2      # Россия + RU-SNI
 MAX_SAME_SNI_WORLD = 15  # Остальные
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 480.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 530.0
+
+# Расширенные лимиты для XHTTP
+MAX_RU_PING_XHTTP = MAX_RU_PING + 120
+MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -294,7 +298,9 @@ def main():
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
 
         p1 = fast_ping(host, port, sni)
-        if not p1 or p1 > MAX_WORLD_PING:
+        # Первичная проверка пинга с учетом XHTTP лимита
+        initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
+        if not p1 or p1 > initial_max_p:
             with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
             
@@ -302,7 +308,13 @@ def main():
         if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
         is_ru = (ip_cc == "RU")
         if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
-        min_p, max_p = (MIN_RU_PING, MAX_RU_PING) if is_ru else (MIN_WORLD_PING, MAX_WORLD_PING)
+        
+        # Определение лимитов для конкретного типа и страны
+        if is_ru:
+            min_p, max_p = MIN_RU_PING, (MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING)
+        else:
+            min_p, max_p = MIN_WORLD_PING, (MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING)
+            
         if not (min_p <= p1 <= max_p): return
         full = full_ping_analysis(host, port, sni, p1)
         if not full or full[1] > MAX_JITTER or not (min_p <= full[0] <= max_p): return
