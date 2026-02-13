@@ -107,41 +107,46 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
-    if "type=" not in l: return True
-    if "type=http" in l and "type=httpupgrade" not in l: return True
     if "type=splithttp" in l: return True
-    if "host=" in l or "packetencoding=" in l or "type=raw" in l: return True
+    if "type=http&" in l or "type=http#" in l:
+        if "type=httpupgrade" not in l: return True
+    
+    if "type=" not in l: return True
+    if ":443/?" in l or ":80/?" in l: return True 
+    if "host=" in l and "sni=" not in l: return True 
+    
     if "pbk=" in l:
         if "security=tls" in l or ":80?" in l: return True            
     if "flow=xtls-rprx-vision" in l and "type=tcp" not in l: return True
     if ("security=tls" in l or "security=reality" in l) and "sni=" not in l: return True
+    
+    bad_sni = ["www.spcdn.org", "www.speedtest.net", "127.0.0.1", "localhost", "speedtest.net"]
+    if any(sni in l for sni in bad_sni): return True
+    
     return False
 
 def fast_ping(host, port, sni):
+    start = time.perf_counter()
     try:
-        start = time.perf_counter()
         context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.timeout = 1.2
+        
         with socket.create_connection((host, port), timeout=1.2) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
-    except: return None
-
-def full_ping_analysis(host, port, sni, initial_ping):
-    pings = [initial_ping]
-    max_attempts = 3
-    try:
-        for _ in range(max_attempts):
-            if stop_event.is_set(): return None
-            time.sleep(0.2)
-            p = fast_ping(host, port, sni)
-            if p: pings.append(p)
-        if len(pings) < 3: return None
-        avg = sum(pings) // len(pings)
-        jit = sum(abs(p - avg) for p in pings) // len(pings)
-        return avg, jit
-    except: return None
+    except (ssl.SSLCertVerificationError, ssl.SSLError, Exception):
+        try:
+            start_retry = time.perf_counter()
+            context_any = ssl.create_default_context()
+            context_any.check_hostname = False
+            context_any.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((host, port), timeout=1.0) as sock:
+                with context_any.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                    return int((time.perf_counter() - start_retry) * 1000)
+        except:
+            return None
 
 def get_config_details(link):
     try:
@@ -246,7 +251,7 @@ def main():
                 reserved = max(0, MIN_XHTTP - xhttp_count) + max(0, MIN_RU_CONFIGS - ru_count)
                 vlm2_normal_done = len(vlm2_results) >= (MAX_CONFIGS - reserved)
                 if vlm_done and vlm2_normal_done:
-                    is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+                    is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP.get("RU", {}).get("aliases", []))
                     if not is_ru_potential or ru_count >= MAX_RU_CONFIGS: return
 
         if is_technically_broken(config): return
@@ -268,7 +273,7 @@ def main():
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
         if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
         is_ru = (ip_cc == "RU")
-        if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
+        if is_ru != any(a in name.upper() for a in COUNTRY_MAP.get("RU", {}).get("aliases", [])): return
         min_p, max_p = (MIN_RU_PING, MAX_RU_PING) if is_ru else (MIN_WORLD_PING, MAX_WORLD_PING)
         if not (min_p <= p1 <= max_p): return
         full = full_ping_analysis(host, port, sni, p1)
@@ -298,6 +303,8 @@ def main():
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
             if len(vlm_results) >= MAX_CONFIGS + 2 and xhttp_count >= MAX_XHTTP and ru_count >= MIN_RU_CONFIGS:
                 stop_event.set()
+
+    # ... (остальной код функции main и finalize_list остается прежним) ...
 
     def fetch_group_data(urls):
         raw = []
@@ -336,14 +343,12 @@ def main():
         final = list(top_fixed)
         current_ru_sni_total = len(top_fixed)
         
-        # УЛУЧШЕНИЕ: Очередь источников изменена. 
-        # Медленные RU-серверы (remaining_ru_sni) подняты выше обычных зарубежных конфигов (buckets[1] и [3])
         sources_order = []
         if is_vlm2: sources_order.append(xhttp_bucket)
-        sources_order.append(buckets[0])     # Приоритетные с белым SNI
-        sources_order.append(remaining_ru_sni) # Оставшиеся RU SNI (даже если медленные)
-        sources_order.append(buckets[2])     # Обычные с белым SNI
-        sources_order.append(buckets[1])     # Остальные зарубежные
+        sources_order.append(buckets[0])     
+        sources_order.append(remaining_ru_sni) 
+        sources_order.append(buckets[2])     
+        sources_order.append(buckets[1])     
         sources_order.append(buckets[3])
         
         while len(final) < MAX_CONFIGS:
@@ -374,4 +379,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
