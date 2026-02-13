@@ -34,7 +34,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 MAX_JITTER = 50
-MAX_JITTER_RATIO = 0.4  # Коэффициент стабильности (0.5 = 50% от пинга)
+MAX_JITTER_RATIO = 0.4 
 
 MAX_CONFIGS = 50 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
@@ -42,7 +42,11 @@ MAX_TOP_RU_SNI = 5
 MAX_PER_COUNTRY = 15 
 MAX_PER_SUBNET = 3 
 MAX_PER_ID = 6
-MAX_FAILED_PER_SUBNET = 4 
+MAX_FAILED_PER_SUBNET = 4
+
+# Новые лимиты на повторение SNI
+MAX_SAME_SNI_RU = 1      # Россия + RU-SNI
+MAX_SAME_SNI_WORLD = 5  # Остальные
 
 MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
@@ -253,6 +257,7 @@ def main():
 
     vlm_results, vlm2_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts, ru_count = set(), {}, {}, {}, 0
+    sni_usage_counts = {} # Счетчик использований SNI
     xhttp_count = 0 
 
     def validate(config, is_priority, is_white):
@@ -278,6 +283,12 @@ def main():
         with lock:
             if host in seen_ips or (sni in sni_domains) != is_white: return
             if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
+            
+            # Проверка лимитов на одинаковые SNI
+            is_ru_potential = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+            sni_limit = MAX_SAME_SNI_RU if (is_ru_potential and is_white) else MAX_SAME_SNI_WORLD
+            if sni_usage_counts.get(sni, 0) >= sni_limit: return
+
             subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
@@ -300,6 +311,11 @@ def main():
             if is_ru and ru_count >= MAX_RU_CONFIGS: return
             if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
             if host in seen_ips: return
+            
+            # Повторная проверка SNI внутри лока перед финальным добавлением
+            sni_limit = MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
+            if sni_usage_counts.get(sni, 0) >= sni_limit: return
+
             res_entry = {"link": apply_clean_params(config), "ping": full[0], "country": ip_cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": ip_h_stat, "is_xhttp": is_xhttp}
             added = False
             if is_xhttp:
@@ -312,12 +328,15 @@ def main():
                     vlm2_results.append(res_entry); added = True
                 if len(vlm_results) < MAX_CONFIGS + 5: 
                     vlm_results.append(res_entry); added = True
+            
             if added:
                 seen_ips.add(host)
+                sni_usage_counts[sni] = sni_usage_counts.get(sni, 0) + 1
                 if is_ru: ru_count += 1
                 else: country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
                 subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            
             if len(vlm_results) >= MAX_CONFIGS + 2 and xhttp_count >= MAX_XHTTP and ru_count >= MIN_RU_CONFIGS:
                 stop_event.set()
 
@@ -358,8 +377,6 @@ def main():
         final = list(top_fixed)
         current_ru_sni_total = len(top_fixed)
         
-        # УЛУЧШЕНИЕ: Очередь источников изменена. 
-        # Медленные RU-серверы (remaining_ru_sni) подняты выше обычных зарубежных конфигов (buckets[1] и [3])
         sources_order = []
         if is_vlm2: sources_order.append(xhttp_bucket)
         sources_order.append(buckets[0])     # Приоритетные с белым SNI
@@ -386,14 +403,4 @@ def main():
         
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
-            output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
-            path, content = f"githubmirror/{fn}", "\n".join(output)
-            try:
-                sha = gh_repo.get_contents(path).sha
-                gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
-            except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
-    print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
-
-if __name__ == "__main__":
-    main()
-    
+            output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2
