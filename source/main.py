@@ -47,15 +47,15 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU = 1
-MAX_SAME_SNI_WORLD = 5 
+MAX_SAME_SNI_RU = 2
+MAX_SAME_SNI_WORLD = 15 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 480.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 550.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
 
 # Расширенные лимиты для XHTTP
-MAX_RU_PING_XHTTP = MAX_RU_PING + 120
-MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
+MAX_RU_PING_XHTTP = MAX_RU_PING + 150
+MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 150
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -163,12 +163,10 @@ def full_ping_analysis(host, port, sni, initial_ping):
             time.sleep(0.15)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
-        if len(pings) < 3: return None
+        if len(pings) < 4: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
-        
-        if jit > (avg * MAX_JITTER_RATIO): return None 
-        
+        if jit > (avg * MAX_JITTER_RATIO): return None      
         return avg, jit
     except: return None
 
@@ -177,12 +175,11 @@ def get_config_details(link):
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         cid_match = re.search(r'://([^@]+)@', clean_link)
-        cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
-        sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
         if h_m and is_valid_ipv4(h_m.group(1)):
-            return h_m.group(1), int(h_m.group(2)), sni, cid, name
+            sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
+            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else "", name
     except: pass
     return None, None, None, None, None
 
@@ -259,110 +256,155 @@ def main():
     except: pass
 
     vlm_results, vlm2_results = [], []
-    seen_ips, subnet_counts, id_counts, country_counts, ru_count = set(), {}, {}, {}, 0
-    sni_usage_counts = {} 
-    xhttp_count = 0 
+    seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
+    sni_usage_counts = {}
+
+    # Раздельные счетчики для точного контроля
+    ru_vlm_count = 0     # Обычные RU для vlm
+    ru_vlm2_count = 0    # Суммарные RU (обычные + xhttp) для vlm2
+    xhttp_count = 0      # Всего XHTTP для vlm2
 
     def validate(config, is_priority, is_white):
-        nonlocal ru_count, xhttp_count
-        if stop_event.is_set(): return
+        nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count
+        if stop_event.is_set():
+            return
+
         is_xhttp = "xhttp" in config.lower()
-        
+
+        # Предварительная проверка потенциала RU по названию
+        is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+
         with lock:
             if is_xhttp:
-                if xhttp_count >= MAX_XHTTP: return
+                if xhttp_count >= MAX_XHTTP:
+                    return
+                if is_ru_potential and ru_vlm2_count >= MAX_RU_CONFIGS:
+                    return
             else:
-                vlm_done = len(vlm_results) >= (MAX_CONFIGS + 2)
-                reserved_x = max(0, MIN_XHTTP - xhttp_count)
-                reserved_ru = max(0, MIN_RU_CONFIGS - ru_count)
-                vlm2_normal_done = len(vlm2_results) >= (MAX_CONFIGS - reserved_x - reserved_ru)
-                if vlm_done and vlm2_normal_done:
-                    is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
-                    if not is_ru_potential or ru_count >= MAX_RU_CONFIGS: return
+                # Для обычных конфигов проверяем, нужны ли они еще хоть где-то
+                vlm_needs_ru = (is_ru_potential and ru_vlm_count < MAX_RU_CONFIGS)
+                vlm2_needs_ru = (is_ru_potential and ru_vlm2_count < MAX_RU_CONFIGS)
+                
+                vlm_full = len(vlm_results) >= MAX_CONFIGS
+                vlm2_full = len(vlm2_results) >= MAX_CONFIGS
+                
+                if not (vlm_needs_ru or vlm2_needs_ru or not vlm_full or not vlm2_full):
+                    return
 
-        if is_technically_broken(config): return
+        if is_technically_broken(config):
+            return
+
         host, port, sni, cid, name = get_config_details(config)
-        if not host or not sni: return
+        if not host or not sni:
+            return
 
         with lock:
-            if host in seen_ips or (sni in sni_domains) != is_white: return
-            if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
-            
-            is_ru_potential = any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"])
+            if host in seen_ips or (sni in sni_domains) != is_white:
+                return
+            if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
+                return
+
             sni_limit = MAX_SAME_SNI_RU if (is_ru_potential and is_white) else MAX_SAME_SNI_WORLD
-            if sni_usage_counts.get(sni, 0) >= sni_limit: return
+            if sni_usage_counts.get(sni, 0) >= sni_limit:
+                return
 
             subnet = ".".join(host.split(".")[:3])
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
-            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
+            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID:
+                return
+            
+            # ← новая проверка: отсев уже "плохих" подсетей
+            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET:
+                return
 
         p1 = fast_ping(host, port, sni)
+
+        # ← новый блок штрафа: если первый пинг провалился — штрафуем подсеть
         initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
         if not p1 or p1 > initial_max_p:
-            with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
+            with lock:
+                failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
-            
+
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
-        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
+        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+            return
+
         is_ru = (ip_cc == "RU")
-        if is_ru != any(a in name.upper() for a in COUNTRY_MAP["RU"]["aliases"]): return
-        
-        if is_ru:
-            min_p, max_p = MIN_RU_PING, (MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING)
-        else:
-            min_p, max_p = MIN_WORLD_PING, (MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING)
-            
-        if not (min_p <= p1 <= max_p): return
+        if is_ru != is_ru_potential:
+            return
+
+        # Пинг-валидация (уже после первого успешного пинга)
+        max_p = MAX_RU_PING_XHTTP if (is_ru and is_xhttp) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
+        if p1 > max_p:
+            return
+
         full = full_ping_analysis(host, port, sni, p1)
-        if not full or full[1] > MAX_JITTER or not (min_p <= full[0] <= max_p): return
+        if not full or full[1] > MAX_JITTER:
+            return
 
         with lock:
-            # Если это RU конфиг, но он XHTTP — он НЕ идет в vlm и НЕ считается в ru_count.
-            # Нам нужны 5 RU конфигов именно для vlm (которые не xhttp).
-            if is_ru and not is_xhttp and ru_count >= MAX_RU_CONFIGS: return
-            if not is_ru and country_counts.get(ip_cc, 0) >= MAX_PER_COUNTRY: return
-            if host in seen_ips: return
-            
-            sni_limit = MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
-            if sni_usage_counts.get(sni, 0) >= sni_limit: return
+            if host in seen_ips:
+                return
 
-            res_entry = {"link": apply_clean_params(config), "ping": full[0], "country": ip_cc, "is_priority": is_priority, "white_sni": is_white, "is_hosting": ip_h_stat, "is_xhttp": is_xhttp}
-            
+            res_entry = {
+                "link": apply_clean_params(config),
+                "ping": full[0],
+                "country": ip_cc,
+                "is_priority": is_priority,
+                "white_sni": is_white,
+                "is_hosting": ip_h_stat,
+                "is_xhttp": is_xhttp
+            }
+
             added_vlm = False
             added_vlm2 = False
 
             if is_xhttp:
-                # XHTTP идет ТОЛЬКО в vlm2
-                if len(vlm2_results) < MAX_CONFIGS + 5:
-                    vlm2_results.append(res_entry)
-                    xhttp_count += 1
-                    added_vlm2 = True
+                # XHTTP: только в vlm2 и только если есть место для RU или общего лимита
+                if is_ru:
+                    if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP:
+                        vlm2_results.append(res_entry)
+                        ru_vlm2_count += 1
+                        xhttp_count += 1
+                        added_vlm2 = True
+                else:
+                    if xhttp_count < MAX_XHTTP:
+                        vlm2_results.append(res_entry)
+                        xhttp_count += 1
+                        added_vlm2 = True
             else:
-                # Обычный конфиг. Проверяем место в vlm.
-                if len(vlm_results) < MAX_CONFIGS + 5:
+                # Обычный конфиг
+                # 1. Пробуем добавить в vlm
+                if is_ru:
+                    if ru_vlm_count < MAX_RU_CONFIGS:
+                        vlm_results.append(res_entry)
+                        ru_vlm_count += 1
+                        added_vlm = True
+                elif len(vlm_results) < MAX_CONFIGS:
                     vlm_results.append(res_entry)
                     added_vlm = True
-                
-                # Проверяем место в vlm2 для обычного конфига (с учетом резерва под XHTTP)
-                res_x = max(0, MIN_XHTTP - xhttp_count)
-                if is_ru or len(vlm2_results) < (MAX_CONFIGS - res_x):
+
+                # 2. Пробуем добавить в vlm2
+                if is_ru:
+                    if ru_vlm2_count < MAX_RU_CONFIGS:
+                        vlm2_results.append(res_entry)
+                        ru_vlm2_count += 1
+                        added_vlm2 = True
+                elif len(vlm2_results) < (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
                     vlm2_results.append(res_entry)
                     added_vlm2 = True
-            
+
             if added_vlm or added_vlm2:
                 seen_ips.add(host)
                 sni_usage_counts[sni] = sni_usage_counts.get(sni, 0) + 1
-                # Считаем ru_count ТОЛЬКО если конфиг попал в vlm (т.е. он не XHTTP)
-                if is_ru and not is_xhttp:
-                    ru_count += 1
-                elif not is_ru:
+                if not is_ru:
                     country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-                
-                subnet_counts[subnet], id_counts[cid] = subnet_counts.get(subnet, 0) + 1, id_counts.get(cid, 0) + 1
+                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+                id_counts[cid] = id_counts.get(cid, 0) + 1
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
-            
-            # Условие остановки: набрали vlm, набрали xhttp для vlm2 и набрали обычные RU для vlm
-            if len(vlm_results) >= MAX_CONFIGS and xhttp_count >= MAX_XHTTP and ru_count >= MIN_RU_CONFIGS:
+
+            # Условие остановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
+            if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
                 stop_event.set()
 
     def fetch_group_data(urls):
