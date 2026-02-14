@@ -47,15 +47,15 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU = 1
-MAX_SAME_SNI_WORLD = 5 
+MAX_SAME_SNI_RU = 2
+MAX_SAME_SNI_WORLD = 15 
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 480.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 550.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 400.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
 
 # Расширенные лимиты для XHTTP
-MAX_RU_PING_XHTTP = MAX_RU_PING + 120
-MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
+MAX_RU_PING_XHTTP = MAX_RU_PING + 150
+MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 150
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -163,12 +163,10 @@ def full_ping_analysis(host, port, sni, initial_ping):
             time.sleep(0.15)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
-        if len(pings) < 3: return None
+        if len(pings) < 4: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
-        
-        if jit > (avg * MAX_JITTER_RATIO): return None 
-        
+        if jit > (avg * MAX_JITTER_RATIO): return None      
         return avg, jit
     except: return None
 
@@ -177,12 +175,11 @@ def get_config_details(link):
         name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         cid_match = re.search(r'://([^@]+)@', clean_link)
-        cid = cid_match.group(1) if cid_match else ""
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
-        sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
         if h_m and is_valid_ipv4(h_m.group(1)):
-            return h_m.group(1), int(h_m.group(2)), sni, cid, name
+            sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
+            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else "", name
     except: pass
     return None, None, None, None, None
 
@@ -439,3 +436,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
