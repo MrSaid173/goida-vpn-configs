@@ -2,6 +2,7 @@
 
 import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
 from datetime import datetime, timedelta
+from curl_cffi import requests as crequests
 import zoneinfo
 from github import Github, Auth
 import threading
@@ -178,16 +179,23 @@ def get_config_details(link):
 def fast_ping(host, port, sni):
     try:
         start = time.perf_counter()
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        
-        with socket.create_connection((host, port), timeout=1.5) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
-                return int((time.perf_counter() - start) * 1000)
+        # Имитируем Chrome 120 версии. REALITY примет нас за своего.
+        # Мы просто пытаемся постучаться по адресу порта.
+        resp = crequests.get(
+            f"https://{host}:{port}",
+            server_hostname=sni,
+            impersonate="chrome120",
+            timeout=1.5,
+            verify=False
+        )
+        return int((time.perf_counter() - start) * 1000)
     except Exception:
+        # Даже если будет 404 или 403 ошибка - это успех! 
+        # Значит сервер ответил, а не сбросил нас.
+        if "Remote disconnected" not in str(Exception):
+             # Если соединение не было сброшено мгновенно - значит порт живой
+             return int((time.perf_counter() - start) * 1000)
         return None
-    return None, None, None, None, None
 
 def check_isp_info(ip_str):
     global last_api_call
