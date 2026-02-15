@@ -152,21 +152,24 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
+        context.set_alpn_protocols(['h2', 'http/1.1'])
         with socket.create_connection((host, port), timeout=1.1) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                _ = ssock.selected_alpn_protocol()
                 return int((time.perf_counter() - start) * 1000)
-    except: return None
-
+    except Exception:
+        return None
+        
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
-    max_attempts = 3 
+    max_attempts = 2 
     try:
         for _ in range(max_attempts):
             if stop_event.is_set(): return None
-            time.sleep(0.15)
+            time.sleep(0.2)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
-        if len(pings) < 4: return None
+        if len(pings) < max_attemptst + 1: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         if jit > (avg * MAX_JITTER_RATIO): return None      
