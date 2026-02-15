@@ -18,7 +18,9 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 MIN_XHTTP = 1   
 MAX_XHTTP = 1   
 MIN_RU_CONFIGS = 5  
-MAX_RU_CONFIGS = 5  
+MAX_RU_CONFIGS = 5
+MIN_HOST = 1   
+MAX_HOST = 10
 
 INTERLEAVE_STEP = 3 
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -279,9 +281,11 @@ def main():
     sni_usage_counts = {}
 
     # Раздельные счетчики для точного контроля
-    ru_vlm_count = 0     # Обычные RU для vlm
-    ru_vlm2_count = 0    # Суммарные RU (обычные + xhttp) для vlm2
-    xhttp_count = 0      # Всего XHTTP для vlm2
+    ru_vlm_count = 0
+    ru_vlm2_count = 0
+    xhttp_count = 0
+    host_vlm_count = 0  # Счетчик HOST для первого файла
+    host_vlm2_count = 0 # Счетчик HOST для второго файла
 
     def validate(config, is_priority, is_white):
         nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count, exposed_world_count
