@@ -2,7 +2,6 @@
 
 import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
 from datetime import datetime, timedelta
-from curl_cffi import requests as crequests
 import zoneinfo
 from github import Github, Auth
 import threading
@@ -147,17 +146,27 @@ def is_technically_broken(link):
         
     return False
 
+def fast_ping(host, port, sni):
+    try:
+        start = time.perf_counter()
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=1.1) as sock:
+            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                return int((time.perf_counter() - start) * 1000)
+    except: return None
 
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
-    max_attempts = 2 
+    max_attempts = 3 
     try:
         for _ in range(max_attempts):
             if stop_event.is_set(): return None
-            time.sleep(0.2)
+            time.sleep(0.15)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
-        if len(pings) < max_attemptst + 1: return None
+        if len(pings) < 4: return None
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         if jit > (avg * MAX_JITTER_RATIO): return None      
@@ -175,27 +184,7 @@ def get_config_details(link):
             sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
             return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else "", name
     except: pass
-
-def fast_ping(host, port, sni):
-    try:
-        start = time.perf_counter()
-        # Имитируем Chrome 120 версии. REALITY примет нас за своего.
-        # Мы просто пытаемся постучаться по адресу порта.
-        resp = crequests.get(
-            f"https://{host}:{port}",
-            server_hostname=sni,
-            impersonate="chrome120",
-            timeout=1.5,
-            verify=False
-        )
-        return int((time.perf_counter() - start) * 1000)
-    except Exception:
-        # Даже если будет 404 или 403 ошибка - это успех! 
-        # Значит сервер ответил, а не сбросил нас.
-        if "Remote disconnected" not in str(Exception):
-             # Если соединение не было сброшено мгновенно - значит порт живой
-             return int((time.perf_counter() - start) * 1000)
-        return None
+    return None, None, None, None, None
 
 def check_isp_info(ip_str):
     global last_api_call
@@ -442,7 +431,7 @@ def main():
                 if not is_ru and exp_tag:
                     exposed_world_count += 1
 
-            # Условие остановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
+            # Условие о��тановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
             if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
                 stop_event.set()
 
