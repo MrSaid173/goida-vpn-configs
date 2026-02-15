@@ -153,7 +153,7 @@ def fast_ping(host, port, sni):
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         context.set_alpn_protocols(['h2', 'http/1.1'])
-        with socket.create_connection((host, port), timeout=1.1) as sock:
+        with socket.create_connection((host, port), timeout=1.5) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 _ = ssock.selected_alpn_protocol()
                 return int((time.perf_counter() - start) * 1000)
