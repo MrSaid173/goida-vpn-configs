@@ -285,6 +285,7 @@ def main():
             return
         exp_tag = None
         exp_tag = get_exposed_tag(host)
+        print(f"Конфиг {host}: exp_tag = {exp_tag}, is_ru_potential = {is_ru_potential}, is_white = {is_white}")
         if not is_white and exp_tag:
             with lock:
                 if exposed_world_count >= MAX_EXPOSED_WORLD:
@@ -390,6 +391,7 @@ def main():
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
                 if not is_ru and exp_tag:
                     exposed_world_count += 1
+                    print(f"Иностранный S/W добавлен, счётчик = {exposed_world_count}")
             # Условие остановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
             if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
                 stop_event.set()
