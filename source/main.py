@@ -333,21 +333,25 @@ def main():
         p1 = fast_ping(host, port, sni)
         initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
         if not p1 or p1 > initial_max_p:
-            with lock: failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
+            with lock:
+                failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
             return
 
-        # Получаем данные о стране и хостинге ДО записи в результаты
         ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
-        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set(): return
+        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+            return
 
         is_ru = (ip_cc == "RU")
-        if is_ru != is_ru_potential: return
+        if is_ru != is_ru_potential:
+            return
 
         max_p = MAX_RU_PING_XHTTP if (is_ru and is_xhttp) else (MAX_RU_PING if is_ru else MAX_WORLD_PING)
-        if p1 > max_p: return
+        if p1 > max_p:
+            return
 
         full = full_ping_analysis(host, port, sni, p1)
-        if not full or full[1] > MAX_JITTER: return
+        if not full or full[1] > MAX_JITTER:
+            return
 
         with lock:
             if host in seen_ips: return
@@ -384,11 +388,11 @@ def main():
                             if is_host_server: host_vlm2_count += 1
                             added_vlm2 = True
             else:
-                # VLM 1
                 if is_ru:
                     if ru_vlm_count < MAX_RU_CONFIGS:
                         if not is_host_server or host_vlm_count < MAX_HOST:
-                            vlm_results.append(res_entry); ru_vlm_count += 1
+                            vlm_results.append(res_entry)
+                            ru_vlm_count += 1
                             if is_host_server: host_vlm_count += 1
                             added_vlm = True
                 elif len(vlm_results) < MAX_CONFIGS:
@@ -396,11 +400,12 @@ def main():
                         vlm_results.append(res_entry)
                         if is_host_server: host_vlm_count += 1
                         added_vlm = True
-                # VLM 2
+
                 if is_ru:
                     if ru_vlm2_count < MAX_RU_CONFIGS:
                         if not is_host_server or host_vlm2_count < MAX_HOST:
-                            vlm2_results.append(res_entry); ru_vlm2_count += 1
+                            vlm2_results.append(res_entry)
+                            ru_vlm2_count += 1
                             if is_host_server: host_vlm2_count += 1
                             added_vlm2 = True
                 elif len(vlm2_results) < (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
@@ -423,6 +428,7 @@ def main():
                 xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS):
                 stop_event.set()
 
+                            
         # ← новый блок штрафа: если первый пинг провалился — штрафуем подсеть
           initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
         if not p1 or p1 > initial_max_p:
