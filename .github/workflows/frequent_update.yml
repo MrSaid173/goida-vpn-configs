@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests PyGithub maxminddb pysocks curl_cffi
+          pip install requests PyGithub maxminddb pysocks
 
       - name: Restore Tools Cache
         uses: actions/cache@v3
