@@ -234,7 +234,7 @@ def get_exposed_tag(host):
     if w: return "W"
     return None
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False, exp_tag=None):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True: tags.append("HOST")
@@ -284,7 +284,7 @@ def main():
     xhttp_count = 0      # Всего XHTTP для vlm2
 
     def validate(config, is_priority, is_white):
-        nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count
+        nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count, exposed_world_count
         if stop_event.is_set():
             return
 
