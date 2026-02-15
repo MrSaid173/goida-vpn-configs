@@ -21,7 +21,7 @@ MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5  
 
 INTERLEAVE_STEP = 3 
-EXCLUDED_SNI_DOMAINS = ["userapi"]
+EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
 BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
 
 BANNED_ASNAME_PATTERNS = [
@@ -45,6 +45,9 @@ MAX_PER_COUNTRY = 15
 MAX_PER_SUBNET = 3 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 4
+
+# Лимит на иностранные S/W конфиги
+MAX_EXPOSED_WORLD = 5
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU = 1
@@ -217,11 +220,26 @@ def apply_clean_params(config_link):
     base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
+def get_exposed_tag(host):
+    s, w = False, False
+    try:
+        with socket.create_connection((host, 22), timeout=0.5): s = True
+    except: pass
+    try:
+        with socket.create_connection((host, 80), timeout=0.5): w = True
+    except: pass
+    
+    if s and w: return "S|W"
+    if s: return "S"
+    if w: return "W"
+    return None
+
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True: tags.append("HOST")
     if is_white_sni: tags.append("SNI-RU")
+    if exp_tag: tags.append(exp_tag)
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{link.split('#')[0]}#{requests.utils.quote(new_name)}"
@@ -240,6 +258,7 @@ def main():
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
     sni_domains = set()
+    exposed_world_count = 0
     extra_urls, std_urls, gh_repo = [], [], None
     try: gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except: pass
@@ -298,6 +317,13 @@ def main():
         if not host or not sni:
             return
 
+        exp_tag = None
+        exp_tag = get_exposed_tag(host)
+        if not is_white and exp_tag:
+            with lock:
+                if exposed_world_count >= MAX_EXPOSED_WORLD:
+                    return
+
         with lock:
             if host in seen_ips or (sni in sni_domains) != is_white:
                 return
@@ -310,9 +336,8 @@ def main():
 
             subnet = ".".join(host.split(".")[:3])
             if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID:
-                return
-            
-            # ← новая проверка: отсев уже "плохих" подсетей
+                return         
+
             if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET:
                 return
 
@@ -353,7 +378,8 @@ def main():
                 "is_priority": is_priority,
                 "white_sni": is_white,
                 "is_hosting": ip_h_stat,
-                "is_xhttp": is_xhttp
+                "is_xhttp": is_xhttp,
+                "exp_tag": exp_tag
             }
 
             added_vlm = False
@@ -402,6 +428,8 @@ def main():
                 subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                 id_counts[cid] = id_counts.get(cid, 0) + 1
                 print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
+                if not is_ru and exp_tag:
+                    exposed_world_count += 1
 
             # Условие остановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
             if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
@@ -467,7 +495,7 @@ def main():
             if not added_any: break
             
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-        return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
+        return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'], r.get('exp_tag')) for r in final]
         
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
