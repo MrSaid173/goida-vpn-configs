@@ -329,7 +329,7 @@ def main():
         sni_domains.update([l.strip().lower() for l in sec_text.splitlines() if l.strip()])
     except: pass
 
-vlm_results, vlm2_results = [], []
+    vlm_results, vlm2_results = [], []
     seen_ips, subnet_counts, id_counts, country_counts = set(), {}, {}, {}
     sni_usage_counts = {}
     ru_vlm_count = ru_vlm2_count = xhttp_count = 0
