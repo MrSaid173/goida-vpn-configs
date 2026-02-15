@@ -368,6 +368,7 @@ def main():
             return
 
         with lock:
+        with lock:
             if host in seen_ips:
                 return
 
@@ -384,41 +385,54 @@ def main():
 
             added_vlm = False
             added_vlm2 = False
+            is_host_server = (ip_h_stat is True) # Проверка: является ли это HOST
 
             if is_xhttp:
-                # XHTTP: только в vlm2 и только если есть место для RU или общего лимита
+                # Проверка для XHTTP: учитываем лимит RU, лимит XHTTP и лимит HOST
                 if is_ru:
                     if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP:
-                        vlm2_results.append(res_entry)
-                        ru_vlm2_count += 1
-                        xhttp_count += 1
-                        added_vlm2 = True
+                        if not is_host_server or host_vlm2_count < MAX_HOST:
+                            vlm2_results.append(res_entry)
+                            ru_vlm2_count += 1
+                            xhttp_count += 1
+                            if is_host_server: host_vlm2_count += 1
+                            added_vlm2 = True
                 else:
                     if xhttp_count < MAX_XHTTP:
-                        vlm2_results.append(res_entry)
-                        xhttp_count += 1
-                        added_vlm2 = True
+                        if not is_host_server or host_vlm2_count < MAX_HOST:
+                            vlm2_results.append(res_entry)
+                            xhttp_count += 1
+                            if is_host_server: host_vlm2_count += 1
+                            added_vlm2 = True
             else:
-                # Обычный конфиг
-                # 1. Пробуем добавить в vlm
+                # Логика для обычных конфигов (не XHTTP)
+                # 1. Пробуем в vlm
                 if is_ru:
                     if ru_vlm_count < MAX_RU_CONFIGS:
-                        vlm_results.append(res_entry)
-                        ru_vlm_count += 1
-                        added_vlm = True
+                        if not is_host_server or host_vlm_count < MAX_HOST:
+                            vlm_results.append(res_entry)
+                            ru_vlm_count += 1
+                            if is_host_server: host_vlm_count += 1
+                            added_vlm = True
                 elif len(vlm_results) < MAX_CONFIGS:
-                    vlm_results.append(res_entry)
-                    added_vlm = True
+                    if not is_host_server or host_vlm_count < MAX_HOST:
+                        vlm_results.append(res_entry)
+                        if is_host_server: host_vlm_count += 1
+                        added_vlm = True
 
-                # 2. Пробуем добавить в vlm2
+                # 2. Пробуем в vlm2
                 if is_ru:
                     if ru_vlm2_count < MAX_RU_CONFIGS:
-                        vlm2_results.append(res_entry)
-                        ru_vlm2_count += 1
-                        added_vlm2 = True
+                        if not is_host_server or host_vlm2_count < MAX_HOST:
+                            vlm2_results.append(res_entry)
+                            ru_vlm2_count += 1
+                            if is_host_server: host_vlm2_count += 1
+                            added_vlm2 = True
                 elif len(vlm2_results) < (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
-                    vlm2_results.append(res_entry)
-                    added_vlm2 = True
+                    if not is_host_server or host_vlm2_count < MAX_HOST:
+                        vlm2_results.append(res_entry)
+                        if is_host_server: host_vlm2_count += 1
+                        added_vlm2 = True
 
             if added_vlm or added_vlm2:
                 seen_ips.add(host)
@@ -427,12 +441,18 @@ def main():
                     country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
                 subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
                 id_counts[cid] = id_counts.get(cid, 0) + 1
-                print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
-                if not is_ru and exp_tag:
+                
+                type_tag = "HOST" if is_host_server else "RES"
+                print(f"[{type_tag}{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
+                
+                if not is_ru and not is_xhttp and exp_tag:
                     exposed_world_count += 1
 
-            # Условие о��тановки: оба файла набрали свои RU-лимиты и XHTTP-лимиты
-            if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
+            # Условие остановки
+            if (ru_vlm_count >= MIN_RU_CONFIGS and 
+                ru_vlm2_count >= MIN_RU_CONFIGS and 
+                xhttp_count >= MIN_XHTTP and 
+                len(vlm_results) >= MAX_CONFIGS):
                 stop_event.set()
 
     def fetch_group_data(urls):
