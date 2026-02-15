@@ -13,12 +13,12 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 1
-MAX_XHTTP = 1
+MAX_XHTTP = 5
 MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov"]
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
