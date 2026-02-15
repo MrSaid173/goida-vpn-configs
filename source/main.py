@@ -16,7 +16,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 1   
-MAX_XHTTP = 1   
+MAX_XHTTP = 5   
 MIN_RU_CONFIGS = 5  
 MAX_RU_CONFIGS = 5  
 
@@ -165,7 +165,7 @@ def full_ping_analysis(host, port, sni, initial_ping):
     try:
         for _ in range(max_attempts):
             if stop_event.is_set(): return None
-            time.sleep(random.uniform(0.15, 0.20))
+            time.sleep(random.randint(15, 20) / 100.0)
             p = fast_ping(host, port, sni)
             if p: pings.append(p)
         if len(pings) < max_attempts + 1: return None
@@ -198,8 +198,11 @@ def check_isp_info(ip_str):
                 if stop_event.is_set(): return None, None, False
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
-                    if elapsed < 1.4: time.sleep(1.4 - elapsed)
+                    wait_limit = random.randint(1400, 1600) / 1000.0
+                    if elapsed < wait_limit: 
+                        time.sleep(wait_limit - elapsed)
                     last_api_call = time.perf_counter()
+                
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
                 r = resp.json()
                 if r.get("status") == "success":
