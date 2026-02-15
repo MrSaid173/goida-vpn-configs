@@ -452,10 +452,11 @@ def main():
                 if not is_ru and not is_xhttp and exp_tag:
                     exposed_world_count += 1
 
-            # Условие остановки
+            # Условие остановки: набрали RU, XHTTP и хотя бы MIN_HOST (если они есть)
             if (ru_vlm_count >= MIN_RU_CONFIGS and 
                 ru_vlm2_count >= MIN_RU_CONFIGS and 
                 xhttp_count >= MIN_XHTTP and 
+                host_vlm2_count >= MIN_HOST and
                 len(vlm_results) >= MAX_CONFIGS):
                 stop_event.set()
 
