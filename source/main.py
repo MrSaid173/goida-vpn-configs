@@ -555,7 +555,7 @@ def main():
             except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
 
     # Финальная статистика
-print("\n" + "="*50)
+    print("\n" + "="*50)
     print("📊 СТАТИСТИКА ЗАПУСКА")
     print("="*50)
     print(f"Всего обработано конфигов: {total_processed}")
