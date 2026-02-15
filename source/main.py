@@ -1,4 +1,3 @@
-# mine mine mine mine mine mine mine
 import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
 from datetime import datetime, timedelta
 import zoneinfo
@@ -102,31 +101,18 @@ failed_subnets = {}
 last_api_call = 0
 
 # Статистика
-total_processed = 0                # всего конфигов обработано (вызвано validate)
-total_links = 0                    # всего ссылок из источников
-ping_failures = {                  # провалы пинга
-    "timeout": 0,
-    "high": 0,
-    "low": 0,
-    "full_fail": 0,
-}
-ping_attempts_success = 0          # первый пинг прошёл
-ping_attempts_total = 0            # попыток full_ping
-country_mismatch = 0               # несоответствие имени / ip-api
+total_processed = 0
+total_links = 0
+ping_failures = {"timeout": 0, "high": 0, "low": 0, "full_fail": 0}
+ping_attempts_success = 0
+ping_attempts_total = 0
+country_mismatch = 0
 ipapi_requests = 0
 ipapi_failed = 0
-dropped_by = {                     # отброшено по фильтрам
-    "broken": 0,
-    "no_host_sni": 0,
-    "seen_ips": 0,
-    "sni_limit": 0,
-    "subnet_limit": 0,
-    "id_limit": 0,
-    "failed_sub": 0,
-    "exposed_world": 0,
-    "xhttp_limit": 0,
-    "ru_limit_vlm": 0,
-    "ru_limit_vlm2": 0,
+dropped_by = {
+    "broken": 0, "no_host_sni": 0, "seen_ips": 0, "sni_limit": 0,
+    "subnet_limit": 0, "id_limit": 0, "failed_sub": 0, "exposed_world": 0,
+    "xhttp_limit": 0, "ru_limit_vlm": 0, "ru_limit_vlm2": 0,
 }
 stages_passed = []
 
@@ -146,8 +132,7 @@ def validate(config, is_priority, is_white):
     global total_processed
     total_processed += 1
     nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count
-    if stop_event.is_set():
-        return
+    if stop_event.is_set(): return
 
     is_xhttp = "xhttp" in config.lower()
     is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
@@ -161,12 +146,12 @@ def validate(config, is_priority, is_white):
                 dropped_by["ru_limit_vlm2"] += 1
                 return
         else:
-            vlm_needs_ru = (is_ru_potential and ru_vlm_count < MAX_RU_CONFIGS)
-            vlm2_needs_ru = (is_ru_potential and ru_vlm2_count < MAX_RU_CONFIGS)
+            vlm_needs_ru = is_ru_potential and ru_vlm_count < MAX_RU_CONFIGS
+            vlm2_needs_ru = is_ru_potential and ru_vlm2_count < MAX_RU_CONFIGS
             vlm_full = len(vlm_results) >= MAX_CONFIGS
             vlm2_full = len(vlm2_results) >= MAX_CONFIGS
             if not (vlm_needs_ru or vlm2_needs_ru or not vlm_full or not vlm2_full):
-                return  # здесь можно добавить dropped_by["full_lists"] если нужно
+                return
 
     if is_technically_broken(config):
         dropped_by["broken"] += 1
@@ -190,7 +175,7 @@ def validate(config, is_priority, is_white):
             dropped_by["seen_ips"] += 1
             return
         if (sni in sni_domains) != is_white:
-            dropped_by["sni_limit"] += 1  # можно разделить на два счётчика если нужно
+            dropped_by["sni_limit"] += 1
             return
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
             dropped_by["sni_limit"] += 1
@@ -224,6 +209,8 @@ def validate(config, is_priority, is_white):
             failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
         ping_failures["timeout" if not p1 else "high"] += 1
         return
+    ping_attempts_success += 1
+    ping_attempts_total += 1
     if p1 < min_p:
         ping_failures["low"] += 1
         return
@@ -306,6 +293,27 @@ def validate(config, is_priority, is_white):
         if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
             stop_event.set()
 
+def fetch_group_data(urls):
+    global total_links
+    raw = []
+    urls = list(set(urls))
+    print(f"[FETCH] Обрабатываем {len(urls)} источников")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_url = {executor.submit(fetch_raw_configs, u): u for u in urls}
+        for future in concurrent.futures.as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                links = future.result()
+                raw.extend(links)
+                print(f"[FETCH] Из {url} получено {len(links)} конфигов")
+                total_links += len(links)
+            except Exception as e:
+                print(f"[FETCH ERROR] {url}: {e}")
+    unique = list(set(raw))
+    random.shuffle(unique)
+    print(f"[FETCH] Уникальных конфигов: {len(unique)}")
+    return unique
+
 def main():
     global total_processed, stages_passed
     start_total = time.perf_counter()
@@ -347,179 +355,26 @@ def main():
                 if stop_event.is_set(): break
                 v.submit(validate, c, priority, white)
 
-    def validate(config, is_priority, is_white):
-        global total_processed
-        total_processed += 1
-        nonlocal ru_vlm_count, ru_vlm2_count, xhttp_count
-        if stop_event.is_set(): return
-
-        is_xhttp = "xhttp" in config.lower()
-        is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
-
-        with lock:
-            if is_xhttp:
-                if xhttp_count >= MAX_XHTTP: return
-                if is_ru_potential and ru_vlm2_count >= MAX_RU_CONFIGS: return
-            else:
-                vlm_needs_ru = is_ru_potential and ru_vlm_count < MAX_RU_CONFIGS
-                vlm2_needs_ru = is_ru_potential and ru_vlm2_count < MAX_RU_CONFIGS
-                vlm_full = len(vlm_results) >= MAX_CONFIGS
-                vlm2_full = len(vlm2_results) >= MAX_CONFIGS
-                if not (vlm_needs_ru or vlm2_needs_ru or not vlm_full or not vlm2_full):
-                    return
-
-        if is_technically_broken(config): return
-
-        host, port, sni, cid, name = get_config_details(config)
-        if not host or not sni: return
-
-        exp_tag = get_exposed_tag(host)
-
-        if not is_white and exp_tag:
-            with lock:
-                if exposed_world_count >= MAX_EXPOSED_WORLD:
-                    return
-
-        with lock:
-            if host in seen_ips: return
-            if (sni in sni_domains) != is_white: return
-            if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS): return
-            sni_limit = MAX_SAME_SNI_RU if (is_ru_potential and is_white) else MAX_SAME_SNI_WORLD
-            if sni_usage_counts.get(sni, 0) >= sni_limit: return
-            subnet = ".".join(host.split(".")[:3])
-            if subnet_counts.get(subnet, 0) >= MAX_PER_SUBNET or id_counts.get(cid, 0) >= MAX_PER_ID: return
-            if failed_subnets.get(subnet, 0) >= MAX_FAILED_PER_SUBNET: return
-
-        p1 = fast_ping(host, port, sni)
-
-        if is_ru_potential:
-            min_p = MIN_RU_PING
-            max_p = MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING
-        else:
-            min_p = MIN_WORLD_PING
-            max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
-
-        if not p1 or p1 > max_p:
-            with lock:
-                failed_subnets[subnet] = failed_subnets.get(subnet, 0) + 1
-            return
-        if p1 < min_p:
-            return
-
-        ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
-        if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
-            return
-
-        is_ru = (ip_cc == "RU")
-        if is_ru != is_ru_potential:
-            return
-
-        full = full_ping_analysis(host, port, sni, p1)
-        if not full or full[1] > MAX_JITTER:
-            return
-
-        avg_ping = full[0]
-        if avg_ping < min_p or avg_ping > max_p:
-            return
-
-        with lock:
-            if host in seen_ips: return
-            res_entry = {
-                "link": apply_clean_params(config),
-                "ping": full[0],
-                "country": ip_cc,
-                "is_priority": is_priority,
-                "white_sni": is_white,
-                "is_hosting": ip_h_stat,
-                "is_xhttp": is_xhttp,
-                "exp_tag": exp_tag
-            }
-            added_vlm = added_vlm2 = False
-            if is_xhttp:
-                if is_ru:
-                    if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP:
-                        vlm2_results.append(res_entry)
-                        ru_vlm2_count += 1
-                        xhttp_count += 1
-                        added_vlm2 = True
-                else:
-                    if xhttp_count < MAX_XHTTP:
-                        vlm2_results.append(res_entry)
-                        xhttp_count += 1
-                        added_vlm2 = True
-            else:
-                if is_ru:
-                    if ru_vlm_count < MAX_RU_CONFIGS:
-                        vlm_results.append(res_entry)
-                        ru_vlm_count += 1
-                        added_vlm = True
-                elif len(vlm_results) < MAX_CONFIGS:
-                    vlm_results.append(res_entry)
-                    added_vlm = True
-                if is_ru:
-                    if ru_vlm2_count < MAX_RU_CONFIGS:
-                        vlm2_results.append(res_entry)
-                        ru_vlm2_count += 1
-                        added_vlm2 = True
-                elif len(vlm2_results) < (MAX_CONFIGS - max(0, MIN_XHTTP - xhttp_count)):
-                    vlm2_results.append(res_entry)
-                    added_vlm2 = True
-
-            if added_vlm or added_vlm2:
-                seen_ips.add(host)
-                sni_usage_counts[sni] = sni_usage_counts.get(sni, 0) + 1
-                if not is_ru:
-                    country_counts[ip_cc] = country_counts.get(ip_cc, 0) + 1
-                subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
-                id_counts[cid] = id_counts.get(cid, 0) + 1
-                print(f"[FOUND{' (X)' if is_xhttp else ''}] {ip_cc} | {full[0]}ms | {host}", flush=True)
-                if not is_ru and exp_tag:
-                    exposed_world_count += 1
-
-            if ru_vlm_count >= MIN_RU_CONFIGS and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm_results) >= MAX_CONFIGS:
-                stop_event.set()
-
-    def fetch_group_data(urls):
-        raw = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
-            for f in concurrent.futures.as_completed(futures): raw.extend(f.result())
-        unique = list(set(raw)); random.shuffle(unique); return unique
-
-    raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
-    check_order = [(raw_extra, True, True), (raw_std, False, True), (raw_extra, True, False), (raw_std, False, False)]
-
-    stage_names = ["extra + white", "std + white", "extra + non-white", "std + non-white"]
-
-    for idx, (group, priority, white) in enumerate(check_order):
-        if stop_event.is_set(): break
-        stages_passed.append(stage_names[idx])
-        workers = min(len(group), 40) if group else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
-                if stop_event.is_set(): break
-                v.submit(validate, c, priority, white)
-
     def finalize_list(results, is_vlm2=False):
         all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
         top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
         remaining_ru_sni = all_ru_sni[MAX_TOP_RU_SNI:]
-        
+
         xhttp_bucket = []
         if is_vlm2:
             xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping'])
-        
+
         buckets = {i: [] for i in range(4)}
         for r in results:
             if r in top_fixed or r in xhttp_bucket or (r['country'] == 'RU' and r['white_sni']): continue
             b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
             buckets[b_idx].append(r)
-        
+
         for i in range(4): buckets[i].sort(key=lambda x: x['ping'])
-        
+
         final = list(top_fixed)
         current_ru_sni_total = len(top_fixed)
-        
+
         sources_order = []
         if is_vlm2: sources_order.append(xhttp_bucket)
         sources_order.append(buckets[0])
@@ -527,7 +382,7 @@ def main():
         sources_order.append(buckets[2])
         sources_order.append(buckets[1])
         sources_order.append(buckets[3])
-        
+
         while len(final) < MAX_CONFIGS:
             added_any = False
             for src in sources_order:
@@ -541,7 +396,7 @@ def main():
                         count += 1; added_any = True
                         if is_sni_ru_src: current_ru_sni_total += 1
             if not added_any: break
-            
+
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
         return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'], r.get('exp_tag')) for r in final]
 
@@ -554,7 +409,6 @@ def main():
                 gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
             except: gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
 
-    # Финальная статистика
     print("\n" + "="*50)
     print("📊 СТАТИСТИКА ЗАПУСКА")
     print("="*50)
@@ -567,16 +421,14 @@ def main():
     print(f"  - отвал на full_ping_analysis: {ping_failures['full_fail']}")
     if ping_attempts_total > 0:
         success_rate = ping_attempts_success / ping_attempts_total * 100
-        avg_success_pings = ping_attempts_success / ping_attempts_total
         print(f"  Успешность full_ping: {success_rate:.1f}% ({ping_attempts_success}/{ping_attempts_total} попыток)")
-        print(f"  Среднее успешных пингов на конфиг: {avg_success_pings:.2f}")
 
     print("\nОтброшено по фильтрам:")
     for key, val in dropped_by.items():
         if val > 0:
             print(f"  - {key.replace('_', ' ').title()}: {val}")
 
-    print(f"\nНесоответствие имени / ip-api (RU <> не RU): {country_mismatch}")
+    print(f"\nНесоответствие имени / ip-api: {country_mismatch}")
     print(f"Запросы к ip-api: {ipapi_requests} (неудачных: {ipapi_failed})")
     print(f"Пройденные этапы: {', '.join(stages_passed) or 'ни одного'}")
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
