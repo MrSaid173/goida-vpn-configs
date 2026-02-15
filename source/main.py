@@ -146,20 +146,7 @@ def is_technically_broken(link):
         
     return False
 
-def fast_ping(host, port, sni):
-    try:
-        start = time.perf_counter()
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.set_alpn_protocols(['h2', 'http/1.1'])
-        with socket.create_connection((host, port), timeout=1.5) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
-                _ = ssock.selected_alpn_protocol()
-                return int((time.perf_counter() - start) * 1000)
-    except Exception:
-        return None
-        
+
 def full_ping_analysis(host, port, sni, initial_ping):
     pings = [initial_ping]
     max_attempts = 2 
@@ -187,6 +174,19 @@ def get_config_details(link):
             sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
             return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else "", name
     except: pass
+
+def fast_ping(host, port, sni):
+    try:
+        start = time.perf_counter()
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        
+        with socket.create_connection((host, port), timeout=1.5) as sock:
+            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                return int((time.perf_counter() - start) * 1000)
+    except Exception:
+        return None
     return None, None, None, None, None
 
 def check_isp_info(ip_str):
