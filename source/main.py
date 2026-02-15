@@ -249,7 +249,7 @@ def get_exposed_tag(host):
     if w: return "W"
     return None
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False, exp_tag=None):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True: tags.append("HOST")
