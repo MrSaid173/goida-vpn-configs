@@ -372,7 +372,6 @@ def main():
             return
 
         with lock:
-        with lock:
             if host in seen_ips:
                 return
 
