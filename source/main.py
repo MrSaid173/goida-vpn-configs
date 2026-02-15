@@ -25,7 +25,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 # --- ЛИМИТЫ ---
 MIN_XHTTP = 1   
-MAX_XHTTP = 1   
+MAX_XHTTP = 5   
 MIN_RU_CONFIGS = 5  
 MAX_RU_CONFIGS = 5  
 MIN_HOST = 1
@@ -46,14 +46,14 @@ BANNED_ASNAME_PATTERNS = [
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn"
 ]
 
-MAX_JITTER = 50
-MAX_JITTER_RATIO = 0.4
+MAX_JITTER = 70
+MAX_JITTER_RATIO = 0.5
 MAX_CONFIGS = 50 
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = 5
 MAX_PER_COUNTRY = 15 
-MAX_PER_SUBNET = 3 
-MAX_PER_ID = 6
+MAX_PER_SUBNET = 5 
+MAX_PER_ID = 5
 MAX_FAILED_PER_SUBNET = 4
 MAX_EXPOSED_WORLD = 5
 MAX_SAME_SNI_RU = 1
