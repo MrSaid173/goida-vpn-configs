@@ -466,7 +466,7 @@ def main():
             if not added_any: break
             
         speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-        return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'] for r in final]
+        return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'] for r in final)]
         
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
