@@ -21,7 +21,7 @@ MAX_XHTTP = 5
 MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3  # минимум хостинговых
-MAX_HOST_CONFIGS = 20  # максимум хостинговых
+MAX_HOST_CONFIGS = 15  # максимум хостинговых
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -49,7 +49,7 @@ MAX_TOP_RU_SNI = 5
 MAX_PER_COUNTRY = 15
 MAX_PER_SUBNET = 3
 MAX_PER_ID = 6
-MAX_FAILED_PER_SUBNET = 8  # Увеличен с 4 до 8
+MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU = 1
