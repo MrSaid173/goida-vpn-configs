@@ -564,8 +564,7 @@ def finalize_list(results, is_vlm2=False):
     current_ru_sni_total = len(top_fixed)
     
     sources_order = []
-    if is_vlm2:
-        sources_order.append(xhttp_bucket)
+    if is_vlm2: sources_order.append(xhttp_bucket)
     sources_order.append(buckets[0])
     sources_order.append(remaining_ru_sni)
     sources_order.append(buckets[2])
