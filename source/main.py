@@ -574,7 +574,7 @@ def finalize_list(results, is_vlm2=False):
     while len(final) < MAX_CONFIGS:
         added_any = False
         for src in sources_order:
-            is_sni_ru_src = (src is remaining_ru_sni or src is buckets[0] or src is buckets[2])
+            is_sni_ru_src = (src is remaining_ru_sni)
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and src:
                 if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU:
