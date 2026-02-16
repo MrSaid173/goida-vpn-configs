@@ -563,29 +563,64 @@ def finalize_list(results, is_vlm2=False):
     final = list(top_fixed)
     current_ru_sni_total = len(top_fixed)
     
-    sources_order = []
-    if is_vlm2: sources_order.append(xhttp_bucket)
-    sources_order.append(buckets[0])
-    sources_order.append(remaining_ru_sni)
-    sources_order.append(buckets[2])
-    sources_order.append(buckets[1])
-    sources_order.append(buckets[3])
+    # Разделяем конфиги на RU-SNI и NON-RU-SNI
+    # RU-SNI = все конфиги с white_sni=True (независимо от страны)
+    # NON-RU-SNI = все конфиги с white_sni=False
     
+    ru_sni_configs = []  # Все с [SNI-RU]
+    non_ru_sni_configs = []  # Все БЕЗ [SNI-RU]
+    
+    for r in results:
+        if r in top_fixed or r in xhttp_bucket:
+            continue
+        if r['white_sni']:
+            ru_sni_configs.append(r)
+        else:
+            non_ru_sni_configs.append(r)
+    
+    # Сортируем по пингу
+    ru_sni_configs.sort(key=lambda x: x['ping'])
+    non_ru_sni_configs.sort(key=lambda x: x['ping'])
+    
+    # Начинаем с TOP-5
+    final = list(top_fixed)
+    current_ru_sni_total = len(top_fixed)
+    
+    # Чередуем: NON-RU-SNI → RU-SNI → NON-RU-SNI → RU-SNI
     while len(final) < MAX_CONFIGS:
         added_any = False
-        for src in sources_order:
-            is_sni_ru_src = (src is remaining_ru_sni)
+        
+        # 1. Добавляем XHTTP (только для vlm2, в начале)
+        if is_vlm2 and xhttp_bucket and len(final) == len(top_fixed):
             count = 0
-            while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and src:
-                if is_sni_ru_src and current_ru_sni_total >= MAX_TOTAL_SNI_RU:
-                    break
-                config = src.pop(0)
+            while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
+                config = xhttp_bucket.pop(0)
                 if config not in final:
                     final.append(config)
                     count += 1
                     added_any = True
-                    if is_sni_ru_src:
-                        current_ru_sni_total += 1
+        
+        # 2. Добавляем INTERLEAVE_STEP из NON-RU-SNI
+        count = 0
+        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
+            config = non_ru_sni_configs.pop(0)
+            if config not in final:
+                final.append(config)
+                count += 1
+                added_any = True
+        
+        # 3. Добавляем INTERLEAVE_STEP из RU-SNI
+        count = 0
+        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_configs:
+            if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
+                break
+            config = ru_sni_configs.pop(0)
+            if config not in final:
+                final.append(config)
+                count += 1
+                added_any = True
+                current_ru_sni_total += 1
+        
         if not added_any:
             break
     
