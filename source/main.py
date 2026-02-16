@@ -139,7 +139,7 @@ last_api_call = 0
 
 # Статистика для отладки
 stats = defaultdict(int)
-
+api_calls_count = 0
 
 def is_valid_ipv4(ip):
     try:
@@ -238,7 +238,7 @@ def get_config_details(link):
 
 
 def check_isp_info(ip_str):
-    global last_api_call
+    global last_api_call, api_calls_count
     with lock:
         if ip_str in ip_cache:
             return ip_cache[ip_str]
@@ -252,6 +252,7 @@ def check_isp_info(ip_str):
                     if elapsed < 1.4:
                         time.sleep(1.4 - elapsed)
                     last_api_call = time.perf_counter()
+                    api_calls_count += 1
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
                 r = resp.json()
                 if r.get("status") == "success":
@@ -634,6 +635,7 @@ def print_statistics():
     """Выводит статистику обработки"""
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
     print(f"Добавлено: {stats['added']}", flush=True)
+    print(f"Запросов к ip-api: {api_calls_count} (кэш попаданий: {stats['duplicate_ip'] + stats['race_duplicate']})", flush=True)
     print(f"Технически битые: {stats['broken']}", flush=True)
     print(f"Без деталей: {stats['no_details']}", flush=True)
     print(f"Дубликаты IP: {stats['duplicate_ip']}", flush=True)
