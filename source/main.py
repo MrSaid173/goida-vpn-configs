@@ -565,7 +565,7 @@ def finalize_list(results, is_vlm2=False):
     
     sources_order = []
     if is_vlm2:
-    sources_order.append(xhttp_bucket)
+        sources_order.append(xhttp_bucket)
     sources_order.append(buckets[0])
     sources_order.append(remaining_ru_sni)
     sources_order.append(buckets[2])
