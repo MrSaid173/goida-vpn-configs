@@ -52,10 +52,11 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU = 1
+MAX_SAME_SNI_RU_RU = 1
+MAX_SAME_SNI_RU = 3
 MAX_SAME_SNI_WORLD = 5
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 410.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 450.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 550.0
 
 # Расширенные лимиты для XHTTP
@@ -322,10 +323,12 @@ def fetch_raw_configs(url):
 
 
 def get_sni_limit(is_white, ip_cc):
-    """Определяет лимит использования SNI на основе реальной страны IP"""
     is_ru = (ip_cc == "RU")
-    return MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
-
+    if is_white:
+        if is_ru:
+            return MAX_SAME_SNI_RU_RU  # Лимит 1
+        return MAX_SAME_SNI_RU         # Лимит 2
+    return MAX_SAME_SNI_WORLD          # Лимит 5
 
 def can_add_hosting(is_hosting):
     """Проверяет, можно ли добавить хостинговый конфиг с упреждающим резервированием"""
