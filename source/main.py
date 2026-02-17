@@ -55,7 +55,7 @@ MAX_FAILED_PER_SUBNET = 6
 MAX_SAME_SNI_RU = 1
 MAX_SAME_SNI_WORLD = 5
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 450.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 410.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 550.0
 
 # Расширенные лимиты для XHTTP
@@ -118,7 +118,7 @@ stop_event = threading.Event()
 
 # Кэши и счетчики
 ip_cache = {}
-failed_ips = set()  # Кэш заведомо плохих IP
+failed_ips = set()
 failed_subnets = defaultdict(int)
 seen_ips = set()
 subnet_counts = defaultdict(int)
@@ -200,8 +200,18 @@ def fast_ping(host, port, sni):
         return None
 
 
-def full_ping_analysis(host, port, sni, initial_ping):
+def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
+    """
+    ИСПРАВЛЕНО: Проверяет каждый отдельный пинг на соответствие лимитам
+    Если хоть один пинг вне диапазона [min_limit, max_limit] - отклоняем
+    """
     pings = [initial_ping]
+    
+    # Проверяем первый пинг
+    if initial_ping < min_limit or initial_ping > max_limit:
+        stats['ping_out_of_range'] += 1
+        return None
+    
     max_attempts = 3
     try:
         for _ in range(max_attempts):
@@ -210,13 +220,21 @@ def full_ping_analysis(host, port, sni, initial_ping):
             time.sleep(0.15)
             p = fast_ping(host, port, sni)
             if p:
+                # КРИТИЧНО: Проверяем КАЖДЫЙ пинг на соответствие лимитам!
+                if p < min_limit or p > max_limit:
+                    stats['ping_out_of_range'] += 1
+                    return None
                 pings.append(p)
+        
         if len(pings) < 4:
             return None
+        
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
+        
         if jit > (avg * MAX_JITTER_RATIO):
             return None
+        
         return avg, jit
     except:
         return None
@@ -259,7 +277,6 @@ def check_isp_info(ip_str):
                     is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_banned_hosting or is_banned_pattern
-                    # ИСПРАВЛЕНО: Возвращаем только 2 значения вместо 3
                     res = (r.get("countryCode"), "BANNED" if is_banned else r.get("hosting", False))
                     with lock:
                         ip_cache[ip_str] = res
@@ -282,7 +299,6 @@ def apply_clean_params(config_link):
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
-    # ИСПРАВЛЕНО: Используем == вместо is для сравнения
     if is_hosting == True:
         tags.append("HOST")
     if is_white_sni:
@@ -305,38 +321,21 @@ def fetch_raw_configs(url):
         return []
 
 
-# ИСПРАВЛЕНО: Передаем ip_cc вместо config
 def get_sni_limit(is_white, ip_cc):
     """Определяет лимит использования SNI на основе реальной страны IP"""
     is_ru = (ip_cc == "RU")
     return MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
 
 
-def passes_ping_limits(ip_cc, ping, is_xhttp):
-    """Проверяет, проходит ли конфиг по лимитам пинга"""
-    is_ru = (ip_cc == "RU")
-    if is_xhttp:
-        max_p = MAX_RU_PING_XHTTP if is_ru else MAX_WORLD_PING_XHTTP
-    else:
-        max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
-    return ping <= max_p
-
-
-# ИСПРАВЛЕНО: Полностью переработана логика резервирования
 def can_add_hosting(is_hosting):
     """Проверяет, можно ли добавить хостинговый конфиг с упреждающим резервированием"""
     global hosting_count
     
-    # ИСПРАВЛЕНО: Используем == вместо is
     if is_hosting == True:
-        # Хостинговый конфиг - проверяем не превышен ли максимум
         return hosting_count < MAX_HOST_CONFIGS
     else:
-        # НЕ-хостинговый конфиг - проверяем резервирование места
-        # Если еще не набрали минимум хостинговых, резервируем место
         if hosting_count < MIN_HOST_CONFIGS:
             total_used = len(vlm_results) + len(vlm2_results)
-            # Резервируем место: не позволяем заполнить более чем (2*MAX_CONFIGS - MIN_HOST_CONFIGS)
             max_non_hosting = (MAX_CONFIGS * 2) - MIN_HOST_CONFIGS
             if total_used >= max_non_hosting:
                 return False
@@ -344,7 +343,7 @@ def can_add_hosting(is_hosting):
 
 
 def try_add_to_lists(entry):
-    """Пытается добавить конфиг в vlm и/или vlm2, возвращает True если добавлен хотя бы куда-то"""
+    """Пытается добавить конфиг в vlm и/или vlm2"""
     global ru_vlm_count, ru_vlm2_count, xhttp_count, hosting_count
     
     is_ru = (entry['country'] == 'RU')
@@ -355,7 +354,6 @@ def try_add_to_lists(entry):
     added_vlm2 = False
     
     if is_xhttp:
-        # XHTTP: только в vlm2
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting):
                 vlm2_results.append(entry)
@@ -368,8 +366,6 @@ def try_add_to_lists(entry):
                 xhttp_count += 1
                 added_vlm2 = True
     else:
-        # Обычный конфиг
-        # 1. Пробуем добавить в vlm
         if is_ru:
             if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
                 vlm_results.append(entry)
@@ -379,7 +375,6 @@ def try_add_to_lists(entry):
             vlm_results.append(entry)
             added_vlm = True
         
-        # 2. Пробуем добавить в vlm2
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
@@ -391,7 +386,6 @@ def try_add_to_lists(entry):
             vlm2_results.append(entry)
             added_vlm2 = True
     
-    # ИСПРАВЛЕНО: Увеличиваем hosting_count сразу при успешном добавлении
     if added_vlm or added_vlm2:
         if is_hosting == True:
             hosting_count += 1
@@ -401,7 +395,7 @@ def try_add_to_lists(entry):
 
 
 def check_completion():
-    """Проверяет, достигнуты ли все цели и нужно ли останавливать поиск"""
+    """Проверяет, достигнуты ли все цели"""
     vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
     
@@ -423,7 +417,6 @@ def update_counters(host, sni, subnet, cid, ip_cc):
 
 def validate(config, is_priority, is_white):
     """Основная функция валидации конфига"""
-    # 1. Быстрые проверки без lock
     if stop_event.is_set():
         stats['stopped'] += 1
         return
@@ -432,26 +425,18 @@ def validate(config, is_priority, is_white):
         stats['broken'] += 1
         return
     
-    # ИСПРАВЛЕНО: Убрали неиспользуемую переменную name
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
         stats['no_details'] += 1
         return
     
-    # 2. Проверка кэша неудачных IP
     if host in failed_ips:
         stats['failed_ip_cache'] += 1
         return
     
     is_xhttp = "xhttp" in config.lower()
-    
-    # ИСПРАВЛЕНО: Сначала получаем ip_cc, потом проверяем лимиты SNI
-    # Нужно проверить ISP до lock-блока, чтобы не держать lock во время API запроса
-    # Но базовые проверки можем сделать сразу
-    
     subnet = ".".join(host.split(".")[:3])
     
-    # 3. Lock-блок для быстрых проверок
     with lock:
         if host in seen_ips:
             stats['duplicate_ip'] += 1
@@ -465,7 +450,6 @@ def validate(config, is_priority, is_white):
             stats['excluded_sni'] += 1
             return
         
-        # Проверка лимитов подсети и ID
         if subnet_counts[subnet] >= MAX_PER_SUBNET:
             stats['subnet_limit'] += 1
             return
@@ -474,51 +458,51 @@ def validate(config, is_priority, is_white):
             stats['id_limit'] += 1
             return
     
-    # 4. Первый пинг (без lock)
+    # Первый пинг с широкими лимитами для быстрой фильтрации
     p1 = fast_ping(host, port, sni)
-    
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
     if not p1 or p1 > initial_max_p:
-        # ИСПРАВЛЕНО: Штрафуем в одном lock-блоке
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(host)
         stats['first_ping_failed'] += 1
         return
     
-    # 5. Проверка ISP (без lock)
-    # ИСПРАВЛЕНО: Теперь функция возвращает только 2 значения
+    # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
         stats['isp_banned'] += 1
         return
     
-    # ИСПРАВЛЕНО: Проверяем лимит SNI ПОСЛЕ получения ip_cc
+    # Проверка лимита SNI
     with lock:
         sni_limit = get_sni_limit(is_white, ip_cc)
         if sni_usage_counts[sni] >= sni_limit:
             stats['sni_limit'] += 1
             return
     
-    # 6. Проверка пинга по стране
-    if not passes_ping_limits(ip_cc, p1, is_xhttp):
-        stats['ping_limit'] += 1
-        return
+    # ИСПРАВЛЕНО: Определяем строгие лимиты на основе страны и типа
+    is_ru = (ip_cc == "RU")
+    if is_xhttp:
+        min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
+        max_p = MAX_RU_PING_XHTTP if is_ru else MAX_WORLD_PING_XHTTP
+    else:
+        min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
+        max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
     
-    # 7. Полный анализ пинга (без lock)
-    full = full_ping_analysis(host, port, sni, p1)
-    if not full or full[1] > MAX_JITTER:
+    # ИСПРАВЛЕНО: Полный анализ с проверкой КАЖДОГО пинга
+    full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
+    if not full:
+        # Может быть: jitter большой ИЛИ один из пингов вне лимитов
         stats['jitter_failed'] += 1
         return
     
-    # 8. Финальное добавление с lock
+    # Финальное добавление
     with lock:
-        # Двойная проверка на случай race condition
         if host in seen_ips:
             stats['race_duplicate'] += 1
             return
         
-        # Проверка, не блокирована ли подсеть после полной валидации
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
             stats['subnet_banned'] += 1
             return
@@ -533,15 +517,11 @@ def validate(config, is_priority, is_white):
             "is_xhttp": is_xhttp,
         }
         
-        # Попытка добавить в списки
         if try_add_to_lists(entry):
-            # ИСПРАВЛЕНО: Убрали is_hosting из параметров
             update_counters(host, sni, subnet, cid, ip_cc)
             host_tag = " (X)" if is_xhttp else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}", flush=True)
             stats['added'] += 1
-            
-            # Проверка завершения
             check_completion()
         else:
             stats['not_added'] += 1
@@ -568,9 +548,8 @@ def finalize_list(results, is_vlm2=False):
     if is_vlm2:
         xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping'])
     
-    # Разделяем конфиги на RU-SNI и NON-RU-SNI
-    ru_sni_configs = []  # Все с [SNI-RU]
-    non_ru_sni_configs = []  # Все БЕЗ [SNI-RU]
+    ru_sni_configs = []
+    non_ru_sni_configs = []
     
     for r in results:
         if r in top_fixed or r in xhttp_bucket:
@@ -580,19 +559,15 @@ def finalize_list(results, is_vlm2=False):
         else:
             non_ru_sni_configs.append(r)
     
-    # Сортируем по пингу
     ru_sni_configs.sort(key=lambda x: x['ping'])
     non_ru_sni_configs.sort(key=lambda x: x['ping'])
     
-    # Начинаем с TOP-5
     final = list(top_fixed)
     current_ru_sni_total = len(top_fixed)
     
-    # Чередуем: XHTTP (если vlm2) → NON-RU-SNI → RU-SNI
     while len(final) < MAX_CONFIGS:
         added_any = False
         
-        # 1. Добавляем XHTTP (только для vlm2, в начале)
         if is_vlm2 and xhttp_bucket and len(final) == len(top_fixed):
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
@@ -602,7 +577,6 @@ def finalize_list(results, is_vlm2=False):
                     count += 1
                     added_any = True
         
-        # 2. Добавляем INTERLEAVE_STEP из NON-RU-SNI
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
             config = non_ru_sni_configs.pop(0)
@@ -611,7 +585,6 @@ def finalize_list(results, is_vlm2=False):
                 count += 1
                 added_any = True
         
-        # 3. Добавляем INTERLEAVE_STEP из RU-SNI
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_configs:
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
@@ -641,7 +614,7 @@ def print_statistics():
     print(f"Кэш неудачных IP: {stats['failed_ip_cache']}", flush=True)
     print(f"Первый пинг провален: {stats['first_ping_failed']}", flush=True)
     print(f"ISP забанен: {stats['isp_banned']}", flush=True)
-    print(f"Лимит пинга: {stats['ping_limit']}", flush=True)
+    print(f"Пинг вне диапазона: {stats['ping_out_of_range']}", flush=True)
     print(f"Jitter провален: {stats['jitter_failed']}", flush=True)
     print(f"Лимиты SNI: {stats['sni_limit']}", flush=True)
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
@@ -683,11 +656,9 @@ def main():
     print(f"Загружено SNI доменов: {len(sni_domains)}", flush=True)
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
     
-    # Загрузка конфигов
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
     
-    # Порядок проверки
     check_order = [
         (raw_extra, True, True),
         (raw_std, False, True),
@@ -705,10 +676,8 @@ def main():
                     break
                 v.submit(validate, c, priority, white)
     
-    # Статистика
     print_statistics()
     
-    # Финализация и загрузка в GitHub
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
