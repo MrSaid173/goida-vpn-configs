@@ -477,14 +477,18 @@ def validate(config, is_priority, is_white):
         stats['isp_banned'] += 1
         return
     
-    # Проверка лимита SNI
+    # ИСПРАВЛЕНО: Резервируем SNI сразу при проверке
+    sni_reserved = False
     with lock:
         sni_limit = get_sni_limit(is_white, ip_cc)
         if sni_usage_counts[sni] >= sni_limit:
             stats['sni_limit'] += 1
             return
+        # РЕЗЕРВИРУЕМ SNI для этого конфига
+        sni_usage_counts[sni] += 1
+        sni_reserved = True
     
-    # ИСПРАВЛЕНО: Определяем строгие лимиты на основе страны и типа
+    # Определяем строгие лимиты
     is_ru = (ip_cc == "RU")
     if is_xhttp:
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
@@ -493,20 +497,29 @@ def validate(config, is_priority, is_white):
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
         max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
     
-    # ИСПРАВЛЕНО: Полный анализ с проверкой КАЖДОГО пинга
+    # Полный анализ с проверкой КАЖДОГО пинга
     full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
     if not full:
-        # Может быть: jitter большой ИЛИ один из пингов вне лимитов
+        # Откатываем резервацию SNI
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
         stats['jitter_failed'] += 1
         return
     
     # Финальное добавление
     with lock:
         if host in seen_ips:
+            # Откатываем резервацию SNI
+            if sni_reserved:
+                sni_usage_counts[sni] -= 1
             stats['race_duplicate'] += 1
             return
         
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
+            # Откатываем резервацию SNI
+            if sni_reserved:
+                sni_usage_counts[sni] -= 1
             stats['subnet_banned'] += 1
             return
         
@@ -521,14 +534,26 @@ def validate(config, is_priority, is_white):
         }
         
         if try_add_to_lists(entry):
-            update_counters(host, sni, subnet, cid, ip_cc)
+            # SNI уже зарезервирован, просто обновляем остальные счетчики
+            update_counters_without_sni(host, subnet, cid, ip_cc)
             host_tag = " (X)" if is_xhttp else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}", flush=True)
             stats['added'] += 1
             check_completion()
         else:
+            # Не удалось добавить - откатываем резервацию SNI
+            sni_usage_counts[sni] -= 1
             stats['not_added'] += 1
 
+
+def update_counters_without_sni(host, subnet, cid, ip_cc):
+    """ИСПРАВЛЕНО: Обновляет счетчики БЕЗ SNI (он уже зарезервирован)"""
+    seen_ips.add(host)
+    # sni_usage_counts[sni] += 1  ← УБРАЛИ! SNI уже зарезервирован
+    subnet_counts[subnet] += 1
+    id_counts[cid] += 1
+    if ip_cc != "RU":
+        country_counts[ip_cc] += 1
 
 def fetch_group_data(urls):
     """Загружает конфиги из списка URL"""
