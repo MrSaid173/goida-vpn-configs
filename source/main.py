@@ -39,7 +39,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 50
+MAX_JITTER = 70
 MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
@@ -51,12 +51,12 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
-MAX_SAME_SNI_RU = 3     # Не-RU IP + white SNI
+MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
+MAX_SAME_SNI_RU = 4     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 90.0, 450.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 550.0
+MIN_RU_PING, MAX_RU_PING = 90.0, 460.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 500.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
