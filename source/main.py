@@ -52,7 +52,7 @@ MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
-MAX_SAME_SNI_RU = 4     # Не-RU IP + white SNI
+MAX_SAME_SNI_RU = 5     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
 MIN_RU_PING, MAX_RU_PING = 400.0, 500.0
