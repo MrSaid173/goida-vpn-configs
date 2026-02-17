@@ -594,24 +594,14 @@ def fetch_group_data(urls):
 
 def finalize_list(results, is_vlm2=False):
     """Финализирует список конфигов для vlm или vlm2"""
-    print(f"\n{'='*60}", flush=True)
-    print(f"--- ФИНАЛИЗАЦИЯ {'VLM2' if is_vlm2 else 'VLM'} ---", flush=True)
-    print(f"{'='*60}", flush=True)
-    
     # ШАГ 1: Собираем все RU + SNI-RU и берём ТОП-5
     all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
     top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
-    
-    print(f"\n📊 Всего RU+SNI-RU: {len(all_ru_sni)}", flush=True)
-    print(f"✅ ТОП-5 RU+SNI-RU:", flush=True)
-    for i, r in enumerate(top_fixed, 1):
-        print(f"  {i}. {r['ping']}ms | {r['country']}", flush=True)
     
     # ШАГ 2: XHTTP для vlm2
     xhttp_bucket = []
     if is_vlm2:
         xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping'])
-        print(f"\n🚀 XHTTP: {len(xhttp_bucket)}", flush=True)
     
     # ШАГ 3: Создаём множества ссылок для быстрой проверки
     top_fixed_links = {r['link'] for r in top_fixed}
@@ -632,14 +622,9 @@ def finalize_list(results, is_vlm2=False):
     ru_sni_configs.sort(key=lambda x: x['ping'])
     non_ru_sni_configs.sort(key=lambda x: x['ping'])
     
-    print(f"\n📦 Остальные SNI-RU: {len(ru_sni_configs)}", flush=True)
-    print(f"📦 Не-SNI: {len(non_ru_sni_configs)}", flush=True)
-    
     # ШАГ 4: Собираем финальный список
     final = list(top_fixed)
     current_ru_sni_total = len(top_fixed)
-    
-    print(f"\n🏗️ Сборка списка (цель: {MAX_CONFIGS})...", flush=True)
     
     while len(final) < MAX_CONFIGS:
         added_any = False
@@ -669,7 +654,6 @@ def finalize_list(results, is_vlm2=False):
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_configs:
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
-                print(f"⚠️ Лимит SNI-RU достигнут: {MAX_TOTAL_SNI_RU}", flush=True)
                 break
             config = ru_sni_configs.pop(0)
             # ИСПРАВЛЕНО: проверяем по link
@@ -682,24 +666,9 @@ def finalize_list(results, is_vlm2=False):
         if not added_any:
             break
     
-    print(f"\n📊 Результат:", flush=True)
-    print(f"   Всего: {len(final)}", flush=True)
-    print(f"   SNI-RU: {sum(1 for f in final if f['white_sni'])}", flush=True)
-    print(f"   RU+SNI-RU: {sum(1 for f in final if f['white_sni'] and f['country'] == 'RU')}", flush=True)
-    
     # ШАГ 5: Финальная нумерация по скорости
     speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-    
-    print(f"\n🏆 ТОП-10 по скорости:", flush=True)
-    sorted_final = sorted(final, key=lambda x: x['ping'])
-    for i, r in enumerate(sorted_final[:10], 1):
-        sni = " [SNI-RU]" if r['white_sni'] else ""
-        host = " [HOST]" if r['is_hosting'] else ""
-        print(f"  #{i}. {r['country']} | {r['ping']}ms{sni}{host}", flush=True)
-    
-    print(f"{'='*60}\n", flush=True)  
     return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
-
 
 def print_statistics():
     """Выводит статистику обработки"""
