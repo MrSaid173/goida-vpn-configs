@@ -233,7 +233,7 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         
-        if jit > (avg * MAX_JITTER_RATIO):
+        if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
             return None
         
         return avg, jit
