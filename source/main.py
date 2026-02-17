@@ -320,9 +320,9 @@ def get_sni_limit(is_white, ip_cc):
     is_ru = (ip_cc == "RU")
     if is_white:
         if is_ru:
-            return MAX_SAME_SNI_RU_RU  # 1
-        return MAX_SAME_SNI_RU         # 3
-    return MAX_SAME_SNI_WORLD          # 5
+            return MAX_SAME_SNI_RU_RU
+        return MAX_SAME_SNI_RU
+    return MAX_SAME_SNI_WORLD
 
 
 def can_add_hosting(is_hosting):
