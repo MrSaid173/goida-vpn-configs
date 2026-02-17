@@ -156,7 +156,9 @@ def is_technically_broken(link):
         return True
     if "type=splithttp" in l:
         return True
-    if ":443/?" in l or ":80/?" in l or "/??" in l:
+    if re.search(r':\d+/\?[^&]*(?:type|security|encryption|sni)=', l):
+        return True
+    if "/??" in l:
         return True
     if "host=" in l or "packetencoding=" in l or "type=raw" in l:
         return True
