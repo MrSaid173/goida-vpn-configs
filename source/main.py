@@ -224,17 +224,16 @@ def full_ping_analysis(host, port, sni, initial_ping):
 
 def get_config_details(link):
     try:
-        name = requests.utils.unquote(link.split("#")[1]) if "#" in link else ""
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         cid_match = re.search(r'://([^@]+)@', clean_link)
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
         if h_m and is_valid_ipv4(h_m.group(1)):
             sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
-            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else "", name
+            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
     except:
         pass
-    return None, None, None, None, None
+    return None, None, None, None
 
 
 def check_isp_info(ip_str):
@@ -246,7 +245,7 @@ def check_isp_info(ip_str):
         try:
             for _ in range(2):
                 if stop_event.is_set():
-                    return None, None, False
+                    return None, False
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
                     if elapsed < 1.4:
@@ -260,14 +259,15 @@ def check_isp_info(ip_str):
                     is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_banned_hosting or is_banned_pattern
-                    res = (r.get("countryCode"), full_info, "BANNED" if is_banned else r.get("hosting", False))
+                    # ИСПРАВЛЕНО: Возвращаем только 2 значения вместо 3
+                    res = (r.get("countryCode"), "BANNED" if is_banned else r.get("hosting", False))
                     with lock:
                         ip_cache[ip_str] = res
                     return res
                 break
         except:
             pass
-        return None, None, False
+        return None, False
 
 
 def apply_clean_params(config_link):
@@ -282,7 +282,8 @@ def apply_clean_params(config_link):
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
-    if is_hosting is True:
+    # ИСПРАВЛЕНО: Используем == вместо is для сравнения
+    if is_hosting == True:
         tags.append("HOST")
     if is_white_sni:
         tags.append("SNI-RU")
@@ -304,10 +305,11 @@ def fetch_raw_configs(url):
         return []
 
 
-def get_sni_limit(is_white, config):
-    """Определяет лимит использования SNI"""
-    is_ru_potential = any(a in config.upper() for a in COUNTRY_MAP["RU"]["aliases"])
-    return MAX_SAME_SNI_RU if (is_ru_potential and is_white) else MAX_SAME_SNI_WORLD
+# ИСПРАВЛЕНО: Передаем ip_cc вместо config
+def get_sni_limit(is_white, ip_cc):
+    """Определяет лимит использования SNI на основе реальной страны IP"""
+    is_ru = (ip_cc == "RU")
+    return MAX_SAME_SNI_RU if (is_ru and is_white) else MAX_SAME_SNI_WORLD
 
 
 def passes_ping_limits(ip_cc, ping, is_xhttp):
@@ -320,20 +322,25 @@ def passes_ping_limits(ip_cc, ping, is_xhttp):
     return ping <= max_p
 
 
+# ИСПРАВЛЕНО: Полностью переработана логика резервирования
 def can_add_hosting(is_hosting):
-    """Проверяет, можно ли добавить хостинговый конфиг"""
+    """Проверяет, можно ли добавить хостинговый конфиг с упреждающим резервированием"""
     global hosting_count
-    if is_hosting is True:
-        if hosting_count >= MAX_HOST_CONFIGS:
-            return False
+    
+    # ИСПРАВЛЕНО: Используем == вместо is
+    if is_hosting == True:
+        # Хостинговый конфиг - проверяем не превышен ли максимум
+        return hosting_count < MAX_HOST_CONFIGS
     else:
-        # Если не хостинговый, проверяем, не нужно ли зарезервировать место для хостинговых
+        # НЕ-хостинговый конфиг - проверяем резервирование места
+        # Если еще не набрали минимум хостинговых, резервируем место
         if hosting_count < MIN_HOST_CONFIGS:
             total_used = len(vlm_results) + len(vlm2_results)
-            reserved_space = MAX_CONFIGS * 2 - MIN_HOST_CONFIGS
-            if total_used >= reserved_space:
+            # Резервируем место: не позволяем заполнить более чем (2*MAX_CONFIGS - MIN_HOST_CONFIGS)
+            max_non_hosting = (MAX_CONFIGS * 2) - MIN_HOST_CONFIGS
+            if total_used >= max_non_hosting:
                 return False
-    return True
+        return True
 
 
 def try_add_to_lists(entry):
@@ -364,7 +371,7 @@ def try_add_to_lists(entry):
         # Обычный конфиг
         # 1. Пробуем добавить в vlm
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and can_add_hosting(is_hosting):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
@@ -384,8 +391,9 @@ def try_add_to_lists(entry):
             vlm2_results.append(entry)
             added_vlm2 = True
     
+    # ИСПРАВЛЕНО: Увеличиваем hosting_count сразу при успешном добавлении
     if added_vlm or added_vlm2:
-        if is_hosting is True:
+        if is_hosting == True:
             hosting_count += 1
         return True
     
@@ -403,7 +411,7 @@ def check_completion():
     return False
 
 
-def update_counters(host, sni, subnet, cid, ip_cc, is_hosting):
+def update_counters(host, sni, subnet, cid, ip_cc):
     """Обновляет все счетчики после добавления конфига"""
     seen_ips.add(host)
     sni_usage_counts[sni] += 1
@@ -424,7 +432,8 @@ def validate(config, is_priority, is_white):
         stats['broken'] += 1
         return
     
-    host, port, sni, cid, name = get_config_details(config)
+    # ИСПРАВЛЕНО: Убрали неиспользуемую переменную name
+    host, port, sni, cid = get_config_details(config)
     if not host or not sni:
         stats['no_details'] += 1
         return
@@ -436,7 +445,13 @@ def validate(config, is_priority, is_white):
     
     is_xhttp = "xhttp" in config.lower()
     
-    # 3. Lock-блок для проверки лимитов и дедупликации
+    # ИСПРАВЛЕНО: Сначала получаем ip_cc, потом проверяем лимиты SNI
+    # Нужно проверить ISP до lock-блока, чтобы не держать lock во время API запроса
+    # Но базовые проверки можем сделать сразу
+    
+    subnet = ".".join(host.split(".")[:3])
+    
+    # 3. Lock-блок для быстрых проверок
     with lock:
         if host in seen_ips:
             stats['duplicate_ip'] += 1
@@ -448,14 +463,6 @@ def validate(config, is_priority, is_white):
         
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
             stats['excluded_sni'] += 1
-            return
-        
-        subnet = ".".join(host.split(".")[:3])
-        
-        # Проверка лимитов SNI
-        sni_limit = get_sni_limit(is_white, config)
-        if sni_usage_counts[sni] >= sni_limit:
-            stats['sni_limit'] += 1
             return
         
         # Проверка лимитов подсети и ID
@@ -472,7 +479,7 @@ def validate(config, is_priority, is_white):
     
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
     if not p1 or p1 > initial_max_p:
-        # Штрафуем подсеть и IP после первого неудачного пинга
+        # ИСПРАВЛЕНО: Штрафуем в одном lock-блоке
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(host)
@@ -480,10 +487,18 @@ def validate(config, is_priority, is_white):
         return
     
     # 5. Проверка ISP (без lock)
-    ip_cc, ip_isp, ip_h_stat = check_isp_info(host)
+    # ИСПРАВЛЕНО: Теперь функция возвращает только 2 значения
+    ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
         stats['isp_banned'] += 1
         return
+    
+    # ИСПРАВЛЕНО: Проверяем лимит SNI ПОСЛЕ получения ip_cc
+    with lock:
+        sni_limit = get_sni_limit(is_white, ip_cc)
+        if sni_usage_counts[sni] >= sni_limit:
+            stats['sni_limit'] += 1
+            return
     
     # 6. Проверка пинга по стране
     if not passes_ping_limits(ip_cc, p1, is_xhttp):
@@ -520,7 +535,8 @@ def validate(config, is_priority, is_white):
         
         # Попытка добавить в списки
         if try_add_to_lists(entry):
-            update_counters(host, sni, subnet, cid, ip_cc, ip_h_stat)
+            # ИСПРАВЛЕНО: Убрали is_hosting из параметров
+            update_counters(host, sni, subnet, cid, ip_cc)
             host_tag = " (X)" if is_xhttp else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}", flush=True)
             stats['added'] += 1
@@ -547,29 +563,12 @@ def finalize_list(results, is_vlm2=False):
     """Финализирует список конфигов для vlm или vlm2"""
     all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
     top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
-    remaining_ru_sni = all_ru_sni[MAX_TOP_RU_SNI:]
     
     xhttp_bucket = []
     if is_vlm2:
         xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping'])
     
-    buckets = {i: [] for i in range(4)}
-    for r in results:
-        if r in top_fixed or r in xhttp_bucket or (r['country'] == 'RU' and r['white_sni']):
-            continue
-        b_idx = (0 if r['white_sni'] else 1) if r['is_priority'] else (2 if r['white_sni'] else 3)
-        buckets[b_idx].append(r)
-    
-    for i in range(4):
-        buckets[i].sort(key=lambda x: x['ping'])
-    
-    final = list(top_fixed)
-    current_ru_sni_total = len(top_fixed)
-    
     # Разделяем конфиги на RU-SNI и NON-RU-SNI
-    # RU-SNI = все конфиги с white_sni=True (независимо от страны)
-    # NON-RU-SNI = все конфиги с white_sni=False
-    
     ru_sni_configs = []  # Все с [SNI-RU]
     non_ru_sni_configs = []  # Все БЕЗ [SNI-RU]
     
@@ -589,7 +588,7 @@ def finalize_list(results, is_vlm2=False):
     final = list(top_fixed)
     current_ru_sni_total = len(top_fixed)
     
-    # Чередуем: NON-RU-SNI → RU-SNI → NON-RU-SNI → RU-SNI
+    # Чередуем: XHTTP (если vlm2) → NON-RU-SNI → RU-SNI
     while len(final) < MAX_CONFIGS:
         added_any = False
         
@@ -648,8 +647,8 @@ def print_statistics():
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
-    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
+    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] == True)})", flush=True)
+    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] == True)})", flush=True)
 
 
 def main():
