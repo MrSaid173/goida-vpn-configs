@@ -39,7 +39,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 70
+MAX_JITTER = 80
 MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
@@ -192,7 +192,7 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=0.9) as sock:
+        with socket.create_connection((host, port), timeout=1.2) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
     except:
