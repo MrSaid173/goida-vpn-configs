@@ -60,7 +60,7 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 8  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 400.0, 500.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 600.0
 
 # Расширенные лимиты для XHTTP
