@@ -46,14 +46,19 @@ MAX_JITTER_RATIO = 0.4
 MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = 5
+
 MAX_PER_SUBNET = 3
+MAX_PER_SUBNET16_RU_SNI = 1
+MAX_PER_SUBNET16_NONRU_SNI = 7
+MAX_PER_SUBNET16_OTHERS = 10 
+
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
-MAX_SAME_SNI_RU = 5     # Не-RU IP + white SNI
-MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
+MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
+MAX_SAME_SNI_WORLD = 8  # Любой IP + не-white SNI
 
 MIN_RU_PING, MAX_RU_PING = 400.0, 500.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 600.0
@@ -122,6 +127,7 @@ failed_ips = set()
 failed_subnets = defaultdict(int)
 seen_ips = set()
 subnet_counts = defaultdict(int)
+subnet16_counts = defaultdict(lambda: defaultdict(int))
 id_counts = defaultdict(int)
 sni_usage_counts = defaultdict(int)
 
@@ -248,6 +254,25 @@ def get_config_details(link):
     except:
         pass
     return None, None, None, None
+
+def get_config_type(ip_cc, is_white):
+    if is_white:
+        if ip_cc == "RU":
+            return "ru_sni"
+        else:
+            return "nonru_sni"
+    else:
+        return "others"
+
+
+def get_subnet16_limit(config_type):
+    """Возвращает лимит для типа конфига"""
+    limits = {
+        "ru_sni": MAX_PER_SUBNET16_RU_SNI,
+        "nonru_sni": MAX_PER_SUBNET16_NONRU_SNI,
+        "others": MAX_PER_SUBNET16_OTHERS
+    }
+    return limits.get(config_type, MAX_PER_SUBNET16_OTHERS)
 
 
 def check_isp_info(ip_str):
@@ -413,7 +438,7 @@ def update_counters_without_sni(host, subnet, cid):
 
 
 def validate(config, is_priority, is_white):
-    """ИСПРАВЛЕНО: Основная функция валидации с атомарной резервацией SNI"""
+    """ИСПРАВЛЕНО: Основная функция валидации с проверкой подсети /16"""
     if stop_event.is_set():
         stats['stopped'] += 1
         return
@@ -432,7 +457,8 @@ def validate(config, is_priority, is_white):
         return
     
     is_xhttp = "xhttp" in config.lower()
-    subnet = ".".join(host.split(".")[:3])
+    subnet = ".".join(host.split(".")[:3])      # x.y.z
+    subnet16 = ".".join(host.split(".")[:2])    # НОВОЕ: x.y
     
     with lock:
         if host in seen_ips:
@@ -471,7 +497,16 @@ def validate(config, is_priority, is_white):
         stats['isp_banned'] += 1
         return
     
-    # ИСПРАВЛЕНО: Атомарная резервация SNI
+    # НОВОЕ: Проверка лимита подсети /16
+    config_type = get_config_type(ip_cc, is_white)
+    subnet16_limit = get_subnet16_limit(config_type)
+    
+    with lock:
+        if subnet16_counts[subnet16][config_type] >= subnet16_limit:
+            stats['subnet16_limit'] += 1
+            return
+    
+    # Атомарная резервация SNI
     sni_reserved = False
     with lock:
         sni_limit = get_sni_limit(is_white, ip_cc)
@@ -529,7 +564,11 @@ def validate(config, is_priority, is_white):
         
         if try_add_to_lists(entry):
             # SNI уже зарезервирован, обновляем остальные счетчики
-            update_counters_without_sni(host, subnet, cid)
+            seen_ips.add(host)
+            subnet_counts[subnet] += 1
+            subnet16_counts[subnet16][config_type] += 1  # НОВОЕ: увеличиваем /16
+            id_counts[cid] += 1
+            
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
