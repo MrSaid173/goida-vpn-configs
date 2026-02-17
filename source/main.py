@@ -529,7 +529,8 @@ def validate(config, is_priority, is_white):
             # SNI уже зарезервирован, обновляем остальные счетчики
             update_counters_without_sni(host, subnet, cid)
             host_tag = " (X)" if is_xhttp else ""
-            print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}", flush=True)
+            sni_tag = " SNI-RU" if is_white else ""
+            print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
             stats['added'] += 1
             check_completion()
         else:
