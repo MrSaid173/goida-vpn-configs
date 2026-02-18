@@ -25,7 +25,7 @@ MAX_HOST_CONFIGS = 13
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"] #"baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -39,7 +39,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 70
+MAX_JITTER = 80
 MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
@@ -50,7 +50,7 @@ MAX_TOP_RU_SNI = 5
 MAX_PER_SUBNET = 3
 MAX_PER_SUBNET16_RU_SNI = 1
 MAX_PER_SUBNET16_NONRU_SNI = 7
-MAX_PER_SUBNET16_OTHERS = 7 
+MAX_PER_SUBNET16_OTHERS = 10 
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
@@ -60,7 +60,7 @@ MAX_SAME_SNI_RU_RU = 3  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 550.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 
 # Расширенные лимиты для XHTTP
@@ -200,11 +200,89 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=0.8) as sock:
+        with socket.create_connection((host, port), timeout=1.2) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
     except:
         return None
+
+
+def check_sni_accessible(sni):
+    """Проверяет, что SNI-домен реально доступен по TCP:443 (не заблокирован)"""
+    try:
+        with socket.create_connection((sni, 443), timeout=2.0):
+            return True
+    except:
+        return False
+
+
+def check_vless_proxy(host, port, sni, cid):
+    """
+    Реальная проверка VLESS-прокси: отправл��ет минимальный VLESS-запрос
+    и проверяет, что сервер ведёт себя как прокси, а не как обычный веб-сервер.
+    UUID декодируется из строки cid для формирования заголовка.
+    Возвращает True если сервер ответил как прокси (не вернул HTTP 400/404 сразу).
+    """
+    try:
+        # Парсим UUID из cid
+        raw_uuid = cid.replace("-", "")
+        if len(raw_uuid) != 32:
+            return False
+        uuid_bytes = bytes.fromhex(raw_uuid)
+
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+
+        with socket.create_connection((host, port), timeout=2.5) as sock:
+            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+                # Формируем минимальный VLESS запрос (версия 0)
+                # Целевой адрес: example.com:80 (тип 2 = доменное имя)
+                target_host = b"example.com"
+                target_port = 80
+
+                # VLESS header: version(1) + uuid(16) + addons_len(1) + cmd(1) + port(2) + atype(1) + addr_len(1) + addr
+                vless_header = (
+                    b'\x00'           # version
+                    + uuid_bytes      # UUID (16 байт)
+                    + b'\x00'         # addons length
+                    + b'\x01'         # cmd: TCP
+                    + target_port.to_bytes(2, 'big')  # port
+                    + b'\x02'         # atype: domain
+                    + bytes([len(target_host)])
+                    + target_host
+                )
+
+                # HTTP запрос через туннель
+                http_req = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+                ssock.sendall(vless_header + http_req)
+
+                ssock.settimeout(2.5)
+                try:
+                    response = ssock.recv(512)
+                except socket.timeout:
+                    # Таймаут при чтении — сервер не ответил мусором, вероятно это прокси
+                    return True
+
+                if not response:
+                    return False
+
+                resp_str = response[:64].lower()
+
+                # Если сервер сразу вернул HTML/HTTP-ошибку — это не прокси
+                bad_signs = [b"<html", b"<!doctype", b"400 bad request", b"404 not found",
+                             b"403 forbidden", b"nginx", b"apache", b"openresty"]
+                if any(sign in resp_str for sign in bad_signs):
+                    return False
+
+                # VLESS-ответ начинается с версии (0x00) + addons
+                # Либо это может быть туннелированный HTTP-ответ от example.com
+                if response[0:1] == b'\x00' or b"http/" in resp_str or b"200" in resp_str:
+                    return True
+
+                return False
+    except Exception:
+        return False
 
 
 def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
@@ -325,7 +403,10 @@ def apply_clean_params(config_link):
     base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', parts[0])
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
+    # ИСПРАВЛЕНО: сначала защищаем "://", потом чистим лишние символы, потом восстанавливаем
+    base = base.replace("://", "\x00PROTO\x00")
+    base = base.replace("?&", "?").replace("&&", "&").replace("//", "/")
+    base = base.replace("\x00PROTO\x00", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 
@@ -349,9 +430,8 @@ def fetch_raw_configs(url):
                 resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except:
                 pass
-        # БАГ #5 ИСПРАВЛЕН: старый фильтр `if not l.startswith(("ss://", "trojan://"))` был мёртвым —
-        # re.findall уже гарантирует только нужные протоколы, ss:// и trojan:// туда не попадают.
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+        # ssr:// убран — ShadowsocksR плохо поддерживается в Hiddify
+        return [l.strip() for l in re.findall(r'(?:vless|tuic|hysteria|hysteria2)://[^\s]+', resp)]
     except:
         return []
 
@@ -550,6 +630,31 @@ def validate(config, is_priority, is_white):
         # БАГ #6 ИСПРАВЛЕН: stats['jitter_failed'] теперь пишется внутри full_ping_analysis,
         # чтобы не смешивать с ping_out_of_range
         return
+
+    # Проверяем реальную работу прокси-туннеля (только для vless://)
+    if "vless://" in config.lower():
+        if not check_vless_proxy(host, port, sni, cid):
+            if sni_reserved:
+                with lock:
+                    sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                with lock:
+                    subnet16_counts[subnet16][config_type] -= 1
+            with lock:
+                failed_ips.add(host)
+            stats['proxy_check_failed'] += 1
+            return
+
+    # Проверяем доступность SNI-домена (только для white SNI — они важны для РФ)
+    if is_white and sni and not check_sni_accessible(sni):
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        stats['sni_inaccessible'] += 1
+        return
     
     # Финальное добавление
     with lock:
@@ -708,6 +813,8 @@ def print_statistics():
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
+    print(f"Прокси-проверка провалена: {stats['proxy_check_failed']}", flush=True)
+    print(f"SNI недоступен: {stats['sni_inaccessible']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
@@ -787,3 +894,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+     
