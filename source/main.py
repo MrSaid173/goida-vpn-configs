@@ -167,7 +167,7 @@ def is_technically_broken(link):
         return True
     if "type=splithttp" in l:
         return True
-    if re.search(r':\d+/\?[^&]*(?:type|security|encryption|sni)=', l):
+    if re.search(r':(443|80)/\?', l):
         return True
     if "/??" in l:
         return True
@@ -218,7 +218,7 @@ def try_fix_config(link):
     if any(u in l for u in unfixable):
         return None, None
 
-    # pbk= + tls/80 ��� не исправить
+    # pbk= + tls/80 — не исправить
     if "pbk=" in l and ("security=tls" in l or ":80?" in l):
         return None, None
 
