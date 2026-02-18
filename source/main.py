@@ -19,7 +19,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 1
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 3
+MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3
 MAX_HOST_CONFIGS = 13
@@ -771,6 +771,21 @@ def validate(config, is_priority, is_white):
                     subnet16_counts[subnet16][config_type] -= 1
             stats['xray_dead'] += 1
             return
+
+        # Проверяем что реальная задержка в разумных пределах.
+        # HTTP round-trip всегда дольше TCP-пинга (VLESS handshake + данные),
+        # поэтому лимит мягче: для RU 2000ms, для остальных 3000ms.
+        real_max = 2000 if is_ru else 3000
+        if real_latency > real_max:
+            if sni_reserved:
+                with lock:
+                    sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                with lock:
+                    subnet16_counts[subnet16][config_type] -= 1
+            stats['xray_too_slow'] += 1
+            return
+
         # Обновляем пинг реальной задержкой (она честнее TCP-пинга)
         full = (real_latency, full[1])
     
@@ -933,6 +948,7 @@ def print_statistics():
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     if XRAY_ENABLED:
         print(f"Xray мёртвых (реальная проверка): {stats['xray_dead']}", flush=True)
+        print(f"Xray слишком медленных (>{'{RU: 2000, Other: 3000}'}ms): {stats['xray_too_slow']}", flush=True)
     else:
         print("⚠️  Xray не найден — реальная проверка отключена", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
@@ -1014,3 +1030,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
