@@ -1,6 +1,7 @@
 # mine mine mine mine mine mine mine
 
 import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
+import subprocess, tempfile
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -39,8 +40,20 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 70
+MAX_JITTER = 80
 MAX_JITTER_RATIO = 0.4
+
+# --- НАСТРОЙКИ РЕАЛЬНОЙ ПРОВЕРКИ ЧЕРЕЗ XRAY ---
+XRAY_BIN = os.environ.get("XRAY_BIN", "xray")          # путь к бинарю xray
+XRAY_ENABLED = os.path.isfile(XRAY_BIN) or any(          # включаем если xray найден в PATH
+    os.path.isfile(os.path.join(p, XRAY_BIN))
+    for p in os.environ.get("PATH", "").split(":")
+)
+XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одновременно (не больше кол-ва CPU на раннере)
+XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
+XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
+XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
+XRAY_CHECK_URL = "http://cp.cloudflare.com/"  # цель: отвечает 204 быстро, без редиректов
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -60,8 +73,8 @@ MAX_SAME_SNI_RU_RU = 3  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 480.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 530.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -135,12 +148,18 @@ sni_usage_counts = defaultdict(int)
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
-hosting_count = 0
+# hosting_count убран — теперь считается динамически в can_add_hosting отдельно для каждого списка
 
 vlm_results = []
 vlm2_results = []
 
 last_api_call = 0
+
+# Пул портов для параллельных Xray-процессов
+# Семафор гарантирует не более XRAY_MAX_PARALLEL одновременных проверок
+xray_semaphore = threading.Semaphore(XRAY_MAX_PARALLEL)
+xray_port_pool = list(range(XRAY_BASE_PORT, XRAY_BASE_PORT + XRAY_MAX_PARALLEL))
+xray_port_lock = threading.Lock()
 
 # Статистика для отладки
 stats = defaultdict(int)
@@ -162,7 +181,7 @@ def is_technically_broken(link):
         return True
     if "type=splithttp" in l:
         return True
-    if re.search(r':\d+/\?[^&]*(?:type|security|encryption|sni)=', l):
+    if re.search(r':(443|80)/\?', l):
         return True
     if "/??" in l:
         return True
@@ -235,6 +254,9 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         
         if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
+            # БАГ #6 ИСПРАВЛЕН: статистика jitter теперь пишется здесь, а не во внешнем коде.
+            # Раньше внешний validate писал jitter_failed при любом None — в том числе при ping_out_of_range.
+            stats['jitter_failed'] += 1
             return None
         
         return avg, jit
@@ -282,27 +304,36 @@ def check_isp_info(ip_str):
             return ip_cache[ip_str]
     with api_semaphore:
         try:
-            for _ in range(2):
+            for attempt in range(2):
                 if stop_event.is_set():
                     return None, False
+                # БАГ #7 ИСПРАВЛЕН: раньше break стоял вне if, и цикл прерывался при первой неудаче —
+                # retry никогда не происходил. Теперь при неудаче делаем паузу и повторяем.
+                if attempt > 0:
+                    time.sleep(1.0)
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
-                    if elapsed < 1.4:
-                        time.sleep(1.4 - elapsed)
+                    sleep_time = max(0.0, 1.4 - elapsed)
                     last_api_call = time.perf_counter()
                     api_calls_count += 1
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    # БАГ #1 ИСПРАВЛЕН: разделяем "плохой хостинг" (Cloudflare и т.д.) и обычный хостинг (VPS)
+                    # Раньше: is_banned = is_banned_hosting or is_banned_pattern, и хостинги всегда получали "BANNED"
+                    # вместо True, то есть hosting_count вечно = 0 и тег [HOST] никогда не появлялся
+                    is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
-                    is_banned = is_banned_hosting or is_banned_pattern
-                    res = (r.get("countryCode"), "BANNED" if is_banned else r.get("hosting", False))
+                    is_banned = is_bad_hosting or is_banned_pattern
+                    # Если IP — хостинг, но не "плохой" — помечаем True, иначе False
+                    is_hosting_flag = r.get("hosting", False) and not is_bad_hosting
+                    res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
                         ip_cache[ip_str] = res
                     return res
-                break
         except:
             pass
         return None, False
@@ -320,7 +351,7 @@ def apply_clean_params(config_link):
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
-    if is_hosting == True:
+    if is_hosting is True:
         tags.append("HOST")
     if is_white_sni:
         tags.append("SNI-RU")
@@ -337,7 +368,9 @@ def fetch_raw_configs(url):
                 resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except:
                 pass
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
+        # БАГ #5 ИСПРАВЛЕН: старый фильтр `if not l.startswith(("ss://", "trojan://"))` был мёртвым —
+        # re.findall уже гарантирует только нужные протоколы, ss:// и trojan:// туда не попадают.
+        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
     except:
         return []
 
@@ -352,24 +385,23 @@ def get_sni_limit(is_white, ip_cc):
     return MAX_SAME_SNI_WORLD
 
 
-def can_add_hosting(is_hosting):
-    """Проверяет, можно ли добавить хостинговый конфиг"""
-    global hosting_count
+def can_add_hosting(is_hosting, target_list):
+    """
+    БАГ #3 ИСПРАВЛЕН: hosting_count считался один раз, даже если конфиг шёл в оба списка.
+    Теперь считаем хосты отдельно для vlm и vlm2.
     
-    if is_hosting == True:
-        return hosting_count < MAX_HOST_CONFIGS
-    else:
-        if hosting_count < MIN_HOST_CONFIGS:
-            total_used = len(vlm_results) + len(vlm2_results)
-            max_non_hosting = (MAX_CONFIGS * 2) - MIN_HOST_CONFIGS
-            if total_used >= max_non_hosting:
-                return False
-        return True
+    БАГ #4 ИСПРАВЛЕН: старая логика 'резервации мест' срабатывала только при 97+ конфигах
+    и ничего реально не резервировала. Убрана как бессмысленная.
+    """
+    if is_hosting is True:
+        count = sum(1 for r in target_list if r['is_hosting'] is True)
+        return count < MAX_HOST_CONFIGS
+    return True
 
 
 def try_add_to_lists(entry):
     """Пытается добавить конфиг в vlm и/или vlm2"""
-    global ru_vlm_count, ru_vlm2_count, xhttp_count, hosting_count
+    global ru_vlm_count, ru_vlm2_count, xhttp_count
     
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
@@ -380,40 +412,39 @@ def try_add_to_lists(entry):
     
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
             vlm_results.append(entry)
             added_vlm = True
         
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
             vlm2_results.append(entry)
             added_vlm2 = True
     
     if added_vlm or added_vlm2:
-        if is_hosting == True:
-            hosting_count += 1
+        # БАГ #3 ИСПРАВЛЕН: убираем глобальный hosting_count — теперь считается динамически в can_add_hosting
         return True
     
     return False
@@ -430,11 +461,184 @@ def check_completion():
     return False
 
 
-def update_counters_without_sni(host, subnet, cid):
-    """ИСПРАВЛЕНО: Обновляет счетчики БЕЗ SNI (он резервируется отдельно)"""
-    seen_ips.add(host)
-    subnet_counts[subnet] += 1
-    id_counts[cid] += 1
+def build_xray_outbound(config_link):
+    """
+    Строит outbound-секцию Xray JSON из vless:// ссылки.
+    Поддерживает: TCP+Reality, TCP+TLS, WS+TLS, xHTTP+TLS/Reality.
+    Возвращает dict или None если конфиг не распознан.
+    """
+    host, port, sni, cid = get_config_details(config_link)
+    if not host or not cid:
+        return None
+
+    l = config_link  # сохраняем оригинальный регистр для path
+    ll = l.lower()
+
+    # --- Transport ---
+    network = "tcp"
+    if "type=ws" in ll:
+        network = "ws"
+    elif "xhttp" in ll:
+        network = "xhttp"
+
+    # --- Path ---
+    path_m = re.search(r'[?&]path=([^&#\s]*)', l)
+    path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
+
+    # --- Security ---
+    security = "none"
+    if "security=tls" in ll:
+        security = "tls"
+    elif "security=reality" in ll:
+        security = "reality"
+
+    # --- Flow ---
+    flow = ""
+    if "flow=xtls-rprx-vision" in ll:
+        flow = "xtls-rprx-vision"
+
+    # --- Fingerprint ---
+    fp_m = re.search(r'[?&]fp=([^&#\s]*)', ll)
+    fingerprint = fp_m.group(1) if fp_m else "chrome"
+    if fingerprint == "random":
+        fingerprint = "chrome"
+
+    # --- Reality params ---
+    pbk_m = re.search(r'[?&]pbk=([^&#\s]*)', l)
+    sid_m = re.search(r'[?&]sid=([^&#\s]*)', l)
+
+    # --- Stream settings ---
+    stream_settings = {"network": network, "security": security}
+
+    if network == "ws":
+        stream_settings["wsSettings"] = {
+            "path": path,
+            "headers": {"Host": sni}
+        }
+    elif network == "xhttp":
+        stream_settings["xhttpSettings"] = {"path": path, "host": sni}
+
+    if security == "tls":
+        stream_settings["tlsSettings"] = {
+            "serverName": sni,
+            "allowInsecure": True,
+            "fingerprint": fingerprint
+        }
+    elif security == "reality":
+        if not pbk_m:
+            return None  # Reality без pbk невалидна
+        stream_settings["realitySettings"] = {
+            "serverName": sni,
+            "fingerprint": fingerprint,
+            "publicKey": pbk_m.group(1),
+            "shortId": sid_m.group(1) if sid_m else "",
+        }
+
+    return {
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": host,
+                "port": port,
+                "users": [{"id": cid, "encryption": "none", "flow": flow}]
+            }]
+        },
+        "streamSettings": stream_settings
+    }
+
+
+def real_check_via_xray(config_link, socks_port):
+    """
+    Запускает Xray с конфигом на указанном SOCKS5-порту,
+    делает реальный HTTP-запрос через него.
+    Возвращает задержку в мс или None если конфиг мёртвый.
+    """
+    outbound = build_xray_outbound(config_link)
+    if not outbound:
+        return None
+
+    xray_config = {
+        "log": {"loglevel": "none"},
+        "inbounds": [{
+            "listen": "127.0.0.1",
+            "port": socks_port,
+            "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": False}
+        }],
+        "outbounds": [outbound]
+    }
+
+    cfg_path = None
+    proc = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, prefix='xray_cfg_'
+        ) as f:
+            json.dump(xray_config, f)
+            cfg_path = f.name
+
+        proc = subprocess.Popen(
+            [XRAY_BIN, "run", "-config", cfg_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        time.sleep(XRAY_STARTUP_DELAY)
+
+        # Если Xray упал сразу — конфиг невалиден (неверный UUID, порт занят и т.д.)
+        if proc.poll() is not None:
+            return None
+
+        proxies = {
+            "http":  f"socks5h://127.0.0.1:{socks_port}",
+            "https": f"socks5h://127.0.0.1:{socks_port}",
+        }
+        start = time.perf_counter()
+        resp = requests.get(
+            XRAY_CHECK_URL,
+            proxies=proxies,
+            timeout=XRAY_HTTP_TIMEOUT,
+            allow_redirects=True,
+            verify=False
+        )
+        latency = int((time.perf_counter() - start) * 1000)
+
+        # cp.cloudflare.com отвечает 204; любой 2xx/3xx считаем успехом
+        if resp.status_code < 400:
+            return latency
+
+    except requests.exceptions.Timeout:
+        pass  # таймаут = конфиг жив, но очень медленный — всё равно отклоняем
+    except Exception:
+        pass
+    finally:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if cfg_path and os.path.exists(cfg_path):
+            try:
+                os.unlink(cfg_path)
+            except OSError:
+                pass
+
+    return None
+
+
+def acquire_xray_port():
+    """Берёт свободный порт из пула. Блокируется если все заняты."""
+    xray_semaphore.acquire()
+    with xray_port_lock:
+        return xray_port_pool.pop()
+
+
+def release_xray_port(port):
+    """Возвращает порт в пул."""
+    with xray_port_lock:
+        xray_port_pool.append(port)
+    xray_semaphore.release()
 
 
 def validate(config, is_priority, is_white):
@@ -501,10 +705,16 @@ def validate(config, is_priority, is_white):
     config_type = get_config_type(ip_cc, is_white)
     subnet16_limit = get_subnet16_limit(config_type)
     
+    # БАГ #2 ИСПРАВЛЕН: раньше проверка и увеличение subnet16_counts были разнесены на ~300ms пингов.
+    # Другой поток мог пройти проверку до того, как счётчик обновится — лимит превышался.
+    # Теперь резервируем сразу (как уже сделано для SNI), откатываем при неудаче.
+    subnet16_reserved = False
     with lock:
         if subnet16_counts[subnet16][config_type] >= subnet16_limit:
             stats['subnet16_limit'] += 1
             return
+        subnet16_counts[subnet16][config_type] += 1
+        subnet16_reserved = True
     
     # Атомарная резервация SNI
     sni_reserved = False
@@ -529,26 +739,58 @@ def validate(config, is_priority, is_white):
     # Полный анализ пинга
     full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
     if not full:
-        # Откатываем резервацию SNI
+        # Откатываем резервации SNI и /16
         if sni_reserved:
             with lock:
                 sni_usage_counts[sni] -= 1
-        stats['jitter_failed'] += 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        # БАГ #6 ИСПРАВЛЕН: stats['jitter_failed'] теперь пишется внутри full_ping_analysis,
+        # чтобы не смешивать с ping_out_of_range
         return
+
+    # --- РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY ---
+    # Выполняется после пингов: конфиг уже прошёл TCP/TLS/jitter фильтры.
+    # Для Reality это особенно важно: TLS-хендшейк всегда проходит,
+    # но сам VLESS-туннель может быть мёртвым (неверный UUID, закрытый порт изнутри и т.д.)
+    if XRAY_ENABLED:
+        xray_port = acquire_xray_port()
+        try:
+            real_latency = real_check_via_xray(config, xray_port)
+        finally:
+            release_xray_port(xray_port)
+
+        if real_latency is None:
+            # Откатываем резервации — конфиг не работает реально
+            if sni_reserved:
+                with lock:
+                    sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                with lock:
+                    subnet16_counts[subnet16][config_type] -= 1
+            stats['xray_dead'] += 1
+            return
+        # Обновляем пинг реальной задержкой (она честнее TCP-пинга)
+        full = (real_latency, full[1])
     
     # Финальное добавление
     with lock:
         if host in seen_ips:
-            # Откатываем резервацию
+            # Откатываем резервации
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                subnet16_counts[subnet16][config_type] -= 1
             stats['race_duplicate'] += 1
             return
         
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
-            # Откатываем резервацию
+            # Откатываем резервации
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                subnet16_counts[subnet16][config_type] -= 1
             stats['subnet_banned'] += 1
             return
         
@@ -563,10 +805,9 @@ def validate(config, is_priority, is_white):
         }
         
         if try_add_to_lists(entry):
-            # SNI уже зарезервирован, обновляем остальные счетчики
+            # SNI и /16 уже зарезервированы, обновляем остальные счетчики
             seen_ips.add(host)
             subnet_counts[subnet] += 1
-            subnet16_counts[subnet16][config_type] += 1  # НОВОЕ: увеличиваем /16
             id_counts[cid] += 1
             
             host_tag = " (X)" if is_xhttp else ""
@@ -575,8 +816,10 @@ def validate(config, is_priority, is_white):
             stats['added'] += 1
             check_completion()
         else:
-            # Не удалось добавить - откатываем резервацию
+            # Не удалось добавить - откатываем резервации SNI и /16
             sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                subnet16_counts[subnet16][config_type] -= 1
             stats['not_added'] += 1
 
 
@@ -624,6 +867,7 @@ def finalize_list(results, is_vlm2=False):
     
     # ШАГ 4: Собираем финальный список
     final = list(top_fixed)
+    final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
     
     while len(final) < MAX_CONFIGS:
@@ -634,9 +878,9 @@ def finalize_list(results, is_vlm2=False):
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
                 config = xhttp_bucket.pop(0)
-                # ИСПРАВЛЕНО: проверяем по link
-                if config['link'] not in {f['link'] for f in final}:
+                if config['link'] not in final_links:
                     final.append(config)
+                    final_links.add(config['link'])
                     count += 1
                     added_any = True
         
@@ -644,9 +888,9 @@ def finalize_list(results, is_vlm2=False):
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
             config = non_ru_sni_configs.pop(0)
-            # ИСПРАВЛЕНО: проверяем по link
-            if config['link'] not in {f['link'] for f in final}:
+            if config['link'] not in final_links:
                 final.append(config)
+                final_links.add(config['link'])
                 count += 1
                 added_any = True
         
@@ -656,9 +900,9 @@ def finalize_list(results, is_vlm2=False):
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
                 break
             config = ru_sni_configs.pop(0)
-            # ИСПРАВЛЕНО: проверяем по link
-            if config['link'] not in {f['link'] for f in final}:
+            if config['link'] not in final_links:
                 final.append(config)
+                final_links.add(config['link'])
                 count += 1
                 added_any = True
                 current_ru_sni_total += 1
@@ -687,8 +931,12 @@ def print_statistics():
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
-    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] == True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] == True)})", flush=True)
+    if XRAY_ENABLED:
+        print(f"Xray мёртвых (реальная проверка): {stats['xray_dead']}", flush=True)
+    else:
+        print("⚠️  Xray не найден — реальная проверка отключена", flush=True)
+    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
+    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
 
 def main():
@@ -766,4 +1014,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
