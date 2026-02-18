@@ -725,12 +725,16 @@ def main():
     
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
-    
+
+    # Объединяем extra + std для не-SNI-RU в одну корзину с перемешиванием
+    raw_nonwhite = list(set(raw_extra + raw_std))
+    random.shuffle(raw_nonwhite)
+    print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
+
     check_order = [
-        (raw_extra, True, True),
-        (raw_std, False, True),
-        (raw_extra, True, False),
-        (raw_std, False, False)
+        (raw_extra, True, True),    # extra + SNI-RU
+        (raw_std, False, True),     # std + SNI-RU
+        (raw_nonwhite, True, False) # extra+std объединённые, не SNI-RU
     ]
     
     for group, priority, white in check_order:
