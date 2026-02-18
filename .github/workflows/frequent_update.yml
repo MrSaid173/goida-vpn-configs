@@ -1,16 +1,13 @@
 name: Frequent Update
-
 on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
-
 jobs:
   update-files:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,6 +21,15 @@ jobs:
       - name: Install dependencies
         run: |
           pip install requests PyGithub maxminddb pysocks
+
+      - name: Install Xray-core
+        run: |
+          XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" -O /tmp/xray.zip
+          unzip -q /tmp/xray.zip -d /tmp/xray
+          chmod +x /tmp/xray/xray
+          echo "/tmp/xray" >> $GITHUB_PATH
+          echo "✅ Xray ${XRAY_VERSION} установлен: $(/tmp/xray/xray version | head -1)"
 
       - name: Restore Tools Cache
         uses: actions/cache@v3
