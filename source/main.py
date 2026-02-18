@@ -790,6 +790,18 @@ def validate_fixed(config, is_priority, is_white):
     return unique
 
 
+def fetch_group_data(urls):
+    """Загружает конфиги из списка URL"""
+    raw = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
+        for f in concurrent.futures.as_completed(futures):
+            raw.extend(f.result())
+    unique = list(set(raw))
+    random.shuffle(unique)
+    return unique
+
+
 def finalize_list(results, is_vlm2=False):
     """Финализирует список конфигов для vlm или vlm2"""
     # ШАГ 1: Собираем все RU + SNI-RU и берём ТОП-5
