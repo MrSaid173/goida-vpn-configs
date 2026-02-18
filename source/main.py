@@ -887,7 +887,10 @@ def print_statistics():
     print(f"Запросов к ip-api: {api_calls_count} (кэш попаданий: {stats['duplicate_ip'] + stats['race_duplicate']})", flush=True)
     print(f"Технически битые: {stats['broken']}", flush=True)
     print(f"Без деталей: {stats['no_details']}", flush=True)
+    print(f"Остановлено (stop_event): {stats['stopped']}", flush=True)
     print(f"Дубликаты IP: {stats['duplicate_ip']}", flush=True)
+    print(f"SNI mismatch: {stats['sni_mismatch']}", flush=True)
+    print(f"Исключённые SNI: {stats['excluded_sni']}", flush=True)
     print(f"Кэш неудачных IP: {stats['failed_ip_cache']}", flush=True)
     print(f"Первый пинг провален: {stats['first_ping_failed']}", flush=True)
     print(f"ISP забанен: {stats['isp_banned']}", flush=True)
@@ -969,10 +972,8 @@ def main():
             break
         workers = min(len(group), 40) if group else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
-                if stop_event.is_set():
-                    break
-                v.submit(validate, c, priority, white)
+            futures = [v.submit(validate, c, priority, white) for c in group if not stop_event.is_set()]
+            concurrent.futures.wait(futures)
 
     # Прогон технически битых конфигов через попытку исправления → vlm3
     print("\n--- 🔧 Запуск прохода VLM3 (исправление битых) ---", flush=True)
@@ -980,17 +981,12 @@ def main():
     random.shuffle(all_raw)
     workers = min(len(all_raw), 40) if all_raw else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-        for c in all_raw:
-            if len(vlm3_results) >= MAX_CONFIGS:
-                break
-            v.submit(validate_fixed, c, True, True)
-    # Второй проход — не-SNI-RU конфиги
+        futures = [v.submit(validate_fixed, c, True, True) for c in all_raw if len(vlm3_results) < MAX_CONFIGS]
+        concurrent.futures.wait(futures)
     if len(vlm3_results) < MAX_CONFIGS:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in all_raw:
-                if len(vlm3_results) >= MAX_CONFIGS:
-                    break
-                v.submit(validate_fixed, c, True, False)
+            futures = [v.submit(validate_fixed, c, True, False) for c in all_raw if len(vlm3_results) < MAX_CONFIGS]
+            concurrent.futures.wait(futures)
     
     print_statistics()
     
