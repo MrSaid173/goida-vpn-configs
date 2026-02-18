@@ -25,7 +25,7 @@ MAX_HOST_CONFIGS = 13
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host"] #"baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -39,7 +39,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 80
+MAX_JITTER = 60
 MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
@@ -200,7 +200,7 @@ def fast_ping(host, port, sni):
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.2) as sock:
+        with socket.create_connection((host, port), timeout=0.7) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
                 return int((time.perf_counter() - start) * 1000)
     except:
@@ -215,7 +215,7 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
         stats['ping_out_of_range'] += 1
         return None
     
-    max_attempts = 3
+    max_attempts = 2
     try:
         for _ in range(max_attempts):
             if stop_event.is_set():
@@ -228,7 +228,7 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
                     return None
                 pings.append(p)
         
-        if len(pings) < 4:
+        if len(pings) < 3:
             return None
         
         avg = sum(pings) // len(pings)
