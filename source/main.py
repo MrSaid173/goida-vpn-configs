@@ -135,7 +135,7 @@ sni_usage_counts = defaultdict(int)
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
-# hosting_count убран — теперь считается динамически в can_add_hosting отдельно для каждого списка
+hosting_count = 0
 
 vlm_results = []
 vlm2_results = []
@@ -162,7 +162,7 @@ def is_technically_broken(link):
         return True
     if "type=splithttp" in l:
         return True
-    if re.search(r':(443|80)/\?', l):
+    if re.search(r':\d+/\?[^&]*(?:type|security|encryption|sni)=', l):
         return True
     if "/??" in l:
         return True
@@ -207,143 +207,6 @@ def fast_ping(host, port, sni):
         return None
 
 
-def check_sni_accessible(sni):
-    """Проверяет, что SNI-домен реально доступен по TCP:443 (не заблокирован)"""
-    try:
-        with socket.create_connection((sni, 443), timeout=2.0):
-            return True
-    except:
-        return False
-
-
-def check_vless_proxy(host, port, sni, cid, config_link):
-    """
-    Проверяет, что сервер является реальным VLESS-прокси, а не просто сайтом.
-    Стратегия зависит от транспорта конфига:
-    - tcp/reality: шлём сырой VLESS-заголовок
-    - ws/httpupgrade/xhttp: делаем HTTP Upgrade, потом VLESS-заголовок
-    Если сервер — обычный веб-сервер, он ответит HTML/HTTP-ошибкой на наш бинарный мусор.
-    """
-    try:
-        raw_uuid = cid.replace("-", "")
-        if len(raw_uuid) != 32:
-            return False
-        uuid_bytes = bytes.fromhex(raw_uuid)
-
-        cl = config_link.lower()
-        transport = "tcp"
-        if "type=ws" in cl:
-            transport = "ws"
-        elif "type=httpupgrade" in cl:
-            transport = "httpupgrade"
-        elif "type=xhttp" in cl or "xhttp" in cl:
-            transport = "xhttp"
-
-        # Извлекаем path из конфига (для ws/httpupgrade)
-        path_m = re.search(r'[?&]path=([^&#\s]*)', config_link)
-        ws_path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
-        if not ws_path.startswith("/"):
-            ws_path = "/" + ws_path
-
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-
-        # VLESS-заголовок для туннелирования TCP к 1.1.1.1:80
-        # Используем IP (atype=1), чтобы не зависеть от DNS на сервере
-        target_ip = b'\x01\x01\x01\x01'  # 1.1.1.1
-        target_port = 80
-        vless_header = (
-            b'\x00'
-            + uuid_bytes
-            + b'\x00'          # addons length = 0
-            + b'\x01'          # cmd: TCP
-            + target_port.to_bytes(2, 'big')
-            + b'\x01'          # atype: IPv4
-            + target_ip
-        )
-        http_payload = b"GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n"
-
-        with socket.create_connection((host, port), timeout=3.0) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
-
-                if transport in ("ws", "httpupgrade", "xhttp"):
-                    # Шаг 1: HTTP Upgrade handshake
-                    upgrade_type = "websocket" if transport == "ws" else "VLESS"
-                    key_b64 = base64.b64encode(os.urandom(16)).decode()
-                    upgrade_req = (
-                        f"GET {ws_path} HTTP/1.1\r\n"
-                        f"Host: {sni}\r\n"
-                        f"Upgrade: {upgrade_type}\r\n"
-                        f"Connection: Upgrade\r\n"
-                        f"Sec-WebSocket-Key: {key_b64}\r\n"
-                        f"Sec-WebSocket-Version: 13\r\n\r\n"
-                    ).encode()
-                    ssock.sendall(upgrade_req)
-
-                    ssock.settimeout(2.0)
-                    try:
-                        upgrade_resp = ssock.recv(512)
-                    except socket.timeout:
-                        # Сервер завис — не прокси
-                        stats['proxy_debug_upgrade_timeout'] += 1
-                        return False
-
-                    upgrade_str = upgrade_resp.lower()
-
-                    # Обычный веб-сервер вернёт 200/301/404 на GET — не прокси
-                    if b"101 switching" not in upgrade_str and b"200" not in upgrade_str:
-                        bad_signs = [b"<html", b"<!doctype", b"301", b"302", b"404", b"403", b"nginx", b"apache"]
-                        if any(s in upgrade_str for s in bad_signs):
-                            stats['proxy_debug_upgrade_bad'] += 1
-                            return False
-                        # Непонятный ответ — даём benefit of the doubt
-                        stats['proxy_debug_upgrade_unknown'] += 1
-                        return True
-
-                    # Шаг 2: отправляем VLESS после успешного Upgrade
-                    ssock.sendall(vless_header + http_payload)
-
-                else:
-                    # tcp/reality — сразу шлём VLESS
-                    ssock.sendall(vless_header + http_payload)
-
-                # Читаем ответ от туннеля
-                ssock.settimeout(2.5)
-                try:
-                    response = ssock.recv(512)
-                except socket.timeout:
-                    # Сервер принял данные, но ещё не ответил — это нормально для прокси
-                    stats['proxy_debug_read_timeout'] += 1
-                    return True
-
-                if not response:
-                    # Соединение закрыто чисто — неоднозначно, пропускаем
-                    stats['proxy_debug_empty'] += 1
-                    return True
-
-                resp_lower = response[:80].lower()
-
-                # Явный признак веб-сервера — HTML или HTTP-ошибка в начале ответа
-                bad_signs = [b"<html", b"<!doctype", b"400 bad request", b"404 not found",
-                             b"403 forbidden", b"nginx", b"apache", b"openresty", b"cloudflare"]
-                if any(s in resp_lower for s in bad_signs):
-                    stats['proxy_debug_bad_response'] += 1
-                    return False
-
-                # Хороший признак: VLESS-ответ (0x00) или проксированный HTTP от 1.1.1.1
-                if response[0:1] == b'\x00' or b"http/" in resp_lower:
-                    stats['proxy_debug_ok'] += 1
-                    return True
-
-                # Всё остальное — бинарные данные, скорее всего туннель работает
-                stats['proxy_debug_binary_ok'] += 1
-                return True
-
-    except Exception:
-        return False
-
-
 def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
     """Проверяет каждый отдельный пинг на соответствие лимитам"""
     pings = [initial_ping]
@@ -372,9 +235,6 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
         jit = sum(abs(p - avg) for p in pings) // len(pings)
         
         if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
-            # БАГ #6 ИСПРАВЛЕН: статистика jitter теперь пишется здесь, а не во внешнем коде.
-            # Раньше внешний validate писал jitter_failed при любом None — в том числе при ping_out_of_range.
-            stats['jitter_failed'] += 1
             return None
         
         return avg, jit
@@ -422,36 +282,27 @@ def check_isp_info(ip_str):
             return ip_cache[ip_str]
     with api_semaphore:
         try:
-            for attempt in range(2):
+            for _ in range(2):
                 if stop_event.is_set():
                     return None, False
-                # БАГ #7 ИСПРАВЛЕН: раньше break стоял вне if, и цикл прерывался при первой неудаче —
-                # retry никогда не происходил. Теперь при неудаче делаем паузу и повторяем.
-                if attempt > 0:
-                    time.sleep(1.0)
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
-                    sleep_time = max(0.0, 1.4 - elapsed)
+                    if elapsed < 1.4:
+                        time.sleep(1.4 - elapsed)
                     last_api_call = time.perf_counter()
                     api_calls_count += 1
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    # БАГ #1 ИСПРАВЛЕН: разделяем "плохой хостинг" (Cloudflare и т.д.) и обычный хостинг (VPS)
-                    # Ран��ше: is_banned = is_banned_hosting or is_banned_pattern, и хостинги всегда получали "BANNED"
-                    # вместо True, то есть hosting_count вечно = 0 и тег [HOST] никогда не появлялся
-                    is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    is_banned_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
-                    is_banned = is_bad_hosting or is_banned_pattern
-                    # Если IP — хостинг, но не "плохой" — помечаем True, иначе False
-                    is_hosting_flag = r.get("hosting", False) and not is_bad_hosting
-                    res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
+                    is_banned = is_banned_hosting or is_banned_pattern
+                    res = (r.get("countryCode"), "BANNED" if is_banned else r.get("hosting", False))
                     with lock:
                         ip_cache[ip_str] = res
                     return res
+                break
         except:
             pass
         return None, False
@@ -462,17 +313,14 @@ def apply_clean_params(config_link):
     base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', parts[0])
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    # ИСПРАВЛЕНО: сначала защищаем "://", потом чистим лишние символы, потом восстанавливаем
-    base = base.replace("://", "\x00PROTO\x00")
-    base = base.replace("?&", "?").replace("&&", "&").replace("//", "/")
-    base = base.replace("\x00PROTO\x00", "://")
+    base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 
 def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
-    if is_hosting is True:
+    if is_hosting == True:
         tags.append("HOST")
     if is_white_sni:
         tags.append("SNI-RU")
@@ -489,8 +337,7 @@ def fetch_raw_configs(url):
                 resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except:
                 pass
-        # ssr:// убран — ShadowsocksR плохо поддерживается в Hiddify
-        return [l.strip() for l in re.findall(r'(?:vless|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp) if not l.startswith(("ss://", "trojan://"))]
     except:
         return []
 
@@ -505,23 +352,24 @@ def get_sni_limit(is_white, ip_cc):
     return MAX_SAME_SNI_WORLD
 
 
-def can_add_hosting(is_hosting, target_list):
-    """
-    БАГ #3 ИСПРАВЛЕН: hosting_count считался один раз, даже если конфиг шёл в оба списка.
-    Теперь считаем хосты отдельно для vlm и vlm2.
+def can_add_hosting(is_hosting):
+    """Проверяет, можно ли добавить хостинговый конфиг"""
+    global hosting_count
     
-    БАГ #4 ИСПРАВЛЕН: старая логика 'резервации мест' срабатывала только при 97+ конфигах
-    и ничего реально не резервировала. Убрана как бессмысленная.
-    """
-    if is_hosting is True:
-        count = sum(1 for r in target_list if r['is_hosting'] is True)
-        return count < MAX_HOST_CONFIGS
-    return True
+    if is_hosting == True:
+        return hosting_count < MAX_HOST_CONFIGS
+    else:
+        if hosting_count < MIN_HOST_CONFIGS:
+            total_used = len(vlm_results) + len(vlm2_results)
+            max_non_hosting = (MAX_CONFIGS * 2) - MIN_HOST_CONFIGS
+            if total_used >= max_non_hosting:
+                return False
+        return True
 
 
 def try_add_to_lists(entry):
     """Пытается добавить конфиг в vlm и/или vlm2"""
-    global ru_vlm_count, ru_vlm2_count, xhttp_count
+    global ru_vlm_count, ru_vlm2_count, xhttp_count, hosting_count
     
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
@@ -532,39 +380,40 @@ def try_add_to_lists(entry):
     
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
             vlm_results.append(entry)
             added_vlm = True
         
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting):
             vlm2_results.append(entry)
             added_vlm2 = True
     
     if added_vlm or added_vlm2:
-        # БАГ #3 ИСПРАВЛЕН: убираем глобальный hosting_count — теперь считается динамически в can_add_hosting
+        if is_hosting == True:
+            hosting_count += 1
         return True
     
     return False
@@ -579,6 +428,13 @@ def check_completion():
         stop_event.set()
         return True
     return False
+
+
+def update_counters_without_sni(host, subnet, cid):
+    """ИСПРАВЛЕНО: Обновляет счетчики БЕЗ SNI (он резервируется отдельно)"""
+    seen_ips.add(host)
+    subnet_counts[subnet] += 1
+    id_counts[cid] += 1
 
 
 def validate(config, is_priority, is_white):
@@ -645,16 +501,10 @@ def validate(config, is_priority, is_white):
     config_type = get_config_type(ip_cc, is_white)
     subnet16_limit = get_subnet16_limit(config_type)
     
-    # БАГ #2 ИСПРАВЛЕН: раньше проверка и увеличение subnet16_counts были разнесены на ~300ms пингов.
-    # Другой поток мог пройти проверку до того, как счётчик обновится — лимит превышался.
-    # Теперь резервируем сразу (как уже сделано для SNI), откатываем при неудаче.
-    subnet16_reserved = False
     with lock:
         if subnet16_counts[subnet16][config_type] >= subnet16_limit:
             stats['subnet16_limit'] += 1
             return
-        subnet16_counts[subnet16][config_type] += 1
-        subnet16_reserved = True
     
     # Атомарная резервация SNI
     sni_reserved = False
@@ -679,59 +529,26 @@ def validate(config, is_priority, is_white):
     # Полный анализ пинга
     full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
     if not full:
-        # Откатываем резервации SNI и /16
+        # Откатываем резервацию SNI
         if sni_reserved:
             with lock:
                 sni_usage_counts[sni] -= 1
-        if subnet16_reserved:
-            with lock:
-                subnet16_counts[subnet16][config_type] -= 1
-        # БАГ #6 ИСПРАВЛЕН: stats['jitter_failed'] теперь пишется внутри full_ping_analysis,
-        # чтобы не смешивать с ping_out_of_range
-        return
-
-    # Проверяем реальную работу прокси-туннеля (только для vless://)
-    if "vless://" in config.lower():
-        if not check_vless_proxy(host, port, sni, cid, config):
-            if sni_reserved:
-                with lock:
-                    sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                with lock:
-                    subnet16_counts[subnet16][config_type] -= 1
-            with lock:
-                failed_ips.add(host)
-            stats['proxy_check_failed'] += 1
-            return
-
-    # Проверяем доступность SNI-домена (только для white SNI — они важны для РФ)
-    if is_white and sni and not check_sni_accessible(sni):
-        if sni_reserved:
-            with lock:
-                sni_usage_counts[sni] -= 1
-        if subnet16_reserved:
-            with lock:
-                subnet16_counts[subnet16][config_type] -= 1
-        stats['sni_inaccessible'] += 1
+        stats['jitter_failed'] += 1
         return
     
     # Финальное добавление
     with lock:
         if host in seen_ips:
-            # Откатываем резервации
+            # Откатываем резервацию
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                subnet16_counts[subnet16][config_type] -= 1
             stats['race_duplicate'] += 1
             return
         
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
-            # Откатываем резервации
+            # Откатываем резервацию
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                subnet16_counts[subnet16][config_type] -= 1
             stats['subnet_banned'] += 1
             return
         
@@ -746,9 +563,10 @@ def validate(config, is_priority, is_white):
         }
         
         if try_add_to_lists(entry):
-            # SNI и /16 уже зарезервированы, обновляем остальные счетчики
+            # SNI уже зарезервирован, обновляем остальные счетчики
             seen_ips.add(host)
             subnet_counts[subnet] += 1
+            subnet16_counts[subnet16][config_type] += 1  # НОВОЕ: увеличиваем /16
             id_counts[cid] += 1
             
             host_tag = " (X)" if is_xhttp else ""
@@ -757,10 +575,8 @@ def validate(config, is_priority, is_white):
             stats['added'] += 1
             check_completion()
         else:
-            # Не удалось добавить - откатываем резервации SNI и /16
+            # Не удалось добавить - откатываем резервацию
             sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                subnet16_counts[subnet16][config_type] -= 1
             stats['not_added'] += 1
 
 
@@ -808,7 +624,6 @@ def finalize_list(results, is_vlm2=False):
     
     # ШАГ 4: Собираем финальный список
     final = list(top_fixed)
-    final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
     
     while len(final) < MAX_CONFIGS:
@@ -819,9 +634,9 @@ def finalize_list(results, is_vlm2=False):
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
                 config = xhttp_bucket.pop(0)
-                if config['link'] not in final_links:
+                # ИСПРАВЛЕНО: проверяем по link
+                if config['link'] not in {f['link'] for f in final}:
                     final.append(config)
-                    final_links.add(config['link'])
                     count += 1
                     added_any = True
         
@@ -829,9 +644,9 @@ def finalize_list(results, is_vlm2=False):
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
             config = non_ru_sni_configs.pop(0)
-            if config['link'] not in final_links:
+            # ИСПРАВЛЕНО: проверяем по link
+            if config['link'] not in {f['link'] for f in final}:
                 final.append(config)
-                final_links.add(config['link'])
                 count += 1
                 added_any = True
         
@@ -841,9 +656,9 @@ def finalize_list(results, is_vlm2=False):
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
                 break
             config = ru_sni_configs.pop(0)
-            if config['link'] not in final_links:
+            # ИСПРАВЛЕНО: проверяем по link
+            if config['link'] not in {f['link'] for f in final}:
                 final.append(config)
-                final_links.add(config['link'])
                 count += 1
                 added_any = True
                 current_ru_sni_total += 1
@@ -872,18 +687,8 @@ def print_statistics():
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
-    print(f"Прокси-проверка провалена: {stats['proxy_check_failed']}", flush=True)
-    print(f"  └ upgrade timeout:  {stats['proxy_debug_upgrade_timeout']}", flush=True)
-    print(f"  └ upgrade bad resp: {stats['proxy_debug_upgrade_bad']}", flush=True)
-    print(f"  └ upgrade unknown:  {stats['proxy_debug_upgrade_unknown']}", flush=True)
-    print(f"  └ read timeout:     {stats['proxy_debug_read_timeout']}", flush=True)
-    print(f"  └ empty response:   {stats['proxy_debug_empty']}", flush=True)
-    print(f"  └ bad response:     {stats['proxy_debug_bad_response']}", flush=True)
-    print(f"  └ ok (vless/http):  {stats['proxy_debug_ok']}", flush=True)
-    print(f"  └ ok (binary):      {stats['proxy_debug_binary_ok']}", flush=True)
-    print(f"SNI недоступен: {stats['sni_inaccessible']}", flush=True)
-    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
+    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] == True)})", flush=True)
+    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] == True)})", flush=True)
 
 
 def main():
@@ -961,4 +766,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
