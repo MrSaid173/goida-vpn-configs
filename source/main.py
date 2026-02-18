@@ -137,13 +137,8 @@ ru_vlm2_count = 0
 xhttp_count = 0
 hosting_count = 0
 
-# Счетчики для vlm3
-ru_vlm3_count = 0
-vlm3_fix_reasons = defaultdict(int)  # статистика причин фиксов
-
 vlm_results = []
 vlm2_results = []
-vlm3_results = []
 
 last_api_call = 0
 
@@ -197,87 +192,6 @@ def is_technically_broken(link):
             return True
 
     return False
-
-
-def try_fix_config(link):
-    """
-    Пытается исправить технически битый конфиг.
-    Возвращает (fixed_link, reason) или (None, None) если не поддаётся исправлению.
-    Причины:
-      - 'double_question'   : /??  → /?
-      - 'stray_question'    : :443/? или :80/? (лишний ? перед параметрами) → убрать /
-      - 'http_to_httpupgrade': type=http → type=httpupgrade
-      - 'param_artifacts'   : ?& или && артефакты склейки
-    """
-    l = link.lower()
-
-    # Эти случаи не исправить — сразу None
-    unfixable = [
-        "host=", "packetencoding=", "type=raw", "type=splithttp",
-    ]
-    if any(u in l for u in unfixable):
-        return None, None
-
-    # pbk= + tls/80 — не исправить
-    if "pbk=" in l and ("security=tls" in l or ":80?" in l):
-        return None, None
-
-    # Неверный порт — не исправить
-    h_m = re.search(r'@([^:/?#\s]+):(\d+)', link)
-    if h_m:
-        port = int(h_m.group(2))
-        if not (1 <= port <= 65535):
-            return None, None
-
-    # Невалидный UUID у vless — не исправить
-    if "vless://" in l:
-        match = re.search(r'vless://([a-f0-9\-]{32,36})@', l)
-        if not match:
-            return None, None
-
-    # flow без tcp — не исправить
-    if "flow=xtls-rprx-vision" in l and "type=tcp" not in l:
-        return None, None
-
-    # security=tls/reality без SNI — не исправить
-    if "security=tls" in l or "security=reality" in l:
-        s_m = re.search(r'[?&]sni=([^&#\s]*)', l)
-        if not s_m:
-            return None, None
-        if is_valid_ipv4(s_m.group(1)):
-            return None, None
-
-    fixed = link
-    reason = None
-
-    # 1. /??  → /?
-    if "/??" in fixed:
-        fixed = fixed.replace("/??", "/?")
-        reason = "double_question"
-
-    # 2. :443/? или :80/? (параметры идут через /? вместо ?) → убрать /
-    elif re.search(r':(443|80)/\?', fixed):
-        fixed = re.sub(r':(443|80)/\?', lambda m: f':{m.group(1)}?', fixed)
-        reason = "stray_question"
-
-    # 3. type=http → type=httpupgrade (только если не httpupgrade уже)
-    elif re.search(r'type=http(?!upgrade)', fixed, re.IGNORECASE):
-        fixed = re.sub(r'type=http(?!upgrade)', 'type=httpupgrade', fixed, flags=re.IGNORECASE)
-        reason = "http_to_httpupgrade"
-
-    # 4. Артефакты склейки параметров
-    elif "?&" in fixed or "&&" in fixed:
-        fixed = fixed.replace("?&", "?").replace("&&", "&")
-        reason = "param_artifacts"
-
-    if reason is None:
-        return None, None
-
-    # Проверяем, что после фикса конфиг перестал быть битым
-    if is_technically_broken(fixed):
-        return None, None
-
-    return fixed, reason
 
 
 def fast_ping(host, port, sni):
@@ -373,10 +287,11 @@ def check_isp_info(ip_str):
                     return None, False
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
-                    if elapsed < 1.4:
-                        time.sleep(1.4 - elapsed)
+                    sleep_time = max(0.0, 1.4 - elapsed)
                     last_api_call = time.perf_counter()
                     api_calls_count += 1
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
                 r = resp.json()
                 if r.get("status") == "success":
@@ -453,28 +368,17 @@ def can_add_hosting(is_hosting):
         return True
 
 
-def try_add_to_lists(entry, vlm3_mode=False):
-    """Пытается добавить конфиг в vlm и/или vlm2 (или vlm3 если vlm3_mode)"""
-    global ru_vlm_count, ru_vlm2_count, xhttp_count, hosting_count, ru_vlm3_count
-
+def try_add_to_lists(entry):
+    """Пытается добавить конфиг в vlm и/или vlm2"""
+    global ru_vlm_count, ru_vlm2_count, xhttp_count, hosting_count
+    
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
-
-    # vlm3: отдельная простая логика — просто набираем MAX_CONFIGS конфигов
-    if vlm3_mode:
-        if len(vlm3_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
-            vlm3_results.append(entry)
-            if is_ru:
-                ru_vlm3_count += 1
-            if is_hosting == True:
-                hosting_count += 1
-            return True
-        return False
-
+    
     added_vlm = False
     added_vlm2 = False
-
+    
     if is_xhttp:
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting):
@@ -496,7 +400,7 @@ def try_add_to_lists(entry, vlm3_mode=False):
         elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting):
             vlm_results.append(entry)
             added_vlm = True
-
+        
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
@@ -507,12 +411,12 @@ def try_add_to_lists(entry, vlm3_mode=False):
         elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting):
             vlm2_results.append(entry)
             added_vlm2 = True
-
+    
     if added_vlm or added_vlm2:
         if is_hosting == True:
             hosting_count += 1
         return True
-
+    
     return False
 
 
@@ -520,19 +424,11 @@ def check_completion():
     """Проверяет, достигнуты ли все цели"""
     vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
-    vlm3_done = (len(vlm3_results) >= MAX_CONFIGS)
-
-    if vlm_done and vlm2_done and vlm3_done:
+    
+    if vlm_done and vlm2_done:
         stop_event.set()
         return True
     return False
-
-
-def update_counters_without_sni(host, subnet, cid):
-    """ИСПРАВЛЕНО: Обновляет счетчики БЕЗ SNI (он резервируется отдельно)"""
-    seen_ips.add(host)
-    subnet_counts[subnet] += 1
-    id_counts[cid] += 1
 
 
 def validate(config, is_priority, is_white):
@@ -678,121 +574,6 @@ def validate(config, is_priority, is_white):
             stats['not_added'] += 1
 
 
-def validate_fixed(config, is_priority, is_white):
-    """Валидация исправленного конфига для vlm3"""
-    if stop_event.is_set():
-        return
-    if len(vlm3_results) >= MAX_CONFIGS:
-        return
-
-    # Пробуем исправить
-    fixed, reason = try_fix_config(config)
-    if not fixed:
-        return
-
-    host, port, sni, cid = get_config_details(fixed)
-    if not host or not sni:
-        return
-
-    if host in failed_ips:
-        return
-
-    is_xhttp = "xhttp" in fixed.lower()
-    subnet = ".".join(host.split(".")[:3])
-    subnet16 = ".".join(host.split(".")[:2])
-
-    with lock:
-        if host in seen_ips:
-            return
-        if (sni in sni_domains) != is_white:
-            return
-        if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
-            return
-        if subnet_counts[subnet] >= MAX_PER_SUBNET:
-            return
-        if id_counts[cid] >= MAX_PER_ID:
-            return
-
-    # Первый пинг
-    p1 = fast_ping(host, port, sni)
-    initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
-    if not p1 or p1 > initial_max_p:
-        with lock:
-            failed_subnets[subnet] += 1
-            failed_ips.add(host)
-        return
-
-    # ISP
-    ip_cc, ip_h_stat = check_isp_info(host)
-    if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
-        return
-
-    # /16 лимит
-    config_type = get_config_type(ip_cc, is_white)
-    subnet16_limit = get_subnet16_limit(config_type)
-    with lock:
-        if subnet16_counts[subnet16][config_type] >= subnet16_limit:
-            return
-
-    # SNI резервация
-    with lock:
-        sni_limit = get_sni_limit(is_white, ip_cc)
-        if sni_usage_counts[sni] >= sni_limit:
-            return
-        sni_usage_counts[sni] += 1
-
-    # Пинг-анализ
-    is_ru = (ip_cc == "RU")
-    min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
-    max_p = (MAX_RU_PING_XHTTP if is_xhttp else MAX_RU_PING) if is_ru else (MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING)
-
-    full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
-    if not full:
-        with lock:
-            sni_usage_counts[sni] -= 1
-        return
-
-    with lock:
-        if host in seen_ips:
-            sni_usage_counts[sni] -= 1
-            return
-        if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
-            sni_usage_counts[sni] -= 1
-            return
-
-        entry = {
-            "link": apply_clean_params(fixed),
-            "ping": full[0],
-            "country": ip_cc,
-            "is_priority": is_priority,
-            "white_sni": is_white,
-            "is_hosting": ip_h_stat,
-            "is_xhttp": is_xhttp,
-            "fix_reason": reason,
-        }
-
-        if try_add_to_lists(entry, vlm3_mode=True):
-            seen_ips.add(host)
-            subnet_counts[subnet] += 1
-            subnet16_counts[subnet16][config_type] += 1
-            id_counts[cid] += 1
-            vlm3_fix_reasons[reason] += 1
-            print(f"[VLM3/{reason}] {ip_cc} | {full[0]}ms | {host}", flush=True)
-            stats['vlm3_added'] += 1
-            check_completion()
-        else:
-            sni_usage_counts[sni] -= 1
-    """Загружает конфиги из списка URL"""
-    raw = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
-        for f in concurrent.futures.as_completed(futures):
-            raw.extend(f.result())
-    unique = list(set(raw))
-    random.shuffle(unique)
-    return unique
-
-
 def fetch_group_data(urls):
     """Загружает конфиги из списка URL"""
     raw = []
@@ -837,6 +618,7 @@ def finalize_list(results, is_vlm2=False):
     
     # ШАГ 4: Собираем финальный список
     final = list(top_fixed)
+    final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
     
     while len(final) < MAX_CONFIGS:
@@ -847,9 +629,9 @@ def finalize_list(results, is_vlm2=False):
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
                 config = xhttp_bucket.pop(0)
-                # ИСПРАВЛЕНО: проверяем по link
-                if config['link'] not in {f['link'] for f in final}:
+                if config['link'] not in final_links:
                     final.append(config)
+                    final_links.add(config['link'])
                     count += 1
                     added_any = True
         
@@ -857,9 +639,9 @@ def finalize_list(results, is_vlm2=False):
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
             config = non_ru_sni_configs.pop(0)
-            # ИСПРАВЛЕНО: проверяем по link
-            if config['link'] not in {f['link'] for f in final}:
+            if config['link'] not in final_links:
                 final.append(config)
+                final_links.add(config['link'])
                 count += 1
                 added_any = True
         
@@ -869,9 +651,9 @@ def finalize_list(results, is_vlm2=False):
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
                 break
             config = ru_sni_configs.pop(0)
-            # ИСПРАВЛЕНО: проверяем по link
-            if config['link'] not in {f['link'] for f in final}:
+            if config['link'] not in final_links:
                 final.append(config)
+                final_links.add(config['link'])
                 count += 1
                 added_any = True
                 current_ru_sni_total += 1
@@ -890,10 +672,7 @@ def print_statistics():
     print(f"Запросов к ip-api: {api_calls_count} (кэш попаданий: {stats['duplicate_ip'] + stats['race_duplicate']})", flush=True)
     print(f"Технически битые: {stats['broken']}", flush=True)
     print(f"Без деталей: {stats['no_details']}", flush=True)
-    print(f"Остановлено (stop_event): {stats['stopped']}", flush=True)
     print(f"Дубликаты IP: {stats['duplicate_ip']}", flush=True)
-    print(f"SNI mismatch: {stats['sni_mismatch']}", flush=True)
-    print(f"Исключённые SNI: {stats['excluded_sni']}", flush=True)
     print(f"Кэш неудачных IP: {stats['failed_ip_cache']}", flush=True)
     print(f"Первый пинг провален: {stats['first_ping_failed']}", flush=True)
     print(f"ISP забанен: {stats['isp_banned']}", flush=True)
@@ -905,23 +684,6 @@ def print_statistics():
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] == True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] == True)})", flush=True)
-
-    # Статистика vlm3
-    print(f"\n--- 🔧 VLM3 (исправленные конфиги) ---", flush=True)
-    print(f"VLM3: {len(vlm3_results)} (RU: {ru_vlm3_count}, HOST: {sum(1 for r in vlm3_results if r['is_hosting'] == True)})", flush=True)
-    if vlm3_fix_reasons:
-        print("Причины исправлений (от большего к меньшему):", flush=True)
-        for reason, count in sorted(vlm3_fix_reasons.items(), key=lambda x: -x[1]):
-            descriptions = {
-                "double_question":    "/??  → /?  (двойной вопрос)",
-                "stray_question":     ":443/? или :80/? (лишний слэш перед параметрами)",
-                "http_to_httpupgrade":"type=http → type=httpupgrade",
-                "param_artifacts":    "?& или && (артефакты склейки параметров)",
-            }
-            desc = descriptions.get(reason, reason)
-            print(f"  {count:>4}x  {desc}", flush=True)
-    else:
-        print("  Исправленных конфигов не найдено", flush=True)
 
 
 def main():
@@ -975,27 +737,16 @@ def main():
             break
         workers = min(len(group), 40) if group else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            futures = [v.submit(validate, c, priority, white) for c in group if not stop_event.is_set()]
-            concurrent.futures.wait(futures)
-
-    # Прогон технически битых конфигов через попытку исправления → vlm3
-    print("\n--- 🔧 Запуск прохода VLM3 (исправление битых) ---", flush=True)
-    all_raw = list(set(raw_extra + raw_std))
-    random.shuffle(all_raw)
-    workers = min(len(all_raw), 40) if all_raw else 1
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-        futures = [v.submit(validate_fixed, c, True, True) for c in all_raw if len(vlm3_results) < MAX_CONFIGS]
-        concurrent.futures.wait(futures)
-    if len(vlm3_results) < MAX_CONFIGS:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            futures = [v.submit(validate_fixed, c, True, False) for c in all_raw if len(vlm3_results) < MAX_CONFIGS]
-            concurrent.futures.wait(futures)
+            for c in group:
+                if stop_event.is_set():
+                    break
+                v.submit(validate, c, priority, white)
     
     print_statistics()
     
     if gh_repo:
-        for fn, res, is_v2 in [(FILENAME_VLM, vlm_results, False), (FILENAME_VLM2, vlm2_results, True), ("vlm3", vlm3_results, False)]:
-            output = finalize_list(res, is_vlm2=is_v2)
+        for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
+            output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
             path, content = f"githubmirror/{fn}", "\n".join(output)
             try:
                 sha = gh_repo.get_contents(path).sha
