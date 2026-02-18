@@ -216,71 +216,130 @@ def check_sni_accessible(sni):
         return False
 
 
-def check_vless_proxy(host, port, sni, cid):
+def check_vless_proxy(host, port, sni, cid, config_link):
     """
-    Реальная проверка VLESS-прокси: отправл��ет минимальный VLESS-запрос
-    и проверяет, что сервер ведёт себя как прокси, а не как обычный веб-сервер.
-    UUID декодируется из строки cid для формирования заголовка.
-    Возвращает True если сервер ответил как прокси (не вернул HTTP 400/404 сразу).
+    Проверяет, что сервер является реальным VLESS-прокси, а не просто сайтом.
+    Стратегия зависит от транспорта конфига:
+    - tcp/reality: шлём сырой VLESS-заголовок
+    - ws/httpupgrade/xhttp: делаем HTTP Upgrade, потом VLESS-заголовок
+    Если сервер — обычный веб-сервер, он ответит HTML/HTTP-ошибкой на наш бинарный мусор.
     """
     try:
-        # Парсим UUID из cid
         raw_uuid = cid.replace("-", "")
         if len(raw_uuid) != 32:
             return False
         uuid_bytes = bytes.fromhex(raw_uuid)
 
+        cl = config_link.lower()
+        transport = "tcp"
+        if "type=ws" in cl:
+            transport = "ws"
+        elif "type=httpupgrade" in cl:
+            transport = "httpupgrade"
+        elif "type=xhttp" in cl or "xhttp" in cl:
+            transport = "xhttp"
+
+        # Извлекаем path из конфига (для ws/httpupgrade)
+        path_m = re.search(r'[?&]path=([^&#\s]*)', config_link)
+        ws_path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
+        if not ws_path.startswith("/"):
+            ws_path = "/" + ws_path
+
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
 
-        with socket.create_connection((host, port), timeout=2.5) as sock:
+        # VLESS-заголовок для туннелирования TCP к 1.1.1.1:80
+        # Используем IP (atype=1), чтобы не зависеть от DNS на сервере
+        target_ip = b'\x01\x01\x01\x01'  # 1.1.1.1
+        target_port = 80
+        vless_header = (
+            b'\x00'
+            + uuid_bytes
+            + b'\x00'          # addons length = 0
+            + b'\x01'          # cmd: TCP
+            + target_port.to_bytes(2, 'big')
+            + b'\x01'          # atype: IPv4
+            + target_ip
+        )
+        http_payload = b"GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n"
+
+        with socket.create_connection((host, port), timeout=3.0) as sock:
             with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
-                # Формируем минимальный VLESS запрос (версия 0)
-                # Целевой адрес: example.com:80 (тип 2 = доменное имя)
-                target_host = b"example.com"
-                target_port = 80
 
-                # VLESS header: version(1) + uuid(16) + addons_len(1) + cmd(1) + port(2) + atype(1) + addr_len(1) + addr
-                vless_header = (
-                    b'\x00'           # version
-                    + uuid_bytes      # UUID (16 байт)
-                    + b'\x00'         # addons length
-                    + b'\x01'         # cmd: TCP
-                    + target_port.to_bytes(2, 'big')  # port
-                    + b'\x02'         # atype: domain
-                    + bytes([len(target_host)])
-                    + target_host
-                )
+                if transport in ("ws", "httpupgrade", "xhttp"):
+                    # Шаг 1: HTTP Upgrade handshake
+                    upgrade_type = "websocket" if transport == "ws" else "VLESS"
+                    key_b64 = base64.b64encode(os.urandom(16)).decode()
+                    upgrade_req = (
+                        f"GET {ws_path} HTTP/1.1\r\n"
+                        f"Host: {sni}\r\n"
+                        f"Upgrade: {upgrade_type}\r\n"
+                        f"Connection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key_b64}\r\n"
+                        f"Sec-WebSocket-Version: 13\r\n\r\n"
+                    ).encode()
+                    ssock.sendall(upgrade_req)
 
-                # HTTP запрос через туннель
-                http_req = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
-                ssock.sendall(vless_header + http_req)
+                    ssock.settimeout(2.0)
+                    try:
+                        upgrade_resp = ssock.recv(512)
+                    except socket.timeout:
+                        # Сервер завис — не прокси
+                        stats['proxy_debug_upgrade_timeout'] += 1
+                        return False
 
+                    upgrade_str = upgrade_resp.lower()
+
+                    # Обычный веб-сервер вернёт 200/301/404 на GET — не прокси
+                    if b"101 switching" not in upgrade_str and b"200" not in upgrade_str:
+                        bad_signs = [b"<html", b"<!doctype", b"301", b"302", b"404", b"403", b"nginx", b"apache"]
+                        if any(s in upgrade_str for s in bad_signs):
+                            stats['proxy_debug_upgrade_bad'] += 1
+                            return False
+                        # Непонятный ответ — даём benefit of the doubt
+                        stats['proxy_debug_upgrade_unknown'] += 1
+                        return True
+
+                    # Шаг 2: отправляем VLESS после успешного Upgrade
+                    ssock.sendall(vless_header + http_payload)
+
+                else:
+                    # tcp/reality — сразу шлём VLESS
+                    ssock.sendall(vless_header + http_payload)
+
+                # Читаем ответ от туннеля
                 ssock.settimeout(2.5)
                 try:
                     response = ssock.recv(512)
                 except socket.timeout:
-                    # Таймаут при чтении — сервер не ответил мусором, вероятно это прокси
+                    # Сервер принял данные, но ещё не ответил — это нормально для прокси
+                    stats['proxy_debug_read_timeout'] += 1
                     return True
 
                 if not response:
-                    return False
-
-                resp_str = response[:64].lower()
-
-                # Если сервер сразу вернул HTML/HTTP-ошибку — это не прокси
-                bad_signs = [b"<html", b"<!doctype", b"400 bad request", b"404 not found",
-                             b"403 forbidden", b"nginx", b"apache", b"openresty"]
-                if any(sign in resp_str for sign in bad_signs):
-                    return False
-
-                # VLESS-ответ начинается с версии (0x00) + addons
-                # Либо это может быть туннелированный HTTP-ответ от example.com
-                if response[0:1] == b'\x00' or b"http/" in resp_str or b"200" in resp_str:
+                    # Соединение закрыто чисто — неоднозначно, пропускаем
+                    stats['proxy_debug_empty'] += 1
                     return True
 
-                return False
+                resp_lower = response[:80].lower()
+
+                # Явный признак веб-сервера — HTML или HTTP-ошибка в начале ответа
+                bad_signs = [b"<html", b"<!doctype", b"400 bad request", b"404 not found",
+                             b"403 forbidden", b"nginx", b"apache", b"openresty", b"cloudflare"]
+                if any(s in resp_lower for s in bad_signs):
+                    stats['proxy_debug_bad_response'] += 1
+                    return False
+
+                # Хороший признак: VLESS-ответ (0x00) или проксированный HTTP от 1.1.1.1
+                if response[0:1] == b'\x00' or b"http/" in resp_lower:
+                    stats['proxy_debug_ok'] += 1
+                    return True
+
+                # Всё остальное — бинарные данные, скорее всего туннель работает
+                stats['proxy_debug_binary_ok'] += 1
+                return True
+
     except Exception:
         return False
 
@@ -382,7 +441,7 @@ def check_isp_info(ip_str):
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
                     # БАГ #1 ИСПРАВЛЕН: разделяем "плохой хостинг" (Cloudflare и т.д.) и обычный хостинг (VPS)
-                    # Раньше: is_banned = is_banned_hosting or is_banned_pattern, и хостинги всегда получали "BANNED"
+                    # Ран��ше: is_banned = is_banned_hosting or is_banned_pattern, и хостинги всегда получали "BANNED"
                     # вместо True, то есть hosting_count вечно = 0 и тег [HOST] никогда не появлялся
                     is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
@@ -633,7 +692,7 @@ def validate(config, is_priority, is_white):
 
     # Проверяем реальную работу прокси-туннеля (только для vless://)
     if "vless://" in config.lower():
-        if not check_vless_proxy(host, port, sni, cid):
+        if not check_vless_proxy(host, port, sni, cid, config):
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -814,6 +873,14 @@ def print_statistics():
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     print(f"Прокси-проверка провалена: {stats['proxy_check_failed']}", flush=True)
+    print(f"  └ upgrade timeout:  {stats['proxy_debug_upgrade_timeout']}", flush=True)
+    print(f"  └ upgrade bad resp: {stats['proxy_debug_upgrade_bad']}", flush=True)
+    print(f"  └ upgrade unknown:  {stats['proxy_debug_upgrade_unknown']}", flush=True)
+    print(f"  └ read timeout:     {stats['proxy_debug_read_timeout']}", flush=True)
+    print(f"  └ empty response:   {stats['proxy_debug_empty']}", flush=True)
+    print(f"  └ bad response:     {stats['proxy_debug_bad_response']}", flush=True)
+    print(f"  └ ok (vless/http):  {stats['proxy_debug_ok']}", flush=True)
+    print(f"  └ ok (binary):      {stats['proxy_debug_binary_ok']}", flush=True)
     print(f"SNI недоступен: {stats['sni_inaccessible']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
@@ -894,5 +961,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-     
+    
