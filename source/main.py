@@ -278,6 +278,9 @@ def try_fix_config(link):
         return None, None
 
     return fixed, reason
+
+
+def fast_ping(host, port, sni):
     try:
         start = time.perf_counter()
         context = ssl.create_default_context()
