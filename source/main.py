@@ -23,6 +23,10 @@ MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3
 MAX_HOST_CONFIGS = 13
+MIN_SS = 1
+MAX_SS = 5
+MIN_HY2 = 1
+MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -162,6 +166,8 @@ sni_usage_counts = defaultdict(int)
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
+ss_count = 0
+hy2_count = 0
 # hosting_count убран — теперь считается динамически в can_add_hosting отдельно для каждого списка
 
 vlm_results = []
@@ -196,6 +202,16 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
+
+    # shadowsocks
+    if l.startswith("ss://"):
+        return not parse_ss(link)
+
+    # hysteria2
+    if l.startswith("hysteria2://"):
+        return not parse_hy2(link)
+
+    # vless и прочие — старая логика
     if "type=" not in l:
         return True
     if "type=http" in l and "type=httpupgrade" not in l:
@@ -232,6 +248,105 @@ def is_technically_broken(link):
             return True
 
     return False
+
+
+def parse_ss(link):
+    """
+    Парсит ss://[base64]@host:port#name или ss://base64#name
+    Возвращает (host, port, method, password) или None
+    """
+    try:
+        # Убираем фрагмент
+        clean = link.split('#')[0]
+        # ss://BASE64@host:port или ss://BASE64
+        body = clean[5:]  # убираем ss://
+
+        if '@' in body:
+            # Формат: BASE64@host:port
+            userinfo, hostport = body.rsplit('@', 1)
+            try:
+                decoded = base64.b64decode(userinfo + '==').decode('utf-8')
+            except Exception:
+                decoded = base64.b64decode(userinfo.replace('-', '+').replace('_', '/') + '==').decode('utf-8')
+            method, password = decoded.split(':', 1)
+        else:
+            # Формат: BASE64 (весь блок закодирован)
+            try:
+                decoded = base64.b64decode(body + '==').decode('utf-8')
+            except Exception:
+                return None
+            if '@' not in decoded:
+                return None
+            userinfo, hostport = decoded.rsplit('@', 1)
+            method, password = userinfo.split(':', 1)
+
+        # Парсим host:port
+        if hostport.startswith('['):
+            # IPv6
+            m = re.match(r'\[([^\]]+)\]:(\d+)', hostport)
+            if not m:
+                return None
+            host, port = m.group(1), int(m.group(2))
+        else:
+            parts = hostport.rsplit(':', 1)
+            if len(parts) != 2:
+                return None
+            host, port = parts[0], int(parts[1])
+
+        if not is_valid_ipv4(host):
+            return None
+        if not (1 <= port <= 65535):
+            return None
+        if not method or not password:
+            return None
+
+        return host, port, method, password
+    except Exception:
+        return None
+
+
+def parse_hy2(link):
+    """
+    Парсит hysteria2://password@host:port?params
+    Возвращает (host, port, password, sni) или None
+    """
+    try:
+        # hysteria2://password@host:port?sni=...&...#name
+        body = link[12:]  # убираем hysteria2://
+        body = body.split('#')[0]
+
+        if '@' not in body:
+            return None
+        password, rest = body.split('@', 1)
+
+        params_str = ''
+        if '?' in rest:
+            hostport, params_str = rest.split('?', 1)
+        else:
+            hostport = rest
+
+        if hostport.startswith('['):
+            m = re.match(r'\[([^\]]+)\]:(\d+)', hostport)
+            if not m:
+                return None
+            host, port = m.group(1), int(m.group(2))
+        else:
+            parts = hostport.rsplit(':', 1)
+            if len(parts) != 2:
+                return None
+            host, port = parts[0], int(parts[1])
+
+        if not is_valid_ipv4(host):
+            return None
+        if not (1 <= port <= 65535):
+            return None
+
+        params = dict(p.split('=', 1) for p in params_str.split('&') if '=' in p)
+        sni = params.get('sni', host)
+
+        return host, port, password, sni
+    except Exception:
+        return None
 
 
 def fast_ping(host, port, sni):
@@ -287,13 +402,25 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
 
 def get_config_details(link):
     try:
-        clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
-        cid_match = re.search(r'://([^@]+)@', clean_link)
-        h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-        s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
-        if h_m and is_valid_ipv4(h_m.group(1)):
-            sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
-            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
+        l = link.lower()
+        if l.startswith("ss://"):
+            parsed = parse_ss(link)
+            if parsed:
+                host, port, method, password = parsed
+                return host, port, "", f"{method}:{password}"
+        elif l.startswith("hysteria2://"):
+            parsed = parse_hy2(link)
+            if parsed:
+                host, port, password, sni = parsed
+                return host, port, sni, password
+        else:
+            clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
+            cid_match = re.search(r'://([^@]+)@', clean_link)
+            h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
+            s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
+            if h_m and is_valid_ipv4(h_m.group(1)):
+                sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
+                return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
     except:
         pass
     return None, None, None, None
@@ -369,13 +496,17 @@ def apply_clean_params(config_link):
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False, is_ss=False, is_hy2=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True:
         tags.append("HOST")
     if is_white_sni:
         tags.append("SNI-RU")
+    if is_ss:
+        tags.append("SS")
+    if is_hy2:
+        tags.append("HY2")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{link.split('#')[0]}#{requests.utils.quote(new_name)}"
@@ -391,7 +522,7 @@ def fetch_raw_configs(url):
                 pass
         # БАГ #5 ИСПРАВЛЕН: старый фильтр `if not l.startswith(("ss://", "trojan://"))` был мёртвым —
         # re.findall уже гарантирует только нужные протоколы, ss:// и trojan:// туда не попадают.
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+        return [l.strip() for l in re.findall(r'(?:vless|ss|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
     except:
         return []
 
@@ -422,17 +553,48 @@ def can_add_hosting(is_hosting, target_list):
 
 def try_add_to_lists(entry):
     """Пытается добавить конфиг в vlm и/или vlm2"""
-    global ru_vlm_count, ru_vlm2_count, xhttp_count
+    global ru_vlm_count, ru_vlm2_count, xhttp_count, ss_count, hy2_count
 
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
     is_white = entry['white_sni']
+    is_ss = entry.get('is_ss', False)
+    is_hy2 = entry.get('is_hy2', False)
 
     # RU конфиги — только SNI-RU и не хостинговые
-    if is_ru and not is_white:
+    if is_ru and not is_white and not is_ss and not is_hy2:
         return False
     if is_ru and is_hosting is True:
+        return False
+
+    added_vlm = False
+    added_vlm2 = False
+
+    # --- Shadowsocks ---
+    if is_ss:
+        if ss_count < MAX_SS and len(vlm_results) < MAX_CONFIGS:
+            vlm_results.append(entry)
+            ss_count += 1
+            added_vlm = True
+        if ss_count <= MAX_SS and len(vlm2_results) < MAX_CONFIGS:
+            vlm2_results.append(entry)
+            added_vlm2 = True
+        if added_vlm or added_vlm2:
+            return True
+        return False
+
+    # --- Hysteria2 ---
+    if is_hy2:
+        if hy2_count < MAX_HY2 and len(vlm_results) < MAX_CONFIGS:
+            vlm_results.append(entry)
+            hy2_count += 1
+            added_vlm = True
+        if hy2_count <= MAX_HY2 and len(vlm2_results) < MAX_CONFIGS:
+            vlm2_results.append(entry)
+            added_vlm2 = True
+        if added_vlm or added_vlm2:
+            return True
         return False
     
     added_vlm = False
@@ -491,15 +653,65 @@ def check_completion():
 
 def build_xray_outbound(config_link):
     """
-    Строит outbound-секцию Xray JSON из vless:// ссылки.
-    Поддерживает: TCP+Reality, TCP+TLS, WS+TLS, xHTTP+TLS/Reality.
+    Строит outbound-секцию Xray JSON.
+    Поддерживает: vless (TCP+Reality, TCP+TLS, WS+TLS, xHTTP), ss://, hysteria2://
     Возвращает dict или None если конфиг не распознан.
     """
+    ll = config_link.lower()
+
+    # --- Shadowsocks ---
+    if ll.startswith("ss://"):
+        parsed = parse_ss(config_link)
+        if not parsed:
+            return None
+        host, port, method, password = parsed
+        return {
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": host,
+                    "port": port,
+                    "method": method,
+                    "password": password
+                }]
+            },
+            "streamSettings": {"network": "tcp"}
+        }
+
+    # --- Hysteria2 ---
+    if ll.startswith("hysteria2://"):
+        parsed = parse_hy2(config_link)
+        if not parsed:
+            return None
+        host, port, password, sni = parsed
+        params_m = re.search(r'\?([^#]*)', config_link)
+        params = dict(p.split('=', 1) for p in (params_m.group(1).split('&') if params_m else []) if '=' in p)
+        insecure = params.get('insecure', '0') == '1' or params.get('allowInsecure', '0') == '1'
+        return {
+            "protocol": "hysteria2",
+            "settings": {
+                "servers": [{
+                    "address": host,
+                    "port": port,
+                    "password": password
+                }]
+            },
+            "streamSettings": {
+                "network": "udp",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": sni,
+                    "allowInsecure": insecure
+                }
+            }
+        }
+
+    # --- VLESS и остальные ---
     host, port, sni, cid = get_config_details(config_link)
     if not host or not cid:
         return None
 
-    l = config_link  # сохраняем оригинальный регистр для path
+    l = config_link
     ll = l.lower()
 
     # --- Transport ---
@@ -800,8 +1012,10 @@ def validate(config, is_priority, is_white):
         return
 
     is_xhttp = "xhttp" in config.lower()
+    is_ss = config.lower().startswith("ss://")
+    is_hy2 = config.lower().startswith("hysteria2://")
     subnet = ".".join(host.split(".")[:3])      # x.y.z
-    subnet16 = ".".join(host.split(".")[:2])    # НОВОЕ: x.y
+    subnet16 = ".".join(host.split(".")[:2])    # x.y
 
     with lock:
         if host in seen_ips:
@@ -939,6 +1153,8 @@ def validate(config, is_priority, is_white):
             "white_sni": is_white,
             "is_hosting": ip_h_stat,
             "is_xhttp": is_xhttp,
+            "is_ss": is_ss,
+            "is_hy2": is_hy2,
         }
 
         if try_add_to_lists(entry):
@@ -1047,7 +1263,7 @@ def finalize_list(results, is_vlm2=False):
     
     # ШАГ 5: Финальная нумерация по скорости
     speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-    return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
+    return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'], r.get('is_ss', False), r.get('is_hy2', False)) for r in final]
 
 def print_statistics():
     """Выводит статистику обработки"""
@@ -1071,7 +1287,7 @@ def print_statistics():
     else:
         print("⚠️  Xray не найден — реальная проверка отключена", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
+    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, SS: {ss_count}, HY2: {hy2_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
 
 def main():
@@ -1185,3 +1401,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
