@@ -58,11 +58,11 @@ XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: заблокиров�
 # Порт для системного прокси (отдельно от пула Xray-проверок)
 SYSTEM_PROXY_PORT = 10808
 SECONDARY_PROXY_PORT = 10809   # порт второго прокси при переключении
-PROXY_SWITCH_THRESHOLD = MAX_CONFIGS // 2  # переключаемся когда vlm набрал половину
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
+PROXY_SWITCH_THRESHOLD = MAX_CONFIGS // 2  # переключаемся когда vlm набрал половину
 MAX_TOP_RU_SNI = 5
 
 MAX_PER_SUBNET = 3
@@ -1132,4 +1132,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
