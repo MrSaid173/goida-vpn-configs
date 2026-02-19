@@ -26,8 +26,8 @@ MAX_PROXY_CONFIGS  = 5              # сколько рабочих конфиг
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
-    "m247", "akamai", "host" #"baykov", "dataforest", "yandex", "selectel",
-    #"timeweb", "beget"
+    "m247", "akamai", "host", "baykov", "dataforest", "yandex", "selectel",
+    "timeweb", "beget"
 ]
 EXCLUDED_SNI = ["userapi", "splitter.wb.ru"]
 
@@ -88,6 +88,8 @@ def check_isp_ru_nonhosting(ip):
             return False
         full = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
         if any(w in full for w in BAD_HOSTING_KEYWORDS):
+            return False
+        if r.get("hosting", False):
             return False
         return True
     except:
@@ -350,3 +352,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
