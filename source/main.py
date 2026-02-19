@@ -56,7 +56,7 @@ XRAY_ENABLED = os.path.isfile(XRAY_BIN) or any(          # включаем ес
 XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одновременно (не больше кол-ва CPU на раннере)
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
-XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
+XRAY_HTTP_TIMEOUT = 8          # секунд на реальный HTTP-запрос
 XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: заблокирована в РФ — проверяет реальный туннель
 
 # Порт для системного прокси (отдельно от пула Xray-проверок)
