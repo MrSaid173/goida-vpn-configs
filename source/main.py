@@ -964,19 +964,19 @@ def switch_to_secondary_proxy():
         # Проверяем что второй прокси работает (до 3 попыток с паузой)
         secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
         proxy_ok = False
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 requests.get(
                     "http://cp.cloudflare.com/",
                     proxies={"http": secondary_url, "https": secondary_url},
-                    timeout=10,
+                    timeout=5,
                     verify=False
                 )
                 proxy_ok = True
                 break
             except Exception as e:
-                print(f"  Попытка {attempt+1}/3: {e}", flush=True)
-                time.sleep(2)
+                print(f"  Попытка {attempt+1}/2: {e}", flush=True)
+                time.sleep(1)
 
         if not proxy_ok:
             print("❌ Второй прокси не прошёл проверку после 3 попыток", flush=True)
@@ -989,7 +989,18 @@ def switch_to_secondary_proxy():
         with lock:
             session.proxies.update({"http": secondary_url, "https": secondary_url})
 
-        host = secondary_cfg['outbounds'][0]['settings']['vnext'][0]['address']
+        # Безопасно извлекаем адрес хоста для лога
+        try:
+            ob = secondary_cfg['outbounds'][0]
+            proto = ob.get('protocol', '')
+            if proto == 'vless':
+                host = ob['settings']['vnext'][0]['address']
+            elif proto in ('shadowsocks', 'hysteria2'):
+                host = ob['settings']['servers'][0]['address']
+            else:
+                host = '?'
+        except Exception:
+            host = '?'
         print(f"🔀 Переключились на второй прокси: {host}:{SECONDARY_PROXY_PORT}", flush=True)
 
     except Exception as e:
@@ -1379,8 +1390,13 @@ def main():
                 proxy_list = json.load(f)
             if len(proxy_list) >= 2:
                 print("🔀 Переключаемся на второй прокси для второго прохода...", flush=True)
-                switch_to_secondary_proxy()
-                time.sleep(2)
+                # Запускаем с таймаутом 45с чтобы не зависнуть
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(switch_to_secondary_proxy)
+                    try:
+                        fut.result(timeout=20)
+                    except concurrent.futures.TimeoutError:
+                        print("⚠️ Переключение прокси превысило таймаут 20с", flush=True)
                 if proxy_switched and _ru_proxy:
                     with lock:
                         failed_ips.clear()
