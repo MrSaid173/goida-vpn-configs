@@ -581,11 +581,38 @@ def real_check_via_xray(config_link, socks_port):
     """
     Запускает Xray с конфигом на указанном SOCKS5-порту,
     делает реальный HTTP-запрос через него.
+    Если активен системный прокси (_ru_proxy) — строит цепочку:
+      runner → RU прокси → проверяемый конфиг → интернет
     Возвращает задержку в мс или None если конфиг мёртвый.
     """
     outbound = build_xray_outbound(config_link)
     if not outbound:
         return None
+
+    outbounds = []
+
+    # Если есть активный системный прокси — добавляем цепочку
+    if _ru_proxy:
+        # Парсим адрес системного прокси (socks5h://127.0.0.1:PORT)
+        proxy_port_m = re.search(r':(\d+)$', _ru_proxy)
+        proxy_port = int(proxy_port_m.group(1)) if proxy_port_m else SYSTEM_PROXY_PORT
+
+        # Основной outbound использует RU прокси как upstream
+        outbound["tag"] = "vless-out"
+        outbound["proxySettings"] = {"tag": "ru-proxy"}
+
+        outbounds = [
+            outbound,
+            {
+                "tag": "ru-proxy",
+                "protocol": "socks",
+                "settings": {
+                    "servers": [{"address": "127.0.0.1", "port": proxy_port}]
+                }
+            }
+        ]
+    else:
+        outbounds = [outbound]
 
     xray_config = {
         "log": {"loglevel": "none"},
@@ -595,7 +622,7 @@ def real_check_via_xray(config_link, socks_port):
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": False}
         }],
-        "outbounds": [outbound]
+        "outbounds": outbounds
     }
 
     cfg_path = None
@@ -1132,4 +1159,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
