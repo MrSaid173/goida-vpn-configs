@@ -173,6 +173,8 @@ hy2_count = 0
 vlm_results = []
 vlm2_results = []
 
+pass_limit = MAX_CONFIGS  # лимит для текущего прохода (меняется между проходами)
+
 last_api_call = 0
 _ru_proxy = ""  # текущий активный системный прокси URL
 
@@ -293,7 +295,7 @@ def parse_ss(link):
                 return None
             host, port = parts[0], int(parts[1])
 
-        if not is_valid_ipv4(host):
+        if not host:
             return None
         if not (1 <= port <= 65535):
             return None
@@ -336,7 +338,7 @@ def parse_hy2(link):
                 return None
             host, port = parts[0], int(parts[1])
 
-        if not is_valid_ipv4(host):
+        if not host:
             return None
         if not (1 <= port <= 65535):
             return None
@@ -573,11 +575,11 @@ def try_add_to_lists(entry):
 
     # --- Shadowsocks ---
     if is_ss:
-        if ss_count < MAX_SS and len(vlm_results) < MAX_CONFIGS:
+        if ss_count < MAX_SS and len(vlm_results) < pass_limit:
             vlm_results.append(entry)
             ss_count += 1
             added_vlm = True
-        if ss_count <= MAX_SS and len(vlm2_results) < MAX_CONFIGS:
+        if ss_count <= MAX_SS and len(vlm2_results) < pass_limit:
             vlm2_results.append(entry)
             added_vlm2 = True
         if added_vlm or added_vlm2:
@@ -586,11 +588,11 @@ def try_add_to_lists(entry):
 
     # --- Hysteria2 ---
     if is_hy2:
-        if hy2_count < MAX_HY2 and len(vlm_results) < MAX_CONFIGS:
+        if hy2_count < MAX_HY2 and len(vlm_results) < pass_limit:
             vlm_results.append(entry)
             hy2_count += 1
             added_vlm = True
-        if hy2_count <= MAX_HY2 and len(vlm2_results) < MAX_CONFIGS:
+        if hy2_count <= MAX_HY2 and len(vlm2_results) < pass_limit:
             vlm2_results.append(entry)
             added_vlm2 = True
         if added_vlm or added_vlm2:
@@ -608,22 +610,22 @@ def try_add_to_lists(entry):
                 xhttp_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < pass_limit and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < pass_limit and can_add_hosting(is_hosting, vlm_results):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+        elif len(vlm_results) < pass_limit and can_add_hosting(is_hosting, vlm_results):
             vlm_results.append(entry)
             added_vlm = True
         
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
-        vlm2_space = MAX_CONFIGS - reserved_for_xhttp
+        vlm2_space = pass_limit - reserved_for_xhttp
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
@@ -642,8 +644,8 @@ def try_add_to_lists(entry):
 
 def check_completion():
     """Проверяет, достигнуты ли все цели."""
-    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
-    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
+    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= pass_limit)
+    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= pass_limit)
 
     if vlm_done and vlm2_done:
         stop_event.set()
@@ -1046,15 +1048,18 @@ def validate(config, is_priority, is_white):
             stats['id_limit'] += 1
             return
 
-    # Первый пинг
-    p1 = fast_ping(host, port, sni)
-    initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
-    if not p1 or p1 > initial_max_p:
-        with lock:
-            failed_subnets[subnet] += 1
-            failed_ips.add(host)
-        stats['first_ping_failed'] += 1
-        return
+    # Первый пинг (для HY2 пропускаем — UDP не поддаётся TCP-пингу)
+    if is_hy2:
+        p1 = 500  # фиктивный пинг, реальная задержка будет определена Xray-проверкой
+    else:
+        p1 = fast_ping(host, port, sni)
+        initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
+        if not p1 or p1 > initial_max_p:
+            with lock:
+                failed_subnets[subnet] += 1
+                failed_ips.add(host)
+            stats['first_ping_failed'] += 1
+            return
 
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
@@ -1093,16 +1098,19 @@ def validate(config, is_priority, is_white):
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
         max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
 
-    # Полный анализ пинга
-    full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
-    if not full:
-        if sni_reserved:
-            with lock:
-                sni_usage_counts[sni] -= 1
-        if subnet16_reserved:
-            with lock:
-                subnet16_counts[subnet16][config_type] -= 1
-        return
+    # Полный анализ пинга (HY2 пропускаем — UDP)
+    if is_hy2:
+        full = (p1, 0)
+    else:
+        full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
+        if not full:
+            if sni_reserved:
+                with lock:
+                    sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                with lock:
+                    subnet16_counts[subnet16][config_type] -= 1
+            return
 
     # --- РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY ---
     if XRAY_ENABLED:
@@ -1357,25 +1365,27 @@ def main():
                         break
                     v.submit(validate, c, priority, white)
 
-    # Первый проход — через первый прокси
+    # Первый проход — останавливаемся на половине MAX_CONFIGS
+    global pass_limit
+    pass_limit = MAX_CONFIGS // 2
     run_validation_pass(1)
+    stop_event.clear()
 
-    # Второй проход — если не набрали максимум и есть второй прокси
-    if not stop_event.is_set() and os.path.exists("proxy_configs.json"):
+    # Второй проход — если есть второй прокси, добираем до полного MAX_CONFIGS
+    pass_limit = MAX_CONFIGS
+    if os.path.exists("proxy_configs.json"):
         try:
             with open("proxy_configs.json") as f:
                 proxy_list = json.load(f)
             if len(proxy_list) >= 2:
                 print("🔀 Переключаемся на второй прокси для второго прохода...", flush=True)
                 switch_to_secondary_proxy()
-                # Даём прокси время подняться если переключение только что началось
                 time.sleep(2)
                 if proxy_switched and _ru_proxy:
-                    # Сбрасываем состояние для второго прохода
                     with lock:
                         failed_ips.clear()
                         failed_subnets.clear()
-                    stop_event.clear()  # снимаем флаг завершения
+                    stop_event.clear()
                     run_validation_pass(2)
                 else:
                     print("⚠️ Второй прокси недоступен, пропускаем второй проход", flush=True)
@@ -1409,4 +1419,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
