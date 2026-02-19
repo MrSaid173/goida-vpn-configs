@@ -161,7 +161,6 @@ vlm_results = []
 vlm2_results = []
 
 last_api_call = 0
-_start_time = 0.0  # инициализируется в main()
 
 # Пул портов для параллельных Xray-процессов
 # Семафор гарантирует не более XRAY_MAX_PARALLEL одновременных проверок
@@ -172,8 +171,7 @@ xray_port_lock = threading.Lock()
 # Статистика для отладки
 stats = defaultdict(int)
 api_calls_count = 0
-processed_count = 0          # сколько конфигов прошло через validate() (не считая broken/no_details)
-PROGRESS_EVERY = 200         # печатать прогресс каждые N конфигов
+
 
 def is_valid_ipv4(ip):
     try:
@@ -653,8 +651,6 @@ def release_xray_port(port):
 
 def validate(config, is_priority, is_white):
     """ИСПРАВЛЕНО: Основная функция валидации с проверкой подсети /16"""
-    global processed_count
-
     if stop_event.is_set():
         stats['stopped'] += 1
         return
@@ -667,28 +663,6 @@ def validate(config, is_priority, is_white):
     if not host or not sni:
         stats['no_details'] += 1
         return
-
-    # --- Счётчик обработанных + прогресс каждые PROGRESS_EVERY конфигов ---
-    with lock:
-        processed_count += 1
-        current = processed_count
-    
-    if current % PROGRESS_EVERY == 0:
-        elapsed = time.perf_counter() - _start_time
-        print(
-            f"\n📊 [{current} обработано | {elapsed:.0f}с] "
-            f"Добавлено: {stats['added']} | "
-            f"Пинг: -{stats['first_ping_failed']} | "
-            f"ISP бан: -{stats['isp_banned']} | "
-            f"Xray мёртв: -{stats['xray_dead']} | "
-            f"Xray медл.: -{stats['xray_too_slow']} | "
-            f"Jitter: -{stats['jitter_failed']} | "
-            f"Дубли: -{stats['duplicate_ip']} | "
-            f"Кэш IP: -{stats['failed_ip_cache']} | "
-            f"SNI лимит: -{stats['sni_limit']} | "
-            f"Подсеть: -{stats['subnet_limit']}",
-            flush=True
-        )
 
     if host in failed_ips:
         stats['failed_ip_cache'] += 1
@@ -723,8 +697,6 @@ def validate(config, is_priority, is_white):
     p1 = fast_ping(host, port, sni)
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
     if not p1 or p1 > initial_max_p:
-        reason = f"таймаут" if not p1 else f"пинг {p1}ms > лимит {initial_max_p}ms"
-        print(f"  [#{current}] ❌ {host} | ПИНГ: {reason}", flush=True)
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(host)
@@ -734,10 +706,6 @@ def validate(config, is_priority, is_white):
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
-        if ip_h_stat == "BANNED":
-            # Получаем причину из кэша для отображения
-            cached = ip_cache.get(host, (None, None))
-            print(f"  [#{current}] ❌ {host} | ISP БАН: {ip_cc}", flush=True)
         stats['isp_banned'] += 1
         return
 
@@ -792,7 +760,6 @@ def validate(config, is_priority, is_white):
             release_xray_port(xray_port)
 
         if real_latency is None:
-            print(f"  [#{current}] ❌ {host} ({ip_cc}) | XRAY: нет ответа через туннель | SNI={sni}", flush=True)
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -804,7 +771,6 @@ def validate(config, is_priority, is_white):
 
         real_max = 2000 if is_ru else 3000
         if real_latency > real_max:
-            print(f"  [#{current}] ❌ {host} ({ip_cc}) | XRAY МЕДЛЕННО: {real_latency}ms > {real_max}ms", flush=True)
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -814,7 +780,6 @@ def validate(config, is_priority, is_white):
             stats['xray_too_slow'] += 1
             return
 
-        print(f"  [#{current}] ✅ {host} ({ip_cc}) | XRAY OK: {real_latency}ms | SNI={sni}", flush=True)
         full = (real_latency, full[1])
 
     # Финальное добавление
@@ -979,10 +944,9 @@ def print_statistics():
 
 
 def main():
-    global sni_domains, _start_time
-    
+    global sni_domains
+
     start_total = time.perf_counter()
-    _start_time = start_total
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
     sni_domains = set()
