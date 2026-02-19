@@ -30,7 +30,7 @@ MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode"] #"servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -57,7 +57,7 @@ XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одно
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
 XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
-XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: заблокирована в РФ — проверяет реальный туннель
+XRAY_CHECK_URL = "http://cp.cloudflare.com/"
 
 # Порт для системного прокси (отдельно от пула Xray-проверок)
 SYSTEM_PROXY_PORT = 10808
@@ -967,7 +967,7 @@ def switch_to_secondary_proxy():
         for attempt in range(3):
             try:
                 requests.get(
-                    XRAY_CHECK_URL,
+                    "http://cp.cloudflare.com/",
                     proxies={"http": secondary_url, "https": secondary_url},
                     timeout=10,
                     verify=False
@@ -1419,4 +1419,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
