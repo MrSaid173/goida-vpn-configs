@@ -129,14 +129,8 @@ jobs:
         working-directory: source
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
-          # Если прокси активен — пускаем весь трафик скрипта через него
-          # requests автоматически подхватывает эти переменные окружения
-          ALL_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
-          HTTPS_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
-          HTTP_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
+          RU_PROXY_URL: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
         run: |
-          # Xray-проверки внутри скрипта идут напрямую (не через системный прокси),
-          # а все остальные запросы (ip-api, источники конфигов) — через RU прокси
           python main.py
 
       - name: Stop RU proxy
