@@ -30,7 +30,7 @@ MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode"] #"servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -56,7 +56,7 @@ XRAY_ENABLED = os.path.isfile(XRAY_BIN) or any(          # включаем ес
 XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одновременно (не больше кол-ва CPU на раннере)
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
-XRAY_HTTP_TIMEOUT = 8          # секунд на реальный HTTP-запрос
+XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
 XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: заблокирована в РФ — проверяет реальный туннель
 
 # Порт для системного прокси (отдельно от пула Xray-проверок)
@@ -959,17 +959,25 @@ def switch_to_secondary_proxy():
             print("❌ Второй прокси не запустился", flush=True)
             return
 
-        # Проверяем что второй прокси работает
+        # Проверяем что второй прокси работает (до 3 попыток с паузой)
         secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
-        try:
-            requests.get(
-                XRAY_CHECK_URL,
-                proxies={"http": secondary_url, "https": secondary_url},
-                timeout=XRAY_HTTP_TIMEOUT,
-                verify=False
-            )
-        except Exception:
-            print("❌ Второй прокси не прошёл проверку", flush=True)
+        proxy_ok = False
+        for attempt in range(3):
+            try:
+                requests.get(
+                    XRAY_CHECK_URL,
+                    proxies={"http": secondary_url, "https": secondary_url},
+                    timeout=10,
+                    verify=False
+                )
+                proxy_ok = True
+                break
+            except Exception as e:
+                print(f"  Попытка {attempt+1}/3: {e}", flush=True)
+                time.sleep(2)
+
+        if not proxy_ok:
+            print("❌ Второй прокси не прошёл проверку после 3 попыток", flush=True)
             proc.terminate()
             return
 
@@ -1401,4 +1409,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
