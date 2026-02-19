@@ -423,10 +423,15 @@ def can_add_hosting(is_hosting, target_list):
 def try_add_to_lists(entry):
     """Пытается добавить конфиг в vlm и/или vlm2"""
     global ru_vlm_count, ru_vlm2_count, xhttp_count
-    
+
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
+    is_white = entry['white_sni']
+
+    # RU + SNI-RU конфиги не должны быть хостинговыми
+    if is_ru and is_white and is_hosting is True:
+        return False
     
     added_vlm = False
     added_vlm2 = False
@@ -1127,4 +1132,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+        
