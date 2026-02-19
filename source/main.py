@@ -84,6 +84,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
 
+# Если запущен через RU прокси (джоб 2 в GitHub Actions) — используем его явно.
+# Переменная RU_PROXY_URL устанавливается в workflow перед запуском скрипта.
+_ru_proxy = os.environ.get("RU_PROXY_URL", "").strip()
+if _ru_proxy:
+    session.proxies.update({"http": _ru_proxy, "https": _ru_proxy})
+    print(f"🔀 Трафик через RU прокси: {_ru_proxy}", flush=True)
+
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
 
@@ -154,6 +161,7 @@ vlm_results = []
 vlm2_results = []
 
 last_api_call = 0
+_start_time = 0.0  # инициализируется в main()
 
 # Пул портов для параллельных Xray-процессов
 # Семафор гарантирует не более XRAY_MAX_PARALLEL одновременных проверок
@@ -164,6 +172,8 @@ xray_port_lock = threading.Lock()
 # Статистика для отладки
 stats = defaultdict(int)
 api_calls_count = 0
+processed_count = 0          # сколько конфигов прошло через validate() (не считая broken/no_details)
+PROGRESS_EVERY = 200         # печатать прогресс каждые N конфигов
 
 def is_valid_ipv4(ip):
     try:
@@ -643,71 +653,98 @@ def release_xray_port(port):
 
 def validate(config, is_priority, is_white):
     """ИСПРАВЛЕНО: Основная функция валидации с проверкой подсети /16"""
+    global processed_count
+
     if stop_event.is_set():
         stats['stopped'] += 1
         return
-    
+
     if is_technically_broken(config):
         stats['broken'] += 1
         return
-    
+
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
         stats['no_details'] += 1
         return
+
+    # --- Счётчик обработанных + прогресс каждые PROGRESS_EVERY конфигов ---
+    with lock:
+        processed_count += 1
+        current = processed_count
     
+    if current % PROGRESS_EVERY == 0:
+        elapsed = time.perf_counter() - _start_time
+        print(
+            f"\n📊 [{current} обработано | {elapsed:.0f}с] "
+            f"Добавлено: {stats['added']} | "
+            f"Пинг: -{stats['first_ping_failed']} | "
+            f"ISP бан: -{stats['isp_banned']} | "
+            f"Xray мёртв: -{stats['xray_dead']} | "
+            f"Xray медл.: -{stats['xray_too_slow']} | "
+            f"Jitter: -{stats['jitter_failed']} | "
+            f"Дубли: -{stats['duplicate_ip']} | "
+            f"Кэш IP: -{stats['failed_ip_cache']} | "
+            f"SNI лимит: -{stats['sni_limit']} | "
+            f"Подсеть: -{stats['subnet_limit']}",
+            flush=True
+        )
+
     if host in failed_ips:
         stats['failed_ip_cache'] += 1
         return
-    
+
     is_xhttp = "xhttp" in config.lower()
     subnet = ".".join(host.split(".")[:3])      # x.y.z
     subnet16 = ".".join(host.split(".")[:2])    # НОВОЕ: x.y
-    
+
     with lock:
         if host in seen_ips:
             stats['duplicate_ip'] += 1
             return
-        
+
         if (sni in sni_domains) != is_white:
             stats['sni_mismatch'] += 1
             return
-        
+
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
             stats['excluded_sni'] += 1
             return
-        
+
         if subnet_counts[subnet] >= MAX_PER_SUBNET:
             stats['subnet_limit'] += 1
             return
-        
+
         if id_counts[cid] >= MAX_PER_ID:
             stats['id_limit'] += 1
             return
-    
+
     # Первый пинг
     p1 = fast_ping(host, port, sni)
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
     if not p1 or p1 > initial_max_p:
+        reason = f"таймаут" if not p1 else f"пинг {p1}ms > лимит {initial_max_p}ms"
+        print(f"  [#{current}] ❌ {host} | ПИНГ: {reason}", flush=True)
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(host)
         stats['first_ping_failed'] += 1
         return
-    
+
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+        if ip_h_stat == "BANNED":
+            # Получаем причину из кэша для отображения
+            cached = ip_cache.get(host, (None, None))
+            print(f"  [#{current}] ❌ {host} | ISP БАН: {ip_cc}", flush=True)
         stats['isp_banned'] += 1
         return
-    
+
     # НОВОЕ: Проверка лимита подсети /16
     config_type = get_config_type(ip_cc, is_white)
     subnet16_limit = get_subnet16_limit(config_type)
-    
-    # БАГ #2 ИСПРАВЛЕН: раньше проверка и увеличение subnet16_counts были разнесены на ~300ms пингов.
-    # Другой поток мог пройти проверку до того, как счётчик обновится — лимит превышался.
-    # Теперь резервируем сразу (как уже сделано для SNI), откатываем при неудаче.
+
     subnet16_reserved = False
     with lock:
         if subnet16_counts[subnet16][config_type] >= subnet16_limit:
@@ -715,7 +752,7 @@ def validate(config, is_priority, is_white):
             return
         subnet16_counts[subnet16][config_type] += 1
         subnet16_reserved = True
-    
+
     # Атомарная резервация SNI
     sni_reserved = False
     with lock:
@@ -723,10 +760,9 @@ def validate(config, is_priority, is_white):
         if sni_usage_counts[sni] >= sni_limit:
             stats['sni_limit'] += 1
             return
-        # Резервируем SNI сразу!
         sni_usage_counts[sni] += 1
         sni_reserved = True
-    
+
     # Определяем строгие лимиты
     is_ru = (ip_cc == "RU")
     if is_xhttp:
@@ -735,25 +771,19 @@ def validate(config, is_priority, is_white):
     else:
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
         max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
-    
+
     # Полный анализ пинга
     full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
     if not full:
-        # Откатываем резервации SNI и /16
         if sni_reserved:
             with lock:
                 sni_usage_counts[sni] -= 1
         if subnet16_reserved:
             with lock:
                 subnet16_counts[subnet16][config_type] -= 1
-        # БАГ #6 ИСПРАВЛЕН: stats['jitter_failed'] теперь пишется внутри full_ping_analysis,
-        # чтобы не смешивать с ping_out_of_range
         return
 
     # --- РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY ---
-    # Выполняется после пингов: конфиг уже прошёл TCP/TLS/jitter фильтры.
-    # Для Reality это особенно важно: TLS-хендшейк всегда проходит,
-    # но сам VLESS-туннель может быть мёртвым (неверный UUID, закрытый порт изнутри и т.д.)
     if XRAY_ENABLED:
         xray_port = acquire_xray_port()
         try:
@@ -762,7 +792,7 @@ def validate(config, is_priority, is_white):
             release_xray_port(xray_port)
 
         if real_latency is None:
-            # Откатываем резервации — конфиг не работает реально
+            print(f"  [#{current}] ❌ {host} ({ip_cc}) | XRAY: нет ответа через туннель | SNI={sni}", flush=True)
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -772,11 +802,9 @@ def validate(config, is_priority, is_white):
             stats['xray_dead'] += 1
             return
 
-        # Проверяем что реальная задержка в разумных пределах.
-        # HTTP round-trip всегда дольше TCP-пинга (VLESS handshake + данные),
-        # поэтому лимит мягче: для RU 2000ms, для остальных 3000ms.
         real_max = 2000 if is_ru else 3000
         if real_latency > real_max:
+            print(f"  [#{current}] ❌ {host} ({ip_cc}) | XRAY МЕДЛЕННО: {real_latency}ms > {real_max}ms", flush=True)
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -786,29 +814,27 @@ def validate(config, is_priority, is_white):
             stats['xray_too_slow'] += 1
             return
 
-        # Обновляем пинг реальной задержкой (она честнее TCP-пинга)
+        print(f"  [#{current}] ✅ {host} ({ip_cc}) | XRAY OK: {real_latency}ms | SNI={sni}", flush=True)
         full = (real_latency, full[1])
-    
+
     # Финальное добавление
     with lock:
         if host in seen_ips:
-            # Откатываем резервации
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
             stats['race_duplicate'] += 1
             return
-        
+
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
-            # Откатываем резервации
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
             stats['subnet_banned'] += 1
             return
-        
+
         entry = {
             "link": apply_clean_params(config),
             "ping": full[0],
@@ -818,20 +844,18 @@ def validate(config, is_priority, is_white):
             "is_hosting": ip_h_stat,
             "is_xhttp": is_xhttp,
         }
-        
+
         if try_add_to_lists(entry):
-            # SNI и /16 уже зарезервированы, обновляем остальные счетчики
             seen_ips.add(host)
             subnet_counts[subnet] += 1
             id_counts[cid] += 1
-            
+
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
             stats['added'] += 1
             check_completion()
         else:
-            # Не удалось добавить - откатываем резервации SNI и /16
             sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
@@ -948,7 +972,6 @@ def print_statistics():
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     if XRAY_ENABLED:
         print(f"Xray мёртвых (реальная проверка): {stats['xray_dead']}", flush=True)
-        print(f"Xray слишком медленных (>{'{RU: 2000, Other: 3000}'}ms): {stats['xray_too_slow']}", flush=True)
     else:
         print("⚠️  Xray не найден — реальная проверка отключена", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
@@ -956,9 +979,10 @@ def print_statistics():
 
 
 def main():
-    global sni_domains
+    global sni_domains, _start_time
     
     start_total = time.perf_counter()
+    _start_time = start_total
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
     
     sni_domains = set()
@@ -1030,4 +1054,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
