@@ -54,9 +54,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ru-proxy
-          path: |
-            source/proxy_config.json
-            source/proxy_link.txt
+          path: source/proxy_configs.json
           retention-days: 1
 
   # ─────────────────────────────────────────────
@@ -108,22 +106,43 @@ jobs:
         id: start-proxy
         working-directory: source
         run: |
-          echo "🚀 Запускаем RU прокси..."
-          xray run -config proxy_config.json &
-          echo $! > /tmp/xray_proxy.pid
+          echo "🚀 Пробуем запустить RU прокси из списка..."
           
-          # Ждём до 15 секунд пока прокси поднимется
-          for i in $(seq 1 15); do
-            sleep 1
-            if curl -s --max-time 3 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null 2>&1; then
-              echo "✅ RU прокси работает (попытка ${i})"
-              echo "proxy_active=true" >> $GITHUB_OUTPUT
-              exit 0
+          CONFIGS_COUNT=$(python3 -c "import json; d=json.load(open('proxy_configs.json')); print(len(d))")
+          echo "Доступно конфигов: ${CONFIGS_COUNT}"
+          
+          for i in $(seq 0 $((CONFIGS_COUNT - 1))); do
+            echo "--- Попытка $((i+1))/${CONFIGS_COUNT} ---"
+            
+            # Извлекаем i-й конфиг
+            python3 -c "
+import json
+configs = json.load(open('proxy_configs.json'))
+with open('proxy_current.json', 'w') as f:
+    json.dump(configs[$i], f)
+"
+            # Убиваем предыдущий если был
+            if [ -f /tmp/xray_proxy.pid ]; then
+              kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
+              sleep 1
             fi
-            echo "  ожидание... ${i}с"
+            
+            xray run -config proxy_current.json > /tmp/xray.log 2>&1 &
+            echo $! > /tmp/xray_proxy.pid
+            
+            # Ждём до 12 секунд
+            for s in $(seq 1 12); do
+              sleep 1
+              if curl -s --max-time 3 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null 2>&1; then
+                echo "✅ Прокси $((i+1)) работает (${s}с)"
+                echo "proxy_active=true" >> $GITHUB_OUTPUT
+                exit 0
+              fi
+            done
+            echo "❌ Конфиг $((i+1)) не ответил"
           done
           
-          echo "⚠️ RU прокси не ответил за 15с, продолжаем без него"
+          echo "⚠️ Ни один прокси не заработал, продолжаем без него"
           kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
           echo "proxy_active=false" >> $GITHUB_OUTPUT
 
