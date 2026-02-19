@@ -429,8 +429,10 @@ def try_add_to_lists(entry):
     is_hosting = entry['is_hosting']
     is_white = entry['white_sni']
 
-    # RU + SNI-RU конфиги не должны быть хостинговыми
-    if is_ru and is_white and is_hosting is True:
+    # RU конфиги — только SNI-RU и не хостинговые
+    if is_ru and not is_white:
+        return False
+    if is_ru and is_hosting is True:
         return False
     
     added_vlm = False
@@ -477,11 +479,7 @@ def try_add_to_lists(entry):
 
 
 def check_completion():
-    """Проверяет, достигнуты ли все цели. При достижении половины — переключает прокси."""
-    # Переключение на второй прокси при достижении половины
-    if not proxy_switched and len(vlm_results) >= PROXY_SWITCH_THRESHOLD:
-        threading.Thread(target=switch_to_secondary_proxy, daemon=True).start()
-
+    """Проверяет, достигнуты ли все цели."""
     vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
 
@@ -1121,16 +1119,44 @@ def main():
         (raw_std, False, True),     # std + SNI-RU
         (raw_nonwhite, True, False) # extra+std объединённые, не SNI-RU
     ]
-    
-    for group, priority, white in check_order:
-        if stop_event.is_set():
-            break
-        workers = min(len(group), 40) if group else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
-                if stop_event.is_set():
-                    break
-                v.submit(validate, c, priority, white)
+
+    def run_validation_pass(pass_num):
+        """Один проход по всем конфигам. Уже найденные пропустятся как дубли."""
+        print(f"🔁 Проход {pass_num}...", flush=True)
+        for group, priority, white in check_order:
+            if stop_event.is_set():
+                break
+            workers = min(len(group), 40) if group else 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                for c in group:
+                    if stop_event.is_set():
+                        break
+                    v.submit(validate, c, priority, white)
+
+    # Первый проход — через первый прокси
+    run_validation_pass(1)
+
+    # Второй проход — если не набрали максимум и есть второй прокси
+    if not stop_event.is_set() and os.path.exists("proxy_configs.json"):
+        try:
+            with open("proxy_configs.json") as f:
+                proxy_list = json.load(f)
+            if len(proxy_list) >= 2:
+                print("🔀 Переключаемся на второй прокси для второго прохода...", flush=True)
+                switch_to_secondary_proxy()
+                # Даём прокси время подняться если переключение только что началось
+                time.sleep(2)
+                if proxy_switched and _ru_proxy:
+                    # Сбрасываем состояние для второго прохода
+                    with lock:
+                        failed_ips.clear()
+                        failed_subnets.clear()
+                    stop_event.clear()  # снимаем флаг завершения
+                    run_validation_pass(2)
+                else:
+                    print("⚠️ Второй прокси недоступен, пропускаем второй проход", flush=True)
+        except Exception as e:
+            print(f"⚠️ Ошибка при переключении прокси: {e}", flush=True)
     
     print_statistics()
     
@@ -1159,3 +1185,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
