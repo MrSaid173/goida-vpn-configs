@@ -53,7 +53,7 @@ XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одно
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
 XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
-XRAY_CHECK_URL = "http://cp.cloudflare.com/"  # цель: отвечает 204 быстро, без редиректов
+XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: отвечает 204 быстро, без редиректов
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
