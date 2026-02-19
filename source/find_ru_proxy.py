@@ -21,7 +21,7 @@ CHECK_URL          = "http://cp.cloudflare.com/"
 MAX_PING           = 600            # мс — максимальный TCP-пинг для RU конфига
 MIN_PING           = 50             # мс — минимальный (слишком быстрый = подозрительно)
 MAX_WORKERS        = 30
-FOUND_EVENT        = threading.Event()
+MAX_PROXY_CONFIGS  = 5              # сколько рабочих конфигов собрать про запас
 
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
@@ -33,7 +33,8 @@ EXCLUDED_SNI = ["userapi", "splitter.wb.ru"]
 
 session = requests.Session()
 result_lock = threading.Lock()
-best_config = {}   # {"link": ..., "xray_json": ..., "ping": ...}
+found_configs = []   # список рабочих конфигов: {"link": ..., "xray_json": ..., "ping": ...}
+stop_collecting = threading.Event()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -182,7 +183,7 @@ def build_xray_config(link, socks_port):
 
 def test_config(link, sni_domains):
     """Полная проверка одного конфига: broken → ping → ISP → Xray."""
-    if FOUND_EVENT.is_set():
+    if stop_collecting.is_set():
         return
 
     if is_broken(link):
@@ -210,7 +211,11 @@ def test_config(link, sni_domains):
 
     print(f"  ISP OK {host} — проверяем через Xray...", flush=True)
 
-    xray_cfg = build_xray_config(link, PROXY_SOCKS_PORT)
+    # Порт для этого конкретного Xray-процесса — уникальный чтобы не конфликтовать
+    with result_lock:
+        socks_port = PROXY_SOCKS_PORT + len(found_configs)
+
+    xray_cfg = build_xray_config(link, socks_port)
     if not xray_cfg:
         return
 
@@ -233,8 +238,8 @@ def test_config(link, sni_domains):
 
         r = requests.get(
             CHECK_URL,
-            proxies={"http": f"socks5h://127.0.0.1:{PROXY_SOCKS_PORT}",
-                     "https": f"socks5h://127.0.0.1:{PROXY_SOCKS_PORT}"},
+            proxies={"http": f"socks5h://127.0.0.1:{socks_port}",
+                     "https": f"socks5h://127.0.0.1:{socks_port}"},
             timeout=XRAY_HTTP_TIMEOUT,
             verify=False
         )
@@ -242,29 +247,32 @@ def test_config(link, sni_domains):
             print(f"  XRAY FAIL {host} | HTTP {r.status_code}", flush=True)
             return
 
-        # Нашли рабочий конфиг!
-        print(f"  ✅ НАЙДЕН ПРОКСИ: {host} | {p}ms | {sni}", flush=True)
-
+        # Конфиг рабочий — сохраняем
+        print(f"  ✅ НАЙДЕН: {host} | {p}ms | {sni}", flush=True)
         with result_lock:
-            if not FOUND_EVENT.is_set():
-                best_config['link']     = link
-                best_config['xray_json'] = xray_cfg
-                best_config['ping']     = p
-                FOUND_EVENT.set()
-                # Не убиваем proc — он будет использоваться как прокси!
-                return
+            if not stop_collecting.is_set():
+                # Обновляем порт в конфиге на стандартный PROXY_SOCKS_PORT
+                # (вторая джоба будет запускать их по одному на одном порту)
+                xray_cfg['inbounds'][0]['port'] = PROXY_SOCKS_PORT
+                found_configs.append({
+                    "link":     link,
+                    "xray_json": xray_cfg,
+                    "ping":     p
+                })
+                print(f"  📦 Сохранено конфигов: {len(found_configs)}/{MAX_PROXY_CONFIGS}", flush=True)
+                if len(found_configs) >= MAX_PROXY_CONFIGS:
+                    stop_collecting.set()
 
     except requests.exceptions.Timeout:
         print(f"  XRAY TIMEOUT {host}", flush=True)
     except Exception as e:
         print(f"  XRAY ERR {host}: {e}", flush=True)
     finally:
-        # Убиваем процесс только если конфиг НЕ выбран
-        if proc and proc.poll() is None and not FOUND_EVENT.is_set():
+        if proc and proc.poll() is None:
             proc.terminate()
             try: proc.wait(timeout=2)
             except: proc.kill()
-        if cfg_path and os.path.exists(cfg_path) and not FOUND_EVENT.is_set():
+        if cfg_path and os.path.exists(cfg_path):
             try: os.unlink(cfg_path)
             except: pass
 
@@ -318,28 +326,29 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(test_config, c, sni_domains) for c in configs]
         for f in concurrent.futures.as_completed(futures):
-            if FOUND_EVENT.is_set():
+            if stop_collecting.is_set():
                 ex.shutdown(wait=False, cancel_futures=True)
                 break
 
-    if not best_config:
+    if not found_configs:
         print("❌ Рабочий RU прокси не найден!", flush=True)
-        # Записываем пустой маркер чтобы вторая джоба знала
         with open("proxy_found.txt", "w") as f:
             f.write("false")
         return
 
-    # Сохраняем результаты для второй джобы
-    with open("proxy_config.json", "w") as f:
-        json.dump(best_config['xray_json'], f)
-
-    with open("proxy_link.txt", "w") as f:
-        f.write(best_config['link'])
+    # Сохраняем все найденные конфиги как JSON-массив
+    # Вторая джоба будет пробовать их по очереди пока один не заработает
+    proxy_list = [c['xray_json'] for c in found_configs]
+    with open("proxy_configs.json", "w") as f:
+        json.dump(proxy_list, f)
 
     with open("proxy_found.txt", "w") as f:
         f.write("true")
 
-    print(f"✅ Прокси сохранён: {best_config['ping']}ms", flush=True)
+    print(f"✅ Сохранено {len(found_configs)} прокси-конфигов", flush=True)
+    for i, c in enumerate(found_configs, 1):
+        h = c['xray_json']['outbounds'][0]['settings']['vnext'][0]['address']
+        print(f"  {i}. {h} | {c['ping']}ms", flush=True)
     print("--- ГОТОВО ---", flush=True)
 
 
