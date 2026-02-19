@@ -89,10 +89,6 @@ def check_isp_ru_nonhosting(ip):
         full = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
         if any(w in full for w in BAD_HOSTING_KEYWORDS):
             return False
-        # is_hosting=True при плохом хостинге уже отсеян выше,
-        # но дополнительно проверяем флаг api
-        if r.get("hosting", False):
-            return False
         return True
     except:
         return False
