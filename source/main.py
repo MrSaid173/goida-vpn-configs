@@ -26,7 +26,7 @@ MAX_HOST_CONFIGS = 13
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode"] #"servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -53,7 +53,12 @@ XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одно
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
 XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
-XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: отвечает 204 быстро, без редиректов
+XRAY_CHECK_URL = "https://www.instagram.com/"  # цель: заблокирована в РФ — проверяет реальный туннель
+
+# Порт для системного прокси (отдельно от пула Xray-проверок)
+SYSTEM_PROXY_PORT = 10808
+SECONDARY_PROXY_PORT = 10809   # порт второго прокси при переключении
+PROXY_SWITCH_THRESHOLD = MAX_CONFIGS // 2  # переключаемся когда vlm набрал половину
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -84,6 +89,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
 
+# Если запущен через RU прокси (джоб 2 в GitHub Actions) — используем его явно.
+# Переменная RU_PROXY_URL устанавливается в workflow перед запуском скрипта.
 # Если запущен через RU прокси (джоб 2 в GitHub Actions) — используем его явно.
 # Переменная RU_PROXY_URL устанавливается в workflow перед запуском скрипта.
 _ru_proxy = os.environ.get("RU_PROXY_URL", "").strip()
@@ -161,6 +168,12 @@ vlm_results = []
 vlm2_results = []
 
 last_api_call = 0
+_ru_proxy = ""  # текущий активный системный прокси URL
+
+# Состояние переключения прокси
+secondary_proxy_proc = None   # subprocess второго прокси
+proxy_switched = False        # флаг что переключение уже произошло
+proxy_switch_lock = threading.Lock()
 
 # Пул портов для параллельных Xray-процессов
 # Семафор гарантирует не более XRAY_MAX_PARALLEL одновременных проверок
@@ -459,10 +472,14 @@ def try_add_to_lists(entry):
 
 
 def check_completion():
-    """Проверяет, достигнуты ли все цели"""
+    """Проверяет, достигнуты ли все цели. При достижении половины — переключает прокси."""
+    # Переключение на второй прокси при достижении половины
+    if not proxy_switched and len(vlm_results) >= PROXY_SWITCH_THRESHOLD:
+        threading.Thread(target=switch_to_secondary_proxy, daemon=True).start()
+
     vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
-    
+
     if vlm_done and vlm2_done:
         stop_event.set()
         return True
@@ -647,6 +664,90 @@ def release_xray_port(port):
     with xray_port_lock:
         xray_port_pool.append(port)
     xray_semaphore.release()
+
+
+def switch_to_secondary_proxy():
+    """
+    Переключает session на второй прокси из proxy_configs.json.
+    Вызывается когда vlm_results достиг половины MAX_CONFIGS.
+    Берёт второй конфиг из списка (индекс 1) — первый уже используется как основной.
+    """
+    global secondary_proxy_proc, proxy_switched, _ru_proxy
+
+    with proxy_switch_lock:
+        if proxy_switched:
+            return
+        proxy_switched = True
+
+    configs_file = "proxy_configs.json"
+    if not os.path.exists(configs_file):
+        return
+
+    try:
+        with open(configs_file) as f:
+            configs = json.load(f)
+    except Exception:
+        return
+
+    # Берём второй конфиг (индекс 1), первый уже занят основным прокси
+    if len(configs) < 2:
+        print("⚠️ Нет второго прокси для переключения", flush=True)
+        return
+
+    secondary_cfg = dict(configs[1])
+    secondary_cfg['inbounds'][0]['port'] = SECONDARY_PROXY_PORT
+
+    cfg_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.json', delete=False, prefix='xray_secondary_'
+        ) as f:
+            json.dump(secondary_cfg, f)
+            cfg_path = f.name
+
+        proc = subprocess.Popen(
+            [XRAY_BIN, "run", "-config", cfg_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
+        time.sleep(XRAY_STARTUP_DELAY)
+
+        if proc.poll() is not None:
+            print("❌ Второй прокси не запустился", flush=True)
+            return
+
+        # Проверяем что второй прокси работает
+        secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
+        try:
+            requests.get(
+                XRAY_CHECK_URL,
+                proxies={"http": secondary_url, "https": secondary_url},
+                timeout=XRAY_HTTP_TIMEOUT,
+                verify=False
+            )
+        except Exception:
+            print("❌ Второй прокси не прошёл проверку", flush=True)
+            proc.terminate()
+            return
+
+        # Переключаем session на второй прокси
+        secondary_proxy_proc = proc
+        _ru_proxy = secondary_url
+        with lock:
+            session.proxies.update({"http": secondary_url, "https": secondary_url})
+
+        host = secondary_cfg['outbounds'][0]['settings']['vnext'][0]['address']
+        print(f"🔀 Переключились на второй прокси: {host}:{SECONDARY_PROXY_PORT}", flush=True)
+
+    except Exception as e:
+        print(f"❌ Ошибка запуска второго прокси: {e}", flush=True)
+    finally:
+        if cfg_path and os.path.exists(cfg_path):
+            try:
+                os.unlink(cfg_path)
+            except OSError:
+                pass
 
 
 def validate(config, is_priority, is_white):
@@ -1013,8 +1114,17 @@ def main():
                 gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
                 print(f"✅ Создан {fn}: {len(output)} конфигов", flush=True)
     
+    # Останавливаем второй прокси если был запущен
+    if secondary_proxy_proc and secondary_proxy_proc.poll() is None:
+        secondary_proxy_proc.terminate()
+        try:
+            secondary_proxy_proc.wait(timeout=2)
+        except:
+            secondary_proxy_proc.kill()
+
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 
 if __name__ == "__main__":
     main()
+    
