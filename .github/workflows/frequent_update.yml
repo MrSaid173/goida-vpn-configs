@@ -3,11 +3,19 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
+
 jobs:
-  update-files:
+  # ─────────────────────────────────────────────
+  # ДЖОБ 1: Находим рабочий RU конфиг (SNI-RU, не HOST)
+  # и поднимаем его как прокси для второй джобы
+  # ─────────────────────────────────────────────
+  find-ru-proxy:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      proxy-found: ${{ steps.check.outputs.found }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,8 +27,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: |
-          pip install requests PyGithub maxminddb pysocks
+        run: pip install requests PyGithub maxminddb pysocks
 
       - name: Install Xray-core
         run: |
@@ -29,7 +36,59 @@ jobs:
           unzip -q /tmp/xray.zip -d /tmp/xray
           chmod +x /tmp/xray/xray
           echo "/tmp/xray" >> $GITHUB_PATH
-          echo "✅ Xray ${XRAY_VERSION} установлен: $(/tmp/xray/xray version | head -1)"
+          echo "✅ Xray ${XRAY_VERSION} установлен"
+
+      - name: Find working RU proxy config
+        working-directory: source
+        run: python find_ru_proxy.py
+
+      - name: Check result
+        id: check
+        working-directory: source
+        run: |
+          FOUND=$(cat proxy_found.txt 2>/dev/null || echo "false")
+          echo "found=${FOUND}" >> $GITHUB_OUTPUT
+          echo "Прокси найден: ${FOUND}"
+
+      - name: Upload proxy config as artifact
+        if: steps.check.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ru-proxy
+          path: |
+            source/proxy_config.json
+            source/proxy_link.txt
+          retention-days: 1
+
+  # ─────────────────────────────────────────────
+  # ДЖОБ 2: Основной поиск конфигов через RU прокси
+  # ─────────────────────────────────────────────
+  main-search:
+    needs: find-ru-proxy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install requests PyGithub maxminddb pysocks
+
+      - name: Install Xray-core
+        run: |
+          XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" -O /tmp/xray.zip
+          unzip -q /tmp/xray.zip -d /tmp/xray
+          chmod +x /tmp/xray/xray
+          echo "/tmp/xray" >> $GITHUB_PATH
 
       - name: Restore Tools Cache
         uses: actions/cache@v3
@@ -39,9 +98,51 @@ jobs:
             source/cloudflare_ips.txt
           key: tools-v2
 
-      - name: Run script
+      - name: Download proxy config artifact
+        if: needs.find-ru-proxy.outputs.proxy-found == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ru-proxy
+          path: source/
+
+      - name: Start RU proxy (if found)
+        if: needs.find-ru-proxy.outputs.proxy-found == 'true'
+        working-directory: source
+        run: |
+          echo "🚀 Запускаем RU прокси..."
+          xray run -config proxy_config.json &
+          echo $! > /tmp/xray_proxy.pid
+          sleep 2
+
+          # Проверяем что прокси поднялся
+          if curl -s --max-time 5 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null; then
+            echo "✅ RU прокси работает на порту 10808"
+          else
+            echo "⚠️ RU прокси не ответил, продолжаем без него"
+            kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
+            echo "false" > proxy_active.txt
+            exit 0
+          fi
+          echo "true" > proxy_active.txt
+
+      - name: Run main script
+        working-directory: source
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
+          # Если прокси активен — пускаем весь трафик скрипта через него
+          # requests автоматически подхватывает эти переменные окружения
+          ALL_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
+          HTTPS_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
+          HTTP_PROXY: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
         run: |
-          cd source
+          # Xray-проверки внутри скрипта идут напрямую (не через системный прокси),
+          # а все остальные запросы (ip-api, источники конфигов) — через RU прокси
           python main.py
+
+      - name: Stop RU proxy
+        if: always()
+        run: |
+          if [ -f /tmp/xray_proxy.pid ]; then
+            kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
+            echo "🛑 RU прокси остановлен"
+          fi
