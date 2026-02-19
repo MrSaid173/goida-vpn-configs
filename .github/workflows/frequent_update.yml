@@ -54,7 +54,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ru-proxy
-          path: source/proxy_configs.json
+          path: |
+            source/proxy_configs.json
+            source/extract_proxy.py
           retention-days: 1
 
   # ─────────────────────────────────────────────
@@ -107,30 +109,22 @@ jobs:
         working-directory: source
         run: |
           echo "🚀 Пробуем запустить RU прокси из списка..."
-          
-          CONFIGS_COUNT=$(python3 -c "import json; d=json.load(open('proxy_configs.json')); print(len(d))")
+          CONFIGS_COUNT=$(python3 extract_proxy.py count)
           echo "Доступно конфигов: ${CONFIGS_COUNT}"
-          
+
           for i in $(seq 0 $((CONFIGS_COUNT - 1))); do
             echo "--- Попытка $((i+1))/${CONFIGS_COUNT} ---"
-            
-            # Извлекаем i-й конфиг
-            python3 -c "
-import json
-configs = json.load(open('proxy_configs.json'))
-with open('proxy_current.json', 'w') as f:
-    json.dump(configs[$i], f)
-"
-            # Убиваем предыдущий если был
+
+            python3 extract_proxy.py get $i
+
             if [ -f /tmp/xray_proxy.pid ]; then
               kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
               sleep 1
             fi
-            
+
             xray run -config proxy_current.json > /tmp/xray.log 2>&1 &
             echo $! > /tmp/xray_proxy.pid
-            
-            # Ждём до 12 секунд
+
             for s in $(seq 1 12); do
               sleep 1
               if curl -s --max-time 3 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null 2>&1; then
@@ -141,7 +135,7 @@ with open('proxy_current.json', 'w') as f:
             done
             echo "❌ Конфиг $((i+1)) не ответил"
           done
-          
+
           echo "⚠️ Ни один прокси не заработал, продолжаем без него"
           kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
           echo "proxy_active=false" >> $GITHUB_OUTPUT
