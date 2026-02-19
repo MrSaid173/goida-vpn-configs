@@ -105,29 +105,33 @@ jobs:
 
       - name: Start RU proxy (if found)
         if: needs.find-ru-proxy.outputs.proxy-found == 'true'
+        id: start-proxy
         working-directory: source
         run: |
           echo "🚀 Запускаем RU прокси..."
           xray run -config proxy_config.json &
           echo $! > /tmp/xray_proxy.pid
-          sleep 2
-
-          # Проверяем что прокси поднялся
-          if curl -s --max-time 5 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null; then
-            echo "✅ RU прокси работает на порту 10808"
-          else
-            echo "⚠️ RU прокси не ответил, продолжаем без него"
-            kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
-            echo "false" > proxy_active.txt
-            exit 0
-          fi
-          echo "true" > proxy_active.txt
+          
+          # Ждём до 15 секунд пока прокси поднимется
+          for i in $(seq 1 15); do
+            sleep 1
+            if curl -s --max-time 3 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null 2>&1; then
+              echo "✅ RU прокси работает (попытка ${i})"
+              echo "proxy_active=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "  ожидание... ${i}с"
+          done
+          
+          echo "⚠️ RU прокси не ответил за 15с, продолжаем без него"
+          kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
+          echo "proxy_active=false" >> $GITHUB_OUTPUT
 
       - name: Run main script
         working-directory: source
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
-          RU_PROXY_URL: ${{ needs.find-ru-proxy.outputs.proxy-found == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
+          RU_PROXY_URL: ${{ steps.start-proxy.outputs.proxy_active == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
         run: |
           python main.py
 
