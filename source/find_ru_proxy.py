@@ -26,8 +26,8 @@ MAX_PROXY_CONFIGS  = 5              # сколько рабочих конфиг
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
-    "m247", "akamai", "host", "baykov", "dataforest", "yandex", "selectel",
-    "timeweb", "beget"
+    "m247", "akamai", "host" #"baykov", "dataforest", "yandex", "selectel",
+    #"timeweb", "beget"
 ]
 EXCLUDED_SNI = ["userapi", "splitter.wb.ru"]
 
