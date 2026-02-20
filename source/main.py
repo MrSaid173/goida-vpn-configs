@@ -1156,7 +1156,7 @@ def validate(config, is_priority, is_white):
             stats['xray_dead'] += 1
             return
 
-        real_max = (2000 if is_ru else 3000) + (2000 if proxy_switched else 0)
+        real_max = (4000 if is_ru else 4500) + (2000 if proxy_switched else 0)
         if real_latency > real_max:
             if sni_reserved:
                 with lock:
