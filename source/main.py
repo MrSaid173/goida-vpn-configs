@@ -30,7 +30,7 @@ MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh"] #"linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -1033,18 +1033,14 @@ def validate(config, is_priority, is_white):
         stats['broken'] += 1
         return
 
-    host, port, sni, cid = get_config_details(config)
-    if not host or (not sni and not is_ss):
-        stats['no_details'] += 1
-        return
-
-    if host in failed_ips:
-        stats['failed_ip_cache'] += 1
-        return
-
     is_xhttp = "xhttp" in config.lower()
     is_ss = config.lower().startswith("ss://")
     is_hy2 = config.lower().startswith("hysteria2://")
+
+    host, port, sni, cid = get_config_details(config)
+    if not host or (not sni and not is_ss and not is_hy2):
+        stats['no_details'] += 1
+        return
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
 
@@ -1160,7 +1156,7 @@ def validate(config, is_priority, is_white):
             stats['xray_dead'] += 1
             return
 
-        real_max = 2000 if is_ru else 3000
+        real_max = (2000 if is_ru else 3000) + (2000 if proxy_switched else 0)
         if real_latency > real_max:
             if sni_reserved:
                 with lock:
@@ -1422,7 +1418,7 @@ def main():
                     with lock:
                         failed_ips.clear()
                         failed_subnets.clear()
-                        # Сбрасываем лимиты SNI и подсетей чтобы второй проход находил SNI-RU конфиги
+                        subnet_counts.clear()
                         sni_usage_counts.clear()
                         subnet16_counts.clear()
                     stop_event.clear()
@@ -1459,3 +1455,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+            
