@@ -564,9 +564,10 @@ def try_add_to_lists(entry):
     is_ss = entry.get('is_ss', False)
     is_hy2 = entry.get('is_hy2', False)
 
-    # RU конфиги — только SNI-RU и не хостинговые
+    # RU конфиги — только SNI-RU
     if is_ru and not is_white and not is_ss and not is_hy2:
         return False
+    # RU конфиги не должны быть хостинговыми
     if is_ru and is_hosting is True:
         return False
 
@@ -789,7 +790,7 @@ def build_xray_outbound(config_link):
     }
 
 
-def real_check_via_xray(config_link, socks_port):
+def real_check_via_xray(config_link, socks_port, check_url=None):
     """
     Запускает Xray с конфигом на указанном SOCKS5-порту,
     делает реальный HTTP-запрос через него.
@@ -864,7 +865,7 @@ def real_check_via_xray(config_link, socks_port):
         }
         start = time.perf_counter()
         resp = requests.get(
-            XRAY_CHECK_URL,
+            check_url or XRAY_CHECK_URL,
             proxies=proxies,
             timeout=XRAY_HTTP_TIMEOUT,
             allow_redirects=True,
@@ -1125,9 +1126,16 @@ def validate(config, is_priority, is_white):
 
     # --- РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY ---
     if XRAY_ENABLED:
+        # RU конфиги проверяем через российский ресурс (cloudflare недоступен из РФ)
+        # Иностранные и SS/HY2 — через cloudflare
+        if is_ru and is_white:
+            xray_check = "http://ya.ru/"
+        else:
+            xray_check = XRAY_CHECK_URL
+
         xray_port = acquire_xray_port()
         try:
-            real_latency = real_check_via_xray(config, xray_port)
+            real_latency = real_check_via_xray(config, xray_port, xray_check)
         finally:
             release_xray_port(xray_port)
 
