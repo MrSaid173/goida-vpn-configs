@@ -108,50 +108,61 @@ jobs:
         id: start-proxy
         working-directory: source
         run: |
-          echo "🚀 Пробуем запустить RU прокси из списка..."
+          echo "🚀 Запускаем все RU прокси параллельно..."
           CONFIGS_COUNT=$(python3 extract_proxy.py count)
           echo "Доступно конфигов: ${CONFIGS_COUNT}"
 
+          # Запускаем все конфиги параллельно на разных портах
           for i in $(seq 0 $((CONFIGS_COUNT - 1))); do
-            echo "--- Попытка $((i+1))/${CONFIGS_COUNT} ---"
+            PORT=$((10808 + i))
+            python3 extract_proxy.py get $i $PORT
+            xray run -config proxy_current_${i}.json > /tmp/xray_${i}.log 2>&1 &
+            echo $! > /tmp/xray_${i}.pid
+            echo "  Запущен конфиг $((i+1)) на порту ${PORT}"
+          done
 
-            python3 extract_proxy.py get $i
+          # Ждём пока хоть один поднимется
+          sleep 3
 
-            if [ -f /tmp/xray_proxy.pid ]; then
-              kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
-              sleep 1
-            fi
-
-            xray run -config proxy_current.json > /tmp/xray.log 2>&1 &
-            echo $! > /tmp/xray_proxy.pid
-
-            for s in $(seq 1 12); do
-              sleep 1
-              if curl -s --max-time 3 --proxy socks5h://127.0.0.1:10808 http://cp.cloudflare.com/ > /dev/null 2>&1; then
-                echo "✅ Прокси $((i+1)) работает (${s}с)"
+          # Проверяем все порты, берём первый рабочий
+          for s in $(seq 1 15); do
+            for i in $(seq 0 $((CONFIGS_COUNT - 1))); do
+              PORT=$((10808 + i))
+              if curl -s --max-time 2 --proxy socks5h://127.0.0.1:${PORT} http://cp.cloudflare.com/ > /dev/null 2>&1; then
+                echo "✅ Конфиг $((i+1)) работает на порту ${PORT} (${s}с)"
                 echo "proxy_active=true" >> $GITHUB_OUTPUT
+                echo "proxy_port=${PORT}" >> $GITHUB_OUTPUT
+                # Останавливаем остальные
+                for j in $(seq 0 $((CONFIGS_COUNT - 1))); do
+                  if [ "$j" != "$i" ] && [ -f /tmp/xray_${j}.pid ]; then
+                    kill $(cat /tmp/xray_${j}.pid) 2>/dev/null || true
+                  fi
+                done
                 exit 0
               fi
             done
-            echo "❌ Конфиг $((i+1)) не ответил"
+            sleep 1
           done
 
-          echo "⚠️ Ни один прокси не заработал, продолжаем без него"
-          kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
+          echo "⚠️ Ни один прокси не заработал"
+          for i in $(seq 0 $((CONFIGS_COUNT - 1))); do
+            [ -f /tmp/xray_${i}.pid ] && kill $(cat /tmp/xray_${i}.pid) 2>/dev/null || true
+          done
           echo "proxy_active=false" >> $GITHUB_OUTPUT
 
       - name: Run main script
         working-directory: source
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
-          RU_PROXY_URL: ${{ steps.start-proxy.outputs.proxy_active == 'true' && 'socks5h://127.0.0.1:10808' || '' }}
+          RU_PROXY_URL: ${{ steps.start-proxy.outputs.proxy_active == 'true' && format('socks5h://127.0.0.1:{0}', steps.start-proxy.outputs.proxy_port) || '' }}
         run: |
           python main.py
 
       - name: Stop RU proxy
         if: always()
         run: |
-          if [ -f /tmp/xray_proxy.pid ]; then
-            kill $(cat /tmp/xray_proxy.pid) 2>/dev/null || true
-            echo "🛑 RU прокси остановлен"
-          fi
+          for i in 0 1 2 3 4; do
+            [ -f /tmp/xray_${i}.pid ] && kill $(cat /tmp/xray_${i}.pid) 2>/dev/null || true
+          done
+          echo "🛑 Прокси остановлены"
+          
