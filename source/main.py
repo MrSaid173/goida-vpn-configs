@@ -30,7 +30,7 @@ MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh"] #"linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -1034,7 +1034,7 @@ def validate(config, is_priority, is_white):
         return
 
     host, port, sni, cid = get_config_details(config)
-    if not host or not sni:
+    if not host or (not sni and not is_ss):
         stats['no_details'] += 1
         return
 
@@ -1045,17 +1045,19 @@ def validate(config, is_priority, is_white):
     is_xhttp = "xhttp" in config.lower()
     is_ss = config.lower().startswith("ss://")
     is_hy2 = config.lower().startswith("hysteria2://")
-    subnet = ".".join(host.split(".")[:3])      # x.y.z
-    subnet16 = ".".join(host.split(".")[:2])    # x.y
+    subnet = ".".join(host.split(".")[:3])
+    subnet16 = ".".join(host.split(".")[:2])
 
     with lock:
         if host in seen_ips:
             stats['duplicate_ip'] += 1
             return
 
-        if (sni in sni_domains) != is_white:
-            stats['sni_mismatch'] += 1
-            return
+        # SS и HY2 не имеют SNI в обычном смысле — пропускаем проверку
+        if not is_ss and not is_hy2:
+            if (sni in sni_domains) != is_white:
+                stats['sni_mismatch'] += 1
+                return
 
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
             stats['excluded_sni'] += 1
@@ -1457,4 +1459,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-                                              
