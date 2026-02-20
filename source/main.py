@@ -913,9 +913,8 @@ def release_xray_port(port):
 
 def switch_to_secondary_proxy():
     """
-    Переключает session на второй прокси из proxy_configs.json.
-    Вызывается когда vlm_results достиг половины MAX_CONFIGS.
-    Берёт второй конфиг из списка (индекс 1) — первый уже используется как основной.
+    Пробует конфиги начиная с индекса 1, затем 2, 3, 4.
+    Если все недоступны — возвращается к первому (индекс 0).
     """
     global secondary_proxy_proc, proxy_switched, _ru_proxy
 
@@ -934,84 +933,94 @@ def switch_to_secondary_proxy():
     except Exception:
         return
 
-    # Берём второй конфиг (индекс 1), первый уже занят основным прокси
-    if len(configs) < 2:
-        print("⚠️ Нет второго прокси для переключения", flush=True)
+    if not configs:
         return
 
-    secondary_cfg = dict(configs[1])
-    secondary_cfg['inbounds'][0]['port'] = SECONDARY_PROXY_PORT
+    # Пробуем начиная с индекса 1, fallback на 0
+    indices = list(range(1, len(configs))) + [0]
 
-    cfg_path = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False, prefix='xray_secondary_'
-        ) as f:
-            json.dump(secondary_cfg, f)
-            cfg_path = f.name
-
-        proc = subprocess.Popen(
-            [XRAY_BIN, "run", "-config", cfg_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-        )
-        time.sleep(XRAY_STARTUP_DELAY)
-
-        if proc.poll() is not None:
-            print("❌ Второй прокси не запустился", flush=True)
-            return
-
-        # Проверяем что второй прокси работает (до 3 попыток с паузой)
-        secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
-        proxy_ok = False
-        for attempt in range(2):
-            try:
-                requests.get(
-                    "http://cp.cloudflare.com/",
-                    proxies={"http": secondary_url, "https": secondary_url},
-                    timeout=5,
-                    verify=False
-                )
-                proxy_ok = True
-                break
-            except Exception as e:
-                print(f"  Попытка {attempt+1}/2: {e}", flush=True)
-                time.sleep(1)
-
-        if not proxy_ok:
-            print("❌ Второй прокси не прошёл проверку после 3 попыток", flush=True)
-            proc.terminate()
-            return
-
-        # Переключаем session на второй прокси
-        secondary_proxy_proc = proc
-        _ru_proxy = secondary_url
-        with lock:
-            session.proxies.update({"http": secondary_url, "https": secondary_url})
-
-        # Безопасно извлекаем адрес хоста для лога
+    for idx in indices:
+        cfg = dict(configs[idx])
+        cfg['inbounds'][0]['port'] = SECONDARY_PROXY_PORT
+        cfg_path = None
+        proc = None
         try:
-            ob = secondary_cfg['outbounds'][0]
-            proto = ob.get('protocol', '')
-            if proto == 'vless':
-                host = ob['settings']['vnext'][0]['address']
-            elif proto in ('shadowsocks', 'hysteria2'):
-                host = ob['settings']['servers'][0]['address']
-            else:
-                host = '?'
-        except Exception:
-            host = '?'
-        print(f"🔀 Переключились на второй прокси: {host}:{SECONDARY_PROXY_PORT}", flush=True)
+            with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.json', delete=False, prefix='xray_secondary_'
+            ) as f:
+                json.dump(cfg, f)
+                cfg_path = f.name
 
-    except Exception as e:
-        print(f"❌ Ошибка запуска второго прокси: {e}", flush=True)
-    finally:
-        if cfg_path and os.path.exists(cfg_path):
-            try:
-                os.unlink(cfg_path)
-            except OSError:
-                pass
+            if secondary_proxy_proc and secondary_proxy_proc.poll() is None:
+                secondary_proxy_proc.terminate()
+                try: secondary_proxy_proc.wait(timeout=2)
+                except: secondary_proxy_proc.kill()
+
+            proc = subprocess.Popen(
+                [XRAY_BIN, "run", "-config", cfg_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            time.sleep(XRAY_STARTUP_DELAY)
+
+            if proc.poll() is not None:
+                label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
+                print(f"  Конфиг {label} не запустился", flush=True)
+                continue
+
+            secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
+            proxy_ok = False
+            for attempt in range(2):
+                try:
+                    requests.get(
+                        "http://cp.cloudflare.com/",
+                        proxies={"http": secondary_url, "https": secondary_url},
+                        timeout=5,
+                        verify=False
+                    )
+                    proxy_ok = True
+                    break
+                except Exception as e:
+                    label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
+                    print(f"  Конфиг {label}, попытка {attempt+1}/2: {e}", flush=True)
+                    time.sleep(1)
+
+            if proxy_ok:
+                secondary_proxy_proc = proc
+                _ru_proxy = secondary_url
+                with lock:
+                    session.proxies.update({"http": secondary_url, "https": secondary_url})
+                try:
+                    ob = cfg['outbounds'][0]
+                    proto = ob.get('protocol', '')
+                    if proto == 'vless':
+                        host = ob['settings']['vnext'][0]['address']
+                    elif proto in ('shadowsocks', 'hysteria2'):
+                        host = ob['settings']['servers'][0]['address']
+                    else:
+                        host = '?'
+                except Exception:
+                    host = '?'
+                label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
+                print(f"🔀 Переключились на прокси {label}: {host}:{SECONDARY_PROXY_PORT}", flush=True)
+                return
+            else:
+                proc.terminate()
+                try: proc.wait(timeout=2)
+                except: proc.kill()
+
+        except Exception as e:
+            label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
+            print(f"  Ошибка конфига {label}: {e}", flush=True)
+            if proc and proc.poll() is None:
+                proc.terminate()
+        finally:
+            if cfg_path and os.path.exists(cfg_path):
+                try: os.unlink(cfg_path)
+                except: pass
+
+    print("❌ Ни один прокси не доступен для второго прохода", flush=True)
 
 
 def validate(config, is_priority, is_white):
@@ -1443,4 +1452,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
