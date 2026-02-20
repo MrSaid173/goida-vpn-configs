@@ -19,7 +19,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 1
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 5
+MIN_RU_CONFIGS = 3
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3
 MAX_HOST_CONFIGS = 13
@@ -30,7 +30,7 @@ MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode"] #"servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -1383,6 +1383,8 @@ def main():
     def run_validation_pass(pass_num):
         """Один проход по всем конфигам. Уже найденные пропустятся как дубли."""
         print(f"🔁 Проход {pass_num}...", flush=True)
+        if pass_num > 1:
+            random.shuffle(raw_nonwhite)  # новый порядок для второго прокси
         for group, priority, white in check_order:
             if stop_event.is_set():
                 break
@@ -1418,6 +1420,9 @@ def main():
                     with lock:
                         failed_ips.clear()
                         failed_subnets.clear()
+                        # Сбрасываем лимиты SNI и подсетей чтобы второй проход находил SNI-RU конфиги
+                        sni_usage_counts.clear()
+                        subnet16_counts.clear()
                     stop_event.clear()
                     run_validation_pass(2)
                 else:
@@ -1452,3 +1457,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
