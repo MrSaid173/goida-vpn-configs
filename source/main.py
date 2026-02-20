@@ -19,7 +19,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 1
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 3
+MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3
 MAX_HOST_CONFIGS = 13
@@ -56,7 +56,7 @@ XRAY_ENABLED = os.path.isfile(XRAY_BIN) or any(          # включаем ес
 XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одновременно (не больше кол-ва CPU на раннере)
 XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
 XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
-XRAY_HTTP_TIMEOUT = 6          # секунд на реальный HTTP-запрос
+XRAY_HTTP_TIMEOUT = 10         # секунд на реальный HTTP-запрос
 XRAY_CHECK_URL = "http://cp.cloudflare.com/"
 
 # Порт для системного прокси (отдельно от пула Xray-проверок)
@@ -625,7 +625,7 @@ def try_add_to_lists(entry):
             vlm_results.append(entry)
             added_vlm = True
         
-        reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
+        reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count) if len(vlm2_results) < pass_limit - 5 else 0
         vlm2_space = pass_limit - reserved_for_xhttp
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
@@ -645,8 +645,8 @@ def try_add_to_lists(entry):
 
 def check_completion():
     """Проверяет, достигнуты ли все цели."""
-    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= pass_limit)
-    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= pass_limit)
+    vlm_done = len(vlm_results) >= pass_limit
+    vlm2_done = len(vlm2_results) >= pass_limit
 
     if vlm_done and vlm2_done:
         stop_event.set()
@@ -1457,4 +1457,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                                              
