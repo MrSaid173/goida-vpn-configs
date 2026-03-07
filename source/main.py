@@ -345,7 +345,10 @@ def _build_xray_config(config_link, socks_port):
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": False},
         }],
-        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
+        "outbounds": [outbound],
+        "routing": {
+            "rules": [{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}]
+        },
     }
     return config
 
