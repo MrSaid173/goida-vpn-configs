@@ -16,7 +16,7 @@ REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-confi
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
-MIN_XHTTP = 1
+MIN_XHTTP = 0
 MAX_XHTTP = 5
 MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
