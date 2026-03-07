@@ -72,15 +72,7 @@ ANTIFILTER_URLS = [
     "https://antifilter.download/list/subnet.lst",
     "https://antifilter.download/list/allyouneed.lst",
 ]
-RU_PROXY_SOURCES = [
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-status.txt",
-]
-RU_PROXY_CHECK_COUNT = 3
-RU_PROXY_POOL_SIZE = 30
-RU_PROXY_TIMEOUT = 4
-RU_PROXY_MAX_WORKERS = 8
-RU_PROXY_SUCCESS_RATIO = 0.5
+
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -160,24 +152,20 @@ last_api_call = 0
 stats = defaultdict(int)
 api_calls_count = 0
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ (НОВОЕ) ---
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ ---
 blocked_networks = []       # список IPv4Network из antifilter
-ru_proxies = []             # живые RU-прокси
 _blocked_cache = {}
 _blocked_cache_lock = threading.Lock()
-_proxy_check_cache = {}
-_proxy_check_lock = threading.Lock()
 
 
 # ============================================================
 # СЛОЙ 1: Загрузка базы РКН и RU-прокси
 # ============================================================
 
-def load_ru_blocklist_and_proxies():
-    """Загружает заблокированные подсети РКН и пул живых RU-прокси."""
-    global blocked_networks, ru_proxies
+def load_ru_blocklist():
+    """Загружает заблокированные подсети РКН из antifilter.download."""
+    global blocked_networks
 
-    # --- Подсети РКН ---
     print("📥 Загрузка базы РКН (antifilter.download)...", flush=True)
     nets = []
     for url in ANTIFILTER_URLS:
@@ -206,51 +194,6 @@ def load_ru_blocklist_and_proxies():
     blocked_networks = nets
     print(f"📊 Заблокированных подсетей РКН: {len(blocked_networks)}", flush=True)
 
-    # --- RU-прокси ---
-    print("📥 Загрузка пула RU-прокси...", flush=True)
-    raw_proxies = []
-    for url in RU_PROXY_SOURCES:
-        try:
-            resp = session.get(url, timeout=10, verify=False)
-            for line in resp.text.splitlines():
-                m = re.match(r'^(\d+\.\d+\.\d+\.\d+):(\d+)', line.strip())
-                if m:
-                    raw_proxies.append(f"http://{m.group(1)}:{m.group(2)}")
-        except Exception as e:
-            print(f"  ⚠️  Прокси-источник недоступен: {e}", flush=True)
-
-    random.shuffle(raw_proxies)
-    print(f"  Кандидатов: {len(raw_proxies)}, проверяем живые...", flush=True)
-    ru_proxies = _filter_live_proxies(raw_proxies[:100])
-    print(f"📊 Живых прокси в пуле: {len(ru_proxies)}", flush=True)
-
-
-def _filter_live_proxies(proxy_list):
-    """Возвращает только живые прокси из списка."""
-    live = []
-    live_lock = threading.Lock()
-
-    def check_one(proxy):
-        try:
-            r = requests.get(
-                "http://httpbin.org/ip",
-                proxies={"http": proxy, "https": proxy},
-                timeout=RU_PROXY_TIMEOUT,
-                verify=False
-            )
-            if r.status_code == 200:
-                with live_lock:
-                    if len(live) < RU_PROXY_POOL_SIZE:
-                        live.append(proxy)
-        except:
-            pass
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
-        futures = [ex.submit(check_one, p) for p in proxy_list]
-        concurrent.futures.wait(futures, timeout=30)
-
-    return live
-
 
 # ============================================================
 # СЛОЙ 1: Проверка IP по базе РКН
@@ -269,154 +212,6 @@ def is_blocked_in_ru(ip_str):
     with _blocked_cache_lock:
         _blocked_cache[ip_str] = result
     return result
-
-
-# ============================================================
-# СЛОЙ 2: Проверка соединения через RU-прокси
-# ============================================================
-
-def check_connectivity_from_ru(host, port, sni):
-    """
-    Проверяет TCP CONNECT + TLS handshake через российские прокси.
-    Если прокси нет — пропускает проверку (не блокирует конфиг).
-    """
-    if not ru_proxies:
-        return True
-
-    cache_key = f"{host}:{port}"
-    with _proxy_check_lock:
-        if cache_key in _proxy_check_cache:
-            return _proxy_check_cache[cache_key]
-
-    sample = random.sample(ru_proxies, min(RU_PROXY_CHECK_COUNT * 2, len(ru_proxies)))
-    successes = []
-    success_lock = threading.Lock()
-
-    def try_proxy(proxy):
-        raw = None
-        try:
-            proxy_host, proxy_port = proxy.replace("http://", "").split(":")
-            raw = socket.create_connection((proxy_host, int(proxy_port)), timeout=RU_PROXY_TIMEOUT)
-            connect_req = (
-                f"CONNECT {host}:{port} HTTP/1.1\r\n"
-                f"Host: {host}:{port}\r\n"
-                f"Proxy-Connection: keep-alive\r\n\r\n"
-            ).encode()
-            raw.sendall(connect_req)
-            response = raw.recv(256).decode('utf-8', errors='ignore')
-            if "200" not in response:
-                return False
-
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            ctx.set_ciphers(
-                'TLS_AES_128_GCM_SHA256:'
-                'TLS_AES_256_GCM_SHA384:'
-                'TLS_CHACHA20_POLY1305_SHA256:'
-                'ECDH+AESGCM:'
-                'ECDH+CHACHA20'
-            )
-            with ctx.wrap_socket(raw, server_hostname=sni) as tls:
-                tls.settimeout(RU_PROXY_TIMEOUT)
-                tls.sendall(
-                    f"GET / HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n".encode()
-                )
-                tls.recv(512)
-                with success_lock:
-                    successes.append(True)
-            return True
-        except:
-            return False
-        finally:
-            if raw:
-                try:
-                    raw.close()
-                except:
-                    pass
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=RU_PROXY_MAX_WORKERS) as ex:
-        futures = [ex.submit(try_proxy, p) for p in sample]
-        concurrent.futures.wait(futures, timeout=RU_PROXY_TIMEOUT * 2 + 2)
-
-    total_tried = len(sample)
-    total_ok = len(successes)
-
-    # Если все прокси мертвы — не блокируем конфиг
-    if total_tried == 0 or (total_ok == 0 and total_tried < 2):
-        result = True
-    else:
-        result = (total_ok / total_tried) >= RU_PROXY_SUCCESS_RATIO
-
-    with _proxy_check_lock:
-        _proxy_check_cache[cache_key] = result
-
-    return result
-
-
-# ============================================================
-# СЛОЙ 3: Проверка TLS fingerprint (только для security=tls)
-# ============================================================
-
-def should_check_tls_fingerprint(config):
-    """Нужна ли TLS-fingerprint проверка для этого конфига."""
-    l = config.lower()
-    if "security=tls" not in l:
-        return False
-    if "security=reality" in l or "pbk=" in l:
-        return False
-    return True
-
-
-def check_tls_not_intercepted(host, port, sni):
-    """
-    Проверяет, что DPI не перехватывает TLS-соединение.
-    Признаки перехвата: другой сертификат, принудительный TLS 1.2, аномально быстрый handshake.
-    """
-    try:
-        # Попытка с TLS 1.3
-        ctx13 = ssl.create_default_context()
-        ctx13.check_hostname = False
-        ctx13.verify_mode = ssl.CERT_NONE
-        ctx13.minimum_version = ssl.TLSVersion.TLSv1_3
-        ctx13.maximum_version = ssl.TLSVersion.TLSv1_3
-
-        t_start = time.perf_counter()
-        with socket.create_connection((host, port), timeout=2.0) as s:
-            with ctx13.wrap_socket(s, server_hostname=sni) as tls13:
-                t13 = (time.perf_counter() - t_start) * 1000
-                cert13 = tls13.getpeercert(binary_form=True)
-                ver13 = tls13.version()
-
-        if ver13 != "TLSv1.3":
-            stats['tls_fp_failed'] += 1
-            return False
-
-        # Второе соединение — сравниваем сертификаты
-        ctx_check = ssl.create_default_context()
-        ctx_check.check_hostname = False
-        ctx_check.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=2.0) as s:
-            with ctx_check.wrap_socket(s, server_hostname=sni) as tls_check:
-                cert_check = tls_check.getpeercert(binary_form=True)
-
-        if cert13 != cert_check:
-            stats['tls_fp_failed'] += 1
-            return False
-
-        # < 5ms = локальный перехват
-        if t13 < 5:
-            stats['tls_fp_failed'] += 1
-            return False
-
-        return True
-
-    except ssl.SSLError:
-        stats['tls_fp_failed'] += 1
-        return False
-    except:
-        # Таймаут и прочее — не блокируем
-        return True
 
 
 # ============================================================
@@ -799,17 +594,6 @@ def validate(config, is_priority, is_white):
                 subnet16_counts[subnet16][config_type] -= 1
         return
 
-    # ── СЛОЙ 3: TLS fingerprint (только для security=tls) ────────────────────
-    if should_check_tls_fingerprint(config):
-        if not check_tls_not_intercepted(host, port, sni):
-            if sni_reserved:
-                with lock:
-                    sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                with lock:
-                    subnet16_counts[subnet16][config_type] -= 1
-            return
-
     # Финальное добавление
     with lock:
         if host in seen_ips:
@@ -932,35 +716,6 @@ def finalize_list(results, is_vlm2=False):
         if not added_any:
             break
 
-    # ── СЛОЙ 2: RU-прокси — только для финальных кандидатов (~50-100 шт) ────────
-    if ru_proxies:
-        print(f"🔍 Прокси-проверка {len(final)} финальных конфигов...", flush=True)
-        proxy_results = {}
-        proxy_lock = threading.Lock()
-
-        def proxy_check_entry(entry):
-            h_m = re.search(r'@([^:/?#\s]+):(\d+)', entry['link'])
-            s_m = re.search(r'[?&]sni=([^&#\s]*)', entry['link'])
-            if not h_m or not s_m:
-                with proxy_lock:
-                    proxy_results[entry['link']] = True
-                return
-            h = h_m.group(1)
-            p = int(h_m.group(2))
-            s = s_m.group(1).lower().split('?')[0].split('&')[0]
-            ok = check_connectivity_from_ru(h, p, s)
-            with proxy_lock:
-                proxy_results[entry['link']] = ok
-                if not ok:
-                    stats['ru_proxy_failed'] += 1
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=RU_PROXY_MAX_WORKERS) as ex:
-            futs = [ex.submit(proxy_check_entry, e) for e in final]
-            concurrent.futures.wait(futs, timeout=60)
-
-        final = [e for e in final if proxy_results.get(e['link'], True)]
-        print(f"  ✅ Прошло прокси-проверку: {len(final)}", flush=True)
-
     speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
     return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
 
@@ -983,8 +738,6 @@ def print_statistics():
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     # НОВОЕ: статистика RU-проверки
     print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
-    print(f"Не прошло RU-прокси: {stats['ru_proxy_failed']}", flush=True)
-    print(f"Не прошло TLS-fingerprint: {stats['tls_fp_failed']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
@@ -1022,7 +775,7 @@ def main():
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
 
     # НОВОЕ: загружаем базу РКН и RU-прокси один раз перед основным циклом
-    load_ru_blocklist_and_proxies()
+    load_ru_blocklist()
 
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
