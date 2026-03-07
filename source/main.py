@@ -67,11 +67,19 @@ MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
-# --- НАСТРОЙКИ RU-ПРОВЕРКИ (НОВОЕ) ---
+# --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
     "https://antifilter.download/list/subnet.lst",
     "https://antifilter.download/list/allyouneed.lst",
 ]
+
+# --- НАСТРОЙКИ XRAY-ТЕСТА ---
+XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
+XRAY_TEST_URL = "https://www.gstatic.com/generate_204"
+XRAY_TIMEOUT = 8          # секунд на весь тест одного конфига
+XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
+XRAY_MAX_PARALLEL = 6     # максимум одновременных xray-процессов
+XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -157,6 +165,12 @@ blocked_networks = []       # список IPv4Network из antifilter
 _blocked_cache = {}
 _blocked_cache_lock = threading.Lock()
 
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ XRAY-ТЕСТА ---
+xray_semaphore = threading.Semaphore(XRAY_MAX_PARALLEL)
+_xray_port_counter = XRAY_PORT_BASE
+_xray_port_lock = threading.Lock()
+xray_available = False      # выставляется в main() если бинарь найден
+
 
 # ============================================================
 # СЛОЙ 1: Загрузка базы РКН и RU-прокси
@@ -212,6 +226,204 @@ def is_blocked_in_ru(ip_str):
     with _blocked_cache_lock:
         _blocked_cache[ip_str] = result
     return result
+
+
+
+# ============================================================
+# XRAY-ТЕСТ: реальная проверка туннеля
+# ============================================================
+
+def _get_xray_port():
+    """Выдаёт уникальный порт для каждого потока."""
+    global _xray_port_counter
+    with _xray_port_lock:
+        port = _xray_port_counter
+        _xray_port_counter += 1
+    return port
+
+
+def _build_xray_config(config_link, socks_port):
+    """
+    Строит минимальный config.json для Xray из vless:// ссылки.
+    Поддерживает: REALITY/tcp, TLS/tcp, TLS/ws, TLS/xhttp.
+    """
+    l = config_link.lower()
+    h_m = re.search(r'@([^:/?#\s]+):(\d+)', config_link)
+    s_m = re.search(r'[?&]sni=([^&#\s]*)', config_link, re.I)
+    id_m = re.search(r'://([^@]+)@', config_link)
+    pbk_m = re.search(r'[?&]pbk=([^&#\s]*)', config_link, re.I)
+    sid_m = re.search(r'[?&]sid=([^&#\s]*)', config_link, re.I)
+    fp_m = re.search(r'[?&]fp=([^&#\s]*)', config_link, re.I)
+    path_m = re.search(r'[?&]path=([^&#\s]*)', config_link, re.I)
+    flow_m = re.search(r'[?&]flow=([^&#\s]*)', config_link, re.I)
+    type_m = re.search(r'[?&]type=([^&#\s]*)', config_link, re.I)
+
+    if not h_m or not id_m:
+        return None
+
+    address = h_m.group(1)
+    port = int(h_m.group(2))
+    uuid = id_m.group(1)
+    sni = s_m.group(1) if s_m else address
+    fp = fp_m.group(1) if fp_m else "chrome"
+    net_type = type_m.group(1) if type_m else "tcp"
+    flow = flow_m.group(1) if flow_m else ""
+
+    # TLS или REALITY
+    if pbk_m:
+        tls_settings = {
+            "serverName": sni,
+            "fingerprint": fp,
+            "publicKey": pbk_m.group(1),
+            "shortId": sid_m.group(1) if sid_m else "",
+        }
+        security = "reality"
+    elif "security=tls" in l:
+        tls_settings = {
+            "serverName": sni,
+            "fingerprint": fp,
+            "allowInsecure": True,
+        }
+        security = "tls"
+    else:
+        tls_settings = {}
+        security = "none"
+
+    # Транспорт
+    if net_type == "ws":
+        path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
+        stream_settings = {
+            "network": "ws",
+            "security": security,
+            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+            "wsSettings": {"path": path, "headers": {"Host": sni}},
+        }
+    elif net_type == "xhttp":
+        path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
+        stream_settings = {
+            "network": "xhttp",
+            "security": security,
+            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+            "xhttpSettings": {"path": path, "host": sni},
+        }
+    else:
+        # tcp (REALITY + Vision, обычный tcp)
+        stream_settings = {
+            "network": "tcp",
+            "security": security,
+            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+        }
+
+    # Убираем пустой ключ если security=none
+    if security == "none":
+        stream_settings.pop("tlsSettings", None)
+        stream_settings.pop("realitySettings", None)
+
+    outbound = {
+        "tag": "proxy",
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": address,
+                "port": port,
+                "users": [{
+                    "id": uuid,
+                    "encryption": "none",
+                    "flow": flow,
+                }]
+            }]
+        },
+        "streamSettings": stream_settings,
+    }
+
+    config = {
+        "log": {"loglevel": "none"},
+        "inbounds": [{
+            "tag": "socks",
+            "port": socks_port,
+            "listen": "127.0.0.1",
+            "protocol": "socks",
+            "settings": {"auth": "noauth", "udp": False},
+        }],
+        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
+    }
+    return config
+
+
+def xray_test(config_link):
+    """
+    Запускает Xray с конфигом и пробует скачать 204-страницу через SOCKS5.
+    Возвращает True если туннель реально работает, False иначе.
+    Если xray недоступен — всегда возвращает True (не блокируем).
+    """
+    if not xray_available:
+        return True
+
+    import subprocess, tempfile
+
+    socks_port = _get_xray_port()
+    xray_cfg = _build_xray_config(config_link, socks_port)
+    if not xray_cfg:
+        return True  # не смогли построить конфиг — не блокируем
+
+    proc = None
+    tmp = None
+    with xray_semaphore:
+        try:
+            tmp = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.json', delete=False, prefix='xray_cfg_'
+            )
+            json.dump(xray_cfg, tmp)
+            tmp.flush()
+            tmp.close()
+
+            proc = subprocess.Popen(
+                [XRAY_BINARY, "run", "-config", tmp.name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            time.sleep(XRAY_STARTUP_WAIT)
+
+            if proc.poll() is not None:
+                # Xray сразу упал — конфиг нерабочий
+                stats['xray_failed'] += 1
+                return False
+
+            proxies = {
+                "http":  f"socks5://127.0.0.1:{socks_port}",
+                "https": f"socks5://127.0.0.1:{socks_port}",
+            }
+            r = requests.get(
+                XRAY_TEST_URL,
+                proxies=proxies,
+                timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
+                verify=False,
+            )
+            if r.status_code in (200, 204):
+                return True
+            else:
+                stats['xray_failed'] += 1
+                return False
+
+        except requests.exceptions.ConnectionError:
+            stats['xray_failed'] += 1
+            return False
+        except Exception:
+            # Любая другая ошибка — не блокируем конфиг
+            return True
+        finally:
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except:
+                    proc.kill()
+            if tmp:
+                try:
+                    os.unlink(tmp.name)
+                except:
+                    pass
 
 
 # ============================================================
@@ -594,6 +806,16 @@ def validate(config, is_priority, is_white):
                 subnet16_counts[subnet16][config_type] -= 1
         return
 
+    # ── XRAY-ТЕСТ: реальная проверка туннеля ─────────────────────────────────
+    if not xray_test(config):
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        return
+
     # Финальное добавление
     with lock:
         if host in seen_ips:
@@ -738,15 +960,25 @@ def print_statistics():
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
     # НОВОЕ: статистика RU-проверки
     print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
+    print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
 
 def main():
-    global sni_domains
+    global sni_domains, xray_available
 
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
+
+    # Проверяем наличие Xray
+    import subprocess
+    try:
+        result = subprocess.run([XRAY_BINARY, "version"], capture_output=True, timeout=5)
+        xray_available = result.returncode == 0
+    except:
+        xray_available = False
+    print(f"{'✅' if xray_available else '⚠️ '} Xray: {'доступен' if xray_available else 'не найден, тест отключён'}", flush=True)
 
     sni_domains = set()
     extra_urls, std_urls, gh_repo = [], [], None
