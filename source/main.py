@@ -810,17 +810,6 @@ def validate(config, is_priority, is_white):
                     subnet16_counts[subnet16][config_type] -= 1
             return
 
-    # ── СЛОЙ 2: проверка через RU-прокси (последний, самый дорогой) ──────────
-    if not check_connectivity_from_ru(host, port, sni):
-        stats['ru_proxy_failed'] += 1
-        if sni_reserved:
-            with lock:
-                sni_usage_counts[sni] -= 1
-        if subnet16_reserved:
-            with lock:
-                subnet16_counts[subnet16][config_type] -= 1
-        return
-
     # Финальное добавление
     with lock:
         if host in seen_ips:
@@ -942,6 +931,35 @@ def finalize_list(results, is_vlm2=False):
 
         if not added_any:
             break
+
+    # ── СЛОЙ 2: RU-прокси — только для финальных кандидатов (~50-100 шт) ────────
+    if ru_proxies:
+        print(f"🔍 Прокси-проверка {len(final)} финальных конфигов...", flush=True)
+        proxy_results = {}
+        proxy_lock = threading.Lock()
+
+        def proxy_check_entry(entry):
+            h_m = re.search(r'@([^:/?#\s]+):(\d+)', entry['link'])
+            s_m = re.search(r'[?&]sni=([^&#\s]*)', entry['link'])
+            if not h_m or not s_m:
+                with proxy_lock:
+                    proxy_results[entry['link']] = True
+                return
+            h = h_m.group(1)
+            p = int(h_m.group(2))
+            s = s_m.group(1).lower().split('?')[0].split('&')[0]
+            ok = check_connectivity_from_ru(h, p, s)
+            with proxy_lock:
+                proxy_results[entry['link']] = ok
+                if not ok:
+                    stats['ru_proxy_failed'] += 1
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=RU_PROXY_MAX_WORKERS) as ex:
+            futs = [ex.submit(proxy_check_entry, e) for e in final]
+            concurrent.futures.wait(futs, timeout=60)
+
+        final = [e for e in final if proxy_results.get(e['link'], True)]
+        print(f"  ✅ Прошло прокси-проверку: {len(final)}", flush=True)
 
     speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
     return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
