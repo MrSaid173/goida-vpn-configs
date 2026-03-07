@@ -75,12 +75,11 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL = "https://speed.cloudflare.com/__down?bytes=500000"
-XRAY_TIMEOUT = 10         # секунд на весь тест одного конфига
+XRAY_TEST_URL = "https://web.max.ru"
+XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
-XRAY_MAX_PARALLEL = 6     # максимум одновременных xray-процессов
+XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
-XRAY_MIN_SPEED_KBPS = 100 # минимальная скорость KB/s чтобы конфиг прошёл тест
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -399,27 +398,13 @@ def xray_test(config_link):
                 XRAY_TEST_URL,
                 proxies=proxies,
                 timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
-                stream=True,
                 verify=False,
             )
-            if r.status_code != 200:
+            if r.status_code in (200, 204):
+                return True
+            else:
                 stats['xray_failed'] += 1
                 return False
-            downloaded = 0
-            start_dl = time.perf_counter()
-            for chunk in r.iter_content(chunk_size=8192):
-                downloaded += len(chunk)
-                if time.perf_counter() - start_dl > 2.0:
-                    break
-            elapsed = time.perf_counter() - start_dl
-            speed_kbps = (downloaded / elapsed) / 1024 if elapsed > 0 else 0
-            if downloaded < 50_000 or speed_kbps < XRAY_MIN_SPEED_KBPS:
-                stats['xray_failed'] += 1
-                stats['xray_slow'] += 1
-                return False
-            stats['xray_speed_sum'] += int(speed_kbps)
-            stats['xray_speed_count'] += 1
-            return True
 
         except requests.exceptions.ConnectionError:
             stats['xray_failed'] += 1
@@ -976,9 +961,6 @@ def print_statistics():
     # НОВОЕ: статистика RU-проверки
     print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
     print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
-    if stats['xray_speed_count'] > 0:
-        avg_speed = stats['xray_speed_sum'] // stats['xray_speed_count']
-        print(f"Средняя скорость Xray: {avg_speed} KB/s (по {stats['xray_speed_count']} конфигам)", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
