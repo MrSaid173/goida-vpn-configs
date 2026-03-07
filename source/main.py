@@ -1,7 +1,6 @@
 # mine mine mine mine mine mine mine
 
 import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
-import subprocess, tempfile
 from datetime import datetime, timedelta
 import zoneinfo
 from github import Github, Auth
@@ -23,10 +22,6 @@ MIN_RU_CONFIGS = 5
 MAX_RU_CONFIGS = 5
 MIN_HOST_CONFIGS = 3
 MAX_HOST_CONFIGS = 13
-MIN_SS = 1
-MAX_SS = 5
-MIN_HY2 = 1
-MAX_HY2 = 5
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -47,32 +42,15 @@ BANNED_ASNAME_PATTERNS = [
 MAX_JITTER = 80
 MAX_JITTER_RATIO = 0.4
 
-# --- НАСТРОЙКИ РЕАЛЬНОЙ ПРОВЕРКИ ЧЕРЕЗ XRAY ---
-XRAY_BIN = os.environ.get("XRAY_BIN", "xray")          # путь к бинарю xray
-XRAY_ENABLED = os.path.isfile(XRAY_BIN) or any(          # включаем если xray найден в PATH
-    os.path.isfile(os.path.join(p, XRAY_BIN))
-    for p in os.environ.get("PATH", "").split(":")
-)
-XRAY_MAX_PARALLEL = 7          # сколько Xray-процессов одновременно (не больше кол-ва CPU на раннере)
-XRAY_BASE_PORT = 19100         # начало пула портов для SOCKS5
-XRAY_STARTUP_DELAY = 1.3       # секунд ждём после запуска xray
-XRAY_HTTP_TIMEOUT = 10         # секунд на реальный HTTP-запрос
-XRAY_CHECK_URL = "http://cp.cloudflare.com/"
-
-# Порт для системного прокси (отдельно от пула Xray-проверок)
-SYSTEM_PROXY_PORT = 10808
-SECONDARY_PROXY_PORT = 10809   # порт второго прокси при переключении
-
 # Настройки конфигураций
 MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
-PROXY_SWITCH_THRESHOLD = MAX_CONFIGS // 2  # переключаемся когда vlm набрал половину
 MAX_TOP_RU_SNI = 5
 
 MAX_PER_SUBNET = 3
 MAX_PER_SUBNET16_RU_SNI = 1
 MAX_PER_SUBNET16_NONRU_SNI = 7
-MAX_PER_SUBNET16_OTHERS = 10 
+MAX_PER_SUBNET16_OTHERS = 10
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
@@ -89,18 +67,24 @@ MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
+# --- НАСТРОЙКИ RU-ПРОВЕРКИ (НОВОЕ) ---
+ANTIFILTER_URLS = [
+    "https://antifilter.download/list/subnet.lst",
+    "https://antifilter.download/list/allyouneed.lst",
+]
+RU_PROXY_SOURCES = [
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-status.txt",
+]
+RU_PROXY_CHECK_COUNT = 3
+RU_PROXY_POOL_SIZE = 30
+RU_PROXY_TIMEOUT = 4
+RU_PROXY_MAX_WORKERS = 8
+RU_PROXY_SUCCESS_RATIO = 0.5
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
-
-# Если запущен через RU прокси (джоб 2 в GitHub Actions) — используем его явно.
-# Переменная RU_PROXY_URL устанавливается в workflow перед запуском скрипта.
-# Если запущен через RU прокси (джоб 2 в GitHub Actions) — используем его явно.
-# Переменная RU_PROXY_URL устанавливается в workflow перед запуском скрипта.
-_ru_proxy = os.environ.get("RU_PROXY_URL", "").strip()
-if _ru_proxy:
-    session.proxies.update({"http": _ru_proxy, "https": _ru_proxy})
-    print(f"🔀 Трафик через RU прокси: {_ru_proxy}", flush=True)
 
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
@@ -166,33 +150,278 @@ sni_usage_counts = defaultdict(int)
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
-ss_count = 0
-hy2_count = 0
-# hosting_count убран — теперь считается динамически в can_add_hosting отдельно для каждого списка
 
 vlm_results = []
 vlm2_results = []
 
-pass_limit = MAX_CONFIGS  # лимит для текущего прохода (меняется между проходами)
-
 last_api_call = 0
-_ru_proxy = ""  # текущий активный системный прокси URL
-
-# Состояние переключения прокси
-secondary_proxy_proc = None   # subprocess второго прокси
-proxy_switched = False        # флаг что переключение уже произошло
-proxy_switch_lock = threading.Lock()
-
-# Пул портов для параллельных Xray-процессов
-# Семафор гарантирует не более XRAY_MAX_PARALLEL одновременных проверок
-xray_semaphore = threading.Semaphore(XRAY_MAX_PARALLEL)
-xray_port_pool = list(range(XRAY_BASE_PORT, XRAY_BASE_PORT + XRAY_MAX_PARALLEL))
-xray_port_lock = threading.Lock()
 
 # Статистика для отладки
 stats = defaultdict(int)
 api_calls_count = 0
 
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ (НОВОЕ) ---
+blocked_networks = []       # список IPv4Network из antifilter
+ru_proxies = []             # живые RU-прокси
+_blocked_cache = {}
+_blocked_cache_lock = threading.Lock()
+_proxy_check_cache = {}
+_proxy_check_lock = threading.Lock()
+
+
+# ============================================================
+# СЛОЙ 1: Загрузка базы РКН и RU-прокси
+# ============================================================
+
+def load_ru_blocklist_and_proxies():
+    """Загружает заблокированные подсети РКН и пул живых RU-прокси."""
+    global blocked_networks, ru_proxies
+
+    # --- Подсети РКН ---
+    print("📥 Загрузка базы РКН (antifilter.download)...", flush=True)
+    nets = []
+    for url in ANTIFILTER_URLS:
+        try:
+            resp = session.get(url, timeout=15, verify=False)
+            count = 0
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                try:
+                    nets.append(ipaddress.IPv4Network(line, strict=False))
+                    count += 1
+                except ValueError:
+                    try:
+                        nets.append(ipaddress.IPv4Network(f"{line}/32", strict=False))
+                        count += 1
+                    except:
+                        pass
+            print(f"  ✅ {url.split('/')[-1]}: {count} подсетей", flush=True)
+            if count > 1000:
+                break
+        except Exception as e:
+            print(f"  ⚠️  Не удалось загрузить {url}: {e}", flush=True)
+
+    blocked_networks = nets
+    print(f"📊 Заблокированных подсетей РКН: {len(blocked_networks)}", flush=True)
+
+    # --- RU-прокси ---
+    print("📥 Загрузка пула RU-прокси...", flush=True)
+    raw_proxies = []
+    for url in RU_PROXY_SOURCES:
+        try:
+            resp = session.get(url, timeout=10, verify=False)
+            for line in resp.text.splitlines():
+                m = re.match(r'^(\d+\.\d+\.\d+\.\d+):(\d+)', line.strip())
+                if m:
+                    raw_proxies.append(f"http://{m.group(1)}:{m.group(2)}")
+        except Exception as e:
+            print(f"  ⚠️  Прокси-источник недоступен: {e}", flush=True)
+
+    random.shuffle(raw_proxies)
+    print(f"  Кандидатов: {len(raw_proxies)}, проверяем живые...", flush=True)
+    ru_proxies = _filter_live_proxies(raw_proxies[:100])
+    print(f"📊 Живых прокси в пуле: {len(ru_proxies)}", flush=True)
+
+
+def _filter_live_proxies(proxy_list):
+    """Возвращает только живые прокси из списка."""
+    live = []
+    live_lock = threading.Lock()
+
+    def check_one(proxy):
+        try:
+            r = requests.get(
+                "http://httpbin.org/ip",
+                proxies={"http": proxy, "https": proxy},
+                timeout=RU_PROXY_TIMEOUT,
+                verify=False
+            )
+            if r.status_code == 200:
+                with live_lock:
+                    if len(live) < RU_PROXY_POOL_SIZE:
+                        live.append(proxy)
+        except:
+            pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
+        futures = [ex.submit(check_one, p) for p in proxy_list]
+        concurrent.futures.wait(futures, timeout=30)
+
+    return live
+
+
+# ============================================================
+# СЛОЙ 1: Проверка IP по базе РКН
+# ============================================================
+
+def is_blocked_in_ru(ip_str):
+    """Проверяет IP по загруженным подсетям РКН. Работает до пинга."""
+    with _blocked_cache_lock:
+        if ip_str in _blocked_cache:
+            return _blocked_cache[ip_str]
+    try:
+        addr = ipaddress.IPv4Address(ip_str)
+        result = any(addr in net for net in blocked_networks)
+    except:
+        result = False
+    with _blocked_cache_lock:
+        _blocked_cache[ip_str] = result
+    return result
+
+
+# ============================================================
+# СЛОЙ 2: Проверка соединения через RU-прокси
+# ============================================================
+
+def check_connectivity_from_ru(host, port, sni):
+    """
+    Проверяет TCP CONNECT + TLS handshake через российские прокси.
+    Если прокси нет — пропускает проверку (не блокирует конфиг).
+    """
+    if not ru_proxies:
+        return True
+
+    cache_key = f"{host}:{port}"
+    with _proxy_check_lock:
+        if cache_key in _proxy_check_cache:
+            return _proxy_check_cache[cache_key]
+
+    sample = random.sample(ru_proxies, min(RU_PROXY_CHECK_COUNT * 2, len(ru_proxies)))
+    successes = []
+    success_lock = threading.Lock()
+
+    def try_proxy(proxy):
+        raw = None
+        try:
+            proxy_host, proxy_port = proxy.replace("http://", "").split(":")
+            raw = socket.create_connection((proxy_host, int(proxy_port)), timeout=RU_PROXY_TIMEOUT)
+            connect_req = (
+                f"CONNECT {host}:{port} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                f"Proxy-Connection: keep-alive\r\n\r\n"
+            ).encode()
+            raw.sendall(connect_req)
+            response = raw.recv(256).decode('utf-8', errors='ignore')
+            if "200" not in response:
+                return False
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.set_ciphers(
+                'TLS_AES_128_GCM_SHA256:'
+                'TLS_AES_256_GCM_SHA384:'
+                'TLS_CHACHA20_POLY1305_SHA256:'
+                'ECDH+AESGCM:'
+                'ECDH+CHACHA20'
+            )
+            with ctx.wrap_socket(raw, server_hostname=sni) as tls:
+                tls.settimeout(RU_PROXY_TIMEOUT)
+                tls.sendall(
+                    f"GET / HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n".encode()
+                )
+                tls.recv(512)
+                with success_lock:
+                    successes.append(True)
+            return True
+        except:
+            return False
+        finally:
+            if raw:
+                try:
+                    raw.close()
+                except:
+                    pass
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=RU_PROXY_MAX_WORKERS) as ex:
+        futures = [ex.submit(try_proxy, p) for p in sample]
+        concurrent.futures.wait(futures, timeout=RU_PROXY_TIMEOUT * 2 + 2)
+
+    total_tried = len(sample)
+    total_ok = len(successes)
+
+    # Если все прокси мертвы — не блокируем конфиг
+    if total_tried == 0 or (total_ok == 0 and total_tried < 2):
+        result = True
+    else:
+        result = (total_ok / total_tried) >= RU_PROXY_SUCCESS_RATIO
+
+    with _proxy_check_lock:
+        _proxy_check_cache[cache_key] = result
+
+    return result
+
+
+# ============================================================
+# СЛОЙ 3: Проверка TLS fingerprint (только для security=tls)
+# ============================================================
+
+def should_check_tls_fingerprint(config):
+    """Нужна ли TLS-fingerprint проверка для этого конфига."""
+    l = config.lower()
+    if "security=tls" not in l:
+        return False
+    if "security=reality" in l or "pbk=" in l:
+        return False
+    return True
+
+
+def check_tls_not_intercepted(host, port, sni):
+    """
+    Проверяет, что DPI не перехватывает TLS-соединение.
+    Признаки перехвата: другой сертификат, принудительный TLS 1.2, аномально быстрый handshake.
+    """
+    try:
+        # Попытка с TLS 1.3
+        ctx13 = ssl.create_default_context()
+        ctx13.check_hostname = False
+        ctx13.verify_mode = ssl.CERT_NONE
+        ctx13.minimum_version = ssl.TLSVersion.TLSv1_3
+        ctx13.maximum_version = ssl.TLSVersion.TLSv1_3
+
+        t_start = time.perf_counter()
+        with socket.create_connection((host, port), timeout=2.0) as s:
+            with ctx13.wrap_socket(s, server_hostname=sni) as tls13:
+                t13 = (time.perf_counter() - t_start) * 1000
+                cert13 = tls13.getpeercert(binary_form=True)
+                ver13 = tls13.version()
+
+        if ver13 != "TLSv1.3":
+            stats['tls_fp_failed'] += 1
+            return False
+
+        # Второе соединение — сравниваем сертификаты
+        ctx_check = ssl.create_default_context()
+        ctx_check.check_hostname = False
+        ctx_check.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=2.0) as s:
+            with ctx_check.wrap_socket(s, server_hostname=sni) as tls_check:
+                cert_check = tls_check.getpeercert(binary_form=True)
+
+        if cert13 != cert_check:
+            stats['tls_fp_failed'] += 1
+            return False
+
+        # < 5ms = локальный перехват
+        if t13 < 5:
+            stats['tls_fp_failed'] += 1
+            return False
+
+        return True
+
+    except ssl.SSLError:
+        stats['tls_fp_failed'] += 1
+        return False
+    except:
+        # Таймаут и прочее — не блокируем
+        return True
+
+
+# ============================================================
+# ОРИГИНАЛЬНЫЕ ФУНКЦИИ (без изменений)
+# ============================================================
 
 def is_valid_ipv4(ip):
     try:
@@ -204,16 +433,6 @@ def is_valid_ipv4(ip):
 
 def is_technically_broken(link):
     l = link.lower()
-
-    # shadowsocks
-    if l.startswith("ss://"):
-        return not parse_ss(link)
-
-    # hysteria2
-    if l.startswith("hysteria2://"):
-        return not parse_hy2(link)
-
-    # vless и прочие — старая логика
     if "type=" not in l:
         return True
     if "type=http" in l and "type=httpupgrade" not in l:
@@ -252,105 +471,6 @@ def is_technically_broken(link):
     return False
 
 
-def parse_ss(link):
-    """
-    Парсит ss://[base64]@host:port#name или ss://base64#name
-    Возвращает (host, port, method, password) или None
-    """
-    try:
-        # Убираем фрагмент
-        clean = link.split('#')[0]
-        # ss://BASE64@host:port или ss://BASE64
-        body = clean[5:]  # убираем ss://
-
-        if '@' in body:
-            # Формат: BASE64@host:port
-            userinfo, hostport = body.rsplit('@', 1)
-            try:
-                decoded = base64.b64decode(userinfo + '==').decode('utf-8')
-            except Exception:
-                decoded = base64.b64decode(userinfo.replace('-', '+').replace('_', '/') + '==').decode('utf-8')
-            method, password = decoded.split(':', 1)
-        else:
-            # Формат: BASE64 (весь блок закодирован)
-            try:
-                decoded = base64.b64decode(body + '==').decode('utf-8')
-            except Exception:
-                return None
-            if '@' not in decoded:
-                return None
-            userinfo, hostport = decoded.rsplit('@', 1)
-            method, password = userinfo.split(':', 1)
-
-        # Парсим host:port
-        if hostport.startswith('['):
-            # IPv6
-            m = re.match(r'\[([^\]]+)\]:(\d+)', hostport)
-            if not m:
-                return None
-            host, port = m.group(1), int(m.group(2))
-        else:
-            parts = hostport.rsplit(':', 1)
-            if len(parts) != 2:
-                return None
-            host, port = parts[0], int(parts[1])
-
-        if not host:
-            return None
-        if not (1 <= port <= 65535):
-            return None
-        if not method or not password:
-            return None
-
-        return host, port, method, password
-    except Exception:
-        return None
-
-
-def parse_hy2(link):
-    """
-    Парсит hysteria2://password@host:port?params
-    Возвращает (host, port, password, sni) или None
-    """
-    try:
-        # hysteria2://password@host:port?sni=...&...#name
-        body = link[12:]  # убираем hysteria2://
-        body = body.split('#')[0]
-
-        if '@' not in body:
-            return None
-        password, rest = body.split('@', 1)
-
-        params_str = ''
-        if '?' in rest:
-            hostport, params_str = rest.split('?', 1)
-        else:
-            hostport = rest
-
-        if hostport.startswith('['):
-            m = re.match(r'\[([^\]]+)\]:(\d+)', hostport)
-            if not m:
-                return None
-            host, port = m.group(1), int(m.group(2))
-        else:
-            parts = hostport.rsplit(':', 1)
-            if len(parts) != 2:
-                return None
-            host, port = parts[0], int(parts[1])
-
-        if not host:
-            return None
-        if not (1 <= port <= 65535):
-            return None
-
-        params = dict(p.split('=', 1) for p in params_str.split('&') if '=' in p)
-        sni = params.get('sni', host)
-
-        return host, port, password, sni
-    except Exception:
-        return None
-
-
 def fast_ping(host, port, sni):
     try:
         start = time.perf_counter()
@@ -365,13 +485,12 @@ def fast_ping(host, port, sni):
 
 
 def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
-    """Проверяет каждый отдельный пинг на соответствие лимитам"""
     pings = [initial_ping]
-    
+
     if initial_ping < min_limit or initial_ping > max_limit:
         stats['ping_out_of_range'] += 1
         return None
-    
+
     max_attempts = 3
     try:
         for _ in range(max_attempts):
@@ -384,19 +503,17 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
                     stats['ping_out_of_range'] += 1
                     return None
                 pings.append(p)
-        
+
         if len(pings) < 4:
             return None
-        
+
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
-        
+
         if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
-            # БАГ #6 ИСПРАВЛЕН: статистика jitter теперь пишется здесь, а не во внешнем коде.
-            # Раньше внешний validate писал jitter_failed при любом None — в том числе при ping_out_of_range.
             stats['jitter_failed'] += 1
             return None
-        
+
         return avg, jit
     except:
         return None
@@ -404,28 +521,17 @@ def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
 
 def get_config_details(link):
     try:
-        l = link.lower()
-        if l.startswith("ss://"):
-            parsed = parse_ss(link)
-            if parsed:
-                host, port, method, password = parsed
-                return host, port, "", f"{method}:{password}"
-        elif l.startswith("hysteria2://"):
-            parsed = parse_hy2(link)
-            if parsed:
-                host, port, password, sni = parsed
-                return host, port, sni, password
-        else:
-            clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
-            cid_match = re.search(r'://([^@]+)@', clean_link)
-            h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
-            s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
-            if h_m and is_valid_ipv4(h_m.group(1)):
-                sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
-                return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
+        clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
+        cid_match = re.search(r'://([^@]+)@', clean_link)
+        h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
+        s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
+        if h_m and is_valid_ipv4(h_m.group(1)):
+            sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
+            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
     except:
         pass
     return None, None, None, None
+
 
 def get_config_type(ip_cc, is_white):
     if is_white:
@@ -438,7 +544,6 @@ def get_config_type(ip_cc, is_white):
 
 
 def get_subnet16_limit(config_type):
-    """Возвращает лимит для типа конфига"""
     limits = {
         "ru_sni": MAX_PER_SUBNET16_RU_SNI,
         "nonru_sni": MAX_PER_SUBNET16_NONRU_SNI,
@@ -457,8 +562,6 @@ def check_isp_info(ip_str):
             for attempt in range(2):
                 if stop_event.is_set():
                     return None, False
-                # БАГ #7 ИСПРАВЛЕН: раньше break стоял вне if, и цикл прерывался при первой неудаче —
-                # retry никогда не происходил. Теперь при неудаче делаем паузу и повторяем.
                 if attempt > 0:
                     time.sleep(1.0)
                 with lock:
@@ -472,13 +575,9 @@ def check_isp_info(ip_str):
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    # БАГ #1 ИСПРАВЛЕН: разделяем "плохой хостинг" (Cloudflare и т.д.) и обычный хостинг (VPS)
-                    # Раньше: is_banned = is_banned_hosting or is_banned_pattern, и хостинги всегда получали "BANNED"
-                    # вместо True, то есть hosting_count вечно = 0 и тег [HOST] никогда не появлялся
                     is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_bad_hosting or is_banned_pattern
-                    # Если IP — хостинг, но не "плохой" — помечаем True, иначе False
                     is_hosting_flag = r.get("hosting", False) and not is_bad_hosting
                     res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
@@ -498,17 +597,13 @@ def apply_clean_params(config_link):
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False, is_ss=False, is_hy2=False):
+def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True:
         tags.append("HOST")
     if is_white_sni:
         tags.append("SNI-RU")
-    if is_ss:
-        tags.append("SS")
-    if is_hy2:
-        tags.append("HY2")
     tag_str = f" [{'|'.join(tags)}]" if tags else ""
     new_name = f"{country_info['flag']} {country_info['full']} — #{index}{tag_str}"
     return f"{link.split('#')[0]}#{requests.utils.quote(new_name)}"
@@ -522,15 +617,12 @@ def fetch_raw_configs(url):
                 resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
             except:
                 pass
-        # БАГ #5 ИСПРАВЛЕН: старый фильтр `if not l.startswith(("ss://", "trojan://"))` был мёртвым —
-        # re.findall уже гарантирует только нужные протоколы, ss:// и trojan:// туда не попадают.
-        return [l.strip() for l in re.findall(r'(?:vless|ss|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
     except:
         return []
 
 
 def get_sni_limit(is_white, ip_cc):
-    """Определяет лимит использования SNI"""
     is_ru = (ip_cc == "RU")
     if is_white:
         if is_ru:
@@ -540,13 +632,6 @@ def get_sni_limit(is_white, ip_cc):
 
 
 def can_add_hosting(is_hosting, target_list):
-    """
-    БАГ #3 ИСПРАВЛЕН: hosting_count считался один раз, даже если конфиг шёл в оба списка.
-    Теперь считаем хосты отдельно для vlm и vlm2.
-    
-    БАГ #4 ИСПРАВЛЕН: старая логика 'резервации мест' срабатывала только при 97+ конфигах
-    и ничего реально не резервировала. Убрана как бессмысленная.
-    """
     if is_hosting is True:
         count = sum(1 for r in target_list if r['is_hosting'] is True)
         return count < MAX_HOST_CONFIGS
@@ -554,55 +639,15 @@ def can_add_hosting(is_hosting, target_list):
 
 
 def try_add_to_lists(entry):
-    """Пытается добавить конфиг в vlm и/или vlm2"""
-    global ru_vlm_count, ru_vlm2_count, xhttp_count, ss_count, hy2_count
+    global ru_vlm_count, ru_vlm2_count, xhttp_count
 
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
-    is_white = entry['white_sni']
-    is_ss = entry.get('is_ss', False)
-    is_hy2 = entry.get('is_hy2', False)
-
-    # RU конфиги — только SNI-RU
-    if is_ru and not is_white and not is_ss and not is_hy2:
-        return False
-    # RU конфиги не должны быть хостинговыми
-    if is_ru and is_hosting is True:
-        return False
 
     added_vlm = False
     added_vlm2 = False
 
-    # --- Shadowsocks ---
-    if is_ss:
-        if ss_count < MAX_SS and len(vlm_results) < pass_limit:
-            vlm_results.append(entry)
-            ss_count += 1
-            added_vlm = True
-        if ss_count <= MAX_SS and len(vlm2_results) < pass_limit:
-            vlm2_results.append(entry)
-            added_vlm2 = True
-        if added_vlm or added_vlm2:
-            return True
-        return False
-
-    # --- Hysteria2 ---
-    if is_hy2:
-        if hy2_count < MAX_HY2 and len(vlm_results) < pass_limit:
-            vlm_results.append(entry)
-            hy2_count += 1
-            added_vlm = True
-        if hy2_count <= MAX_HY2 and len(vlm2_results) < pass_limit:
-            vlm2_results.append(entry)
-            added_vlm2 = True
-        if added_vlm or added_vlm2:
-            return True
-        return False
-    
-    added_vlm = False
-    added_vlm2 = False
-    
     if is_xhttp:
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results):
@@ -611,22 +656,22 @@ def try_add_to_lists(entry):
                 xhttp_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < pass_limit and can_add_hosting(is_hosting, vlm2_results):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < pass_limit and can_add_hosting(is_hosting, vlm_results):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < pass_limit and can_add_hosting(is_hosting, vlm_results):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
             vlm_results.append(entry)
             added_vlm = True
-        
-        reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count) if len(vlm2_results) < pass_limit - 5 else 0
-        vlm2_space = pass_limit - reserved_for_xhttp
+
+        reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
+        vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
             if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
                 vlm2_results.append(entry)
@@ -635,396 +680,20 @@ def try_add_to_lists(entry):
         elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
             vlm2_results.append(entry)
             added_vlm2 = True
-    
-    if added_vlm or added_vlm2:
-        # БАГ #3 ИСПРАВЛЕН: убираем глобальный hosting_count — теперь считается динамически в can_add_hosting
-        return True
-    
-    return False
+
+    return added_vlm or added_vlm2
 
 
 def check_completion():
-    """Проверяет, достигнуты ли все цели."""
-    vlm_done = len(vlm_results) >= pass_limit
-    vlm2_done = len(vlm2_results) >= pass_limit
-
+    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
+    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
     if vlm_done and vlm2_done:
         stop_event.set()
         return True
     return False
 
 
-def build_xray_outbound(config_link):
-    """
-    Строит outbound-секцию Xray JSON.
-    Поддерживает: vless (TCP+Reality, TCP+TLS, WS+TLS, xHTTP), ss://, hysteria2://
-    Возвращает dict или None если конфиг не распознан.
-    """
-    ll = config_link.lower()
-
-    # --- Shadowsocks ---
-    if ll.startswith("ss://"):
-        parsed = parse_ss(config_link)
-        if not parsed:
-            return None
-        host, port, method, password = parsed
-        return {
-            "protocol": "shadowsocks",
-            "settings": {
-                "servers": [{
-                    "address": host,
-                    "port": port,
-                    "method": method,
-                    "password": password
-                }]
-            },
-            "streamSettings": {"network": "tcp"}
-        }
-
-    # --- Hysteria2 ---
-    if ll.startswith("hysteria2://"):
-        parsed = parse_hy2(config_link)
-        if not parsed:
-            return None
-        host, port, password, sni = parsed
-        params_m = re.search(r'\?([^#]*)', config_link)
-        params = dict(p.split('=', 1) for p in (params_m.group(1).split('&') if params_m else []) if '=' in p)
-        insecure = params.get('insecure', '0') == '1' or params.get('allowInsecure', '0') == '1'
-        return {
-            "protocol": "hysteria2",
-            "settings": {
-                "servers": [{
-                    "address": host,
-                    "port": port,
-                    "password": password
-                }]
-            },
-            "streamSettings": {
-                "network": "udp",
-                "security": "tls",
-                "tlsSettings": {
-                    "serverName": sni,
-                    "allowInsecure": insecure
-                }
-            }
-        }
-
-    # --- VLESS и остальные ---
-    host, port, sni, cid = get_config_details(config_link)
-    if not host or not cid:
-        return None
-
-    l = config_link
-    ll = l.lower()
-
-    # --- Transport ---
-    network = "tcp"
-    if "type=ws" in ll:
-        network = "ws"
-    elif "xhttp" in ll:
-        network = "xhttp"
-
-    # --- Path ---
-    path_m = re.search(r'[?&]path=([^&#\s]*)', l)
-    path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
-
-    # --- Security ---
-    security = "none"
-    if "security=tls" in ll:
-        security = "tls"
-    elif "security=reality" in ll:
-        security = "reality"
-
-    # --- Flow ---
-    flow = ""
-    if "flow=xtls-rprx-vision" in ll:
-        flow = "xtls-rprx-vision"
-
-    # --- Fingerprint ---
-    fp_m = re.search(r'[?&]fp=([^&#\s]*)', ll)
-    fingerprint = fp_m.group(1) if fp_m else "chrome"
-    if fingerprint == "random":
-        fingerprint = "chrome"
-
-    # --- Reality params ---
-    pbk_m = re.search(r'[?&]pbk=([^&#\s]*)', l)
-    sid_m = re.search(r'[?&]sid=([^&#\s]*)', l)
-
-    # --- Stream settings ---
-    stream_settings = {"network": network, "security": security}
-
-    if network == "ws":
-        stream_settings["wsSettings"] = {
-            "path": path,
-            "headers": {"Host": sni}
-        }
-    elif network == "xhttp":
-        stream_settings["xhttpSettings"] = {"path": path, "host": sni}
-
-    if security == "tls":
-        stream_settings["tlsSettings"] = {
-            "serverName": sni,
-            "allowInsecure": True,
-            "fingerprint": fingerprint
-        }
-    elif security == "reality":
-        if not pbk_m:
-            return None  # Reality без pbk невалидна
-        stream_settings["realitySettings"] = {
-            "serverName": sni,
-            "fingerprint": fingerprint,
-            "publicKey": pbk_m.group(1),
-            "shortId": sid_m.group(1) if sid_m else "",
-        }
-
-    return {
-        "protocol": "vless",
-        "settings": {
-            "vnext": [{
-                "address": host,
-                "port": port,
-                "users": [{"id": cid, "encryption": "none", "flow": flow}]
-            }]
-        },
-        "streamSettings": stream_settings
-    }
-
-
-def real_check_via_xray(config_link, socks_port, check_url=None):
-    """
-    Запускает Xray с конфигом на указанном SOCKS5-порту,
-    делает реальный HTTP-запрос через него.
-    Если активен системный прокси (_ru_proxy) — строит цепочку:
-      runner → RU прокси → проверяемый конфиг → интернет
-    Возвращает задержку в мс или None если конфиг мёртвый.
-    """
-    outbound = build_xray_outbound(config_link)
-    if not outbound:
-        return None
-
-    outbounds = []
-
-    # Если есть активный системный прокси — добавляем цепочку
-    if _ru_proxy:
-        # Парсим адрес системного прокси (socks5h://127.0.0.1:PORT)
-        proxy_port_m = re.search(r':(\d+)$', _ru_proxy)
-        proxy_port = int(proxy_port_m.group(1)) if proxy_port_m else SYSTEM_PROXY_PORT
-
-        # Основной outbound использует RU прокси как upstream
-        outbound["tag"] = "vless-out"
-        outbound["proxySettings"] = {"tag": "ru-proxy"}
-
-        outbounds = [
-            outbound,
-            {
-                "tag": "ru-proxy",
-                "protocol": "socks",
-                "settings": {
-                    "servers": [{"address": "127.0.0.1", "port": proxy_port}]
-                }
-            }
-        ]
-    else:
-        outbounds = [outbound]
-
-    xray_config = {
-        "log": {"loglevel": "none"},
-        "inbounds": [{
-            "listen": "127.0.0.1",
-            "port": socks_port,
-            "protocol": "socks",
-            "settings": {"auth": "noauth", "udp": False}
-        }],
-        "outbounds": outbounds
-    }
-
-    cfg_path = None
-    proc = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w', suffix='.json', delete=False, prefix='xray_cfg_'
-        ) as f:
-            json.dump(xray_config, f)
-            cfg_path = f.name
-
-        proc = subprocess.Popen(
-            [XRAY_BIN, "run", "-config", cfg_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-
-        time.sleep(XRAY_STARTUP_DELAY)
-
-        # Если Xray упал сразу — конфиг невалиден (неверный UUID, порт занят и т.д.)
-        if proc.poll() is not None:
-            return None
-
-        proxies = {
-            "http":  f"socks5h://127.0.0.1:{socks_port}",
-            "https": f"socks5h://127.0.0.1:{socks_port}",
-        }
-        start = time.perf_counter()
-        resp = requests.get(
-            check_url or XRAY_CHECK_URL,
-            proxies=proxies,
-            timeout=XRAY_HTTP_TIMEOUT,
-            allow_redirects=True,
-            verify=False
-        )
-        latency = int((time.perf_counter() - start) * 1000)
-
-        # cp.cloudflare.com отвечает 204; любой 2xx/3xx считаем успехом
-        if resp.status_code < 400:
-            return latency
-
-    except requests.exceptions.Timeout:
-        pass  # таймаут = конфиг жив, но очень медленный — всё равно отклоняем
-    except Exception:
-        pass
-    finally:
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        if cfg_path and os.path.exists(cfg_path):
-            try:
-                os.unlink(cfg_path)
-            except OSError:
-                pass
-
-    return None
-
-
-def acquire_xray_port():
-    """Берёт свободный порт из пула. Блокируется если все заняты."""
-    xray_semaphore.acquire()
-    with xray_port_lock:
-        return xray_port_pool.pop()
-
-
-def release_xray_port(port):
-    """Возвращает порт в пул."""
-    with xray_port_lock:
-        xray_port_pool.append(port)
-    xray_semaphore.release()
-
-
-def switch_to_secondary_proxy():
-    """
-    Пробует конфиги начиная с индекса 1, затем 2, 3, 4.
-    Если все недоступны — возвращается к первому (индекс 0).
-    """
-    global secondary_proxy_proc, proxy_switched, _ru_proxy
-
-    with proxy_switch_lock:
-        if proxy_switched:
-            return
-        proxy_switched = True
-
-    configs_file = "proxy_configs.json"
-    if not os.path.exists(configs_file):
-        return
-
-    try:
-        with open(configs_file) as f:
-            configs = json.load(f)
-    except Exception:
-        return
-
-    if not configs:
-        return
-
-    # Пробуем начиная с индекса 1, fallback на 0
-    indices = list(range(1, len(configs))) + [0]
-
-    for idx in indices:
-        cfg = dict(configs[idx])
-        cfg['inbounds'][0]['port'] = SECONDARY_PROXY_PORT
-        cfg_path = None
-        proc = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode='w', suffix='.json', delete=False, prefix='xray_secondary_'
-            ) as f:
-                json.dump(cfg, f)
-                cfg_path = f.name
-
-            if secondary_proxy_proc and secondary_proxy_proc.poll() is None:
-                secondary_proxy_proc.terminate()
-                try: secondary_proxy_proc.wait(timeout=2)
-                except: secondary_proxy_proc.kill()
-
-            proc = subprocess.Popen(
-                [XRAY_BIN, "run", "-config", cfg_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            )
-            time.sleep(XRAY_STARTUP_DELAY)
-
-            if proc.poll() is not None:
-                label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
-                print(f"  Конфиг {label} не запустился", flush=True)
-                continue
-
-            secondary_url = f"socks5h://127.0.0.1:{SECONDARY_PROXY_PORT}"
-            proxy_ok = False
-            for attempt in range(2):
-                try:
-                    requests.get(
-                        "http://cp.cloudflare.com/",
-                        proxies={"http": secondary_url, "https": secondary_url},
-                        timeout=5,
-                        verify=False
-                    )
-                    proxy_ok = True
-                    break
-                except Exception as e:
-                    label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
-                    print(f"  Конфиг {label}, попытка {attempt+1}/2: {e}", flush=True)
-                    time.sleep(1)
-
-            if proxy_ok:
-                secondary_proxy_proc = proc
-                _ru_proxy = secondary_url
-                with lock:
-                    session.proxies.update({"http": secondary_url, "https": secondary_url})
-                try:
-                    ob = cfg['outbounds'][0]
-                    proto = ob.get('protocol', '')
-                    if proto == 'vless':
-                        host = ob['settings']['vnext'][0]['address']
-                    elif proto in ('shadowsocks', 'hysteria2'):
-                        host = ob['settings']['servers'][0]['address']
-                    else:
-                        host = '?'
-                except Exception:
-                    host = '?'
-                label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
-                print(f"🔀 Переключились на прокси {label}: {host}:{SECONDARY_PROXY_PORT}", flush=True)
-                return
-            else:
-                proc.terminate()
-                try: proc.wait(timeout=2)
-                except: proc.kill()
-
-        except Exception as e:
-            label = "первый (fallback)" if idx == 0 else f"#{idx+1}"
-            print(f"  Ошибка конфига {label}: {e}", flush=True)
-            if proc and proc.poll() is None:
-                proc.terminate()
-        finally:
-            if cfg_path and os.path.exists(cfg_path):
-                try: os.unlink(cfg_path)
-                except: pass
-
-    print("❌ Ни один прокси не доступен для второго прохода", flush=True)
-
-
 def validate(config, is_priority, is_white):
-    """ИСПРАВЛЕНО: Основная функция валидации с проверкой подсети /16"""
     if stop_event.is_set():
         stats['stopped'] += 1
         return
@@ -1033,14 +702,21 @@ def validate(config, is_priority, is_white):
         stats['broken'] += 1
         return
 
-    is_xhttp = "xhttp" in config.lower()
-    is_ss = config.lower().startswith("ss://")
-    is_hy2 = config.lower().startswith("hysteria2://")
-
     host, port, sni, cid = get_config_details(config)
-    if not host or (not sni and not is_ss and not is_hy2):
+    if not host or not sni:
         stats['no_details'] += 1
         return
+
+    if host in failed_ips:
+        stats['failed_ip_cache'] += 1
+        return
+
+    # ── СЛОЙ 1: фильтр РКН (до пинга — быстро) ──────────────────────────────
+    if is_blocked_in_ru(host):
+        stats['blocked_rkn'] += 1
+        return
+
+    is_xhttp = "xhttp" in config.lower()
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
 
@@ -1049,11 +725,9 @@ def validate(config, is_priority, is_white):
             stats['duplicate_ip'] += 1
             return
 
-        # SS и HY2 не имеют SNI в обычном смысле — пропускаем проверку
-        if not is_ss and not is_hy2:
-            if (sni in sni_domains) != is_white:
-                stats['sni_mismatch'] += 1
-                return
+        if (sni in sni_domains) != is_white:
+            stats['sni_mismatch'] += 1
+            return
 
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
             stats['excluded_sni'] += 1
@@ -1067,18 +741,15 @@ def validate(config, is_priority, is_white):
             stats['id_limit'] += 1
             return
 
-    # Первый пинг (для HY2 пропускаем — UDP не поддаётся TCP-пингу)
-    if is_hy2:
-        p1 = 500  # фиктивный пинг, реальная задержка будет определена Xray-проверкой
-    else:
-        p1 = fast_ping(host, port, sni)
-        initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
-        if not p1 or p1 > initial_max_p:
-            with lock:
-                failed_subnets[subnet] += 1
-                failed_ips.add(host)
-            stats['first_ping_failed'] += 1
-            return
+    # Первый пинг
+    p1 = fast_ping(host, port, sni)
+    initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
+    if not p1 or p1 > initial_max_p:
+        with lock:
+            failed_subnets[subnet] += 1
+            failed_ips.add(host)
+        stats['first_ping_failed'] += 1
+        return
 
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
@@ -1086,7 +757,7 @@ def validate(config, is_priority, is_white):
         stats['isp_banned'] += 1
         return
 
-    # НОВОЕ: Проверка лимита подсети /16
+    # Проверка лимита подсети /16
     config_type = get_config_type(ip_cc, is_white)
     subnet16_limit = get_subnet16_limit(config_type)
 
@@ -1117,12 +788,20 @@ def validate(config, is_priority, is_white):
         min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
         max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
 
-    # Полный анализ пинга (HY2 пропускаем — UDP)
-    if is_hy2:
-        full = (p1, 0)
-    else:
-        full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
-        if not full:
+    # Полный анализ пинга
+    full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
+    if not full:
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        return
+
+    # ── СЛОЙ 3: TLS fingerprint (только для security=tls) ────────────────────
+    if should_check_tls_fingerprint(config):
+        if not check_tls_not_intercepted(host, port, sni):
             if sni_reserved:
                 with lock:
                     sni_usage_counts[sni] -= 1
@@ -1131,43 +810,16 @@ def validate(config, is_priority, is_white):
                     subnet16_counts[subnet16][config_type] -= 1
             return
 
-    # --- РЕАЛЬНАЯ ПРОВЕРКА ЧЕРЕЗ XRAY ---
-    if XRAY_ENABLED:
-        # RU конфиги проверяем через российский ресурс (cloudflare недоступен из РФ)
-        # Иностранные и SS/HY2 — через cloudflare
-        if is_ru and is_white:
-            xray_check = "http://ya.ru/"
-        else:
-            xray_check = XRAY_CHECK_URL
-
-        xray_port = acquire_xray_port()
-        try:
-            real_latency = real_check_via_xray(config, xray_port, xray_check)
-        finally:
-            release_xray_port(xray_port)
-
-        if real_latency is None:
-            if sni_reserved:
-                with lock:
-                    sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                with lock:
-                    subnet16_counts[subnet16][config_type] -= 1
-            stats['xray_dead'] += 1
-            return
-
-        real_max = (4000 if is_ru else 4500) + (2000 if proxy_switched else 0)
-        if real_latency > real_max:
-            if sni_reserved:
-                with lock:
-                    sni_usage_counts[sni] -= 1
-            if subnet16_reserved:
-                with lock:
-                    subnet16_counts[subnet16][config_type] -= 1
-            stats['xray_too_slow'] += 1
-            return
-
-        full = (real_latency, full[1])
+    # ── СЛОЙ 2: проверка через RU-прокси (последний, самый дорогой) ──────────
+    if not check_connectivity_from_ru(host, port, sni):
+        stats['ru_proxy_failed'] += 1
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        return
 
     # Финальное добавление
     with lock:
@@ -1195,8 +847,6 @@ def validate(config, is_priority, is_white):
             "white_sni": is_white,
             "is_hosting": ip_h_stat,
             "is_xhttp": is_xhttp,
-            "is_ss": is_ss,
-            "is_hy2": is_hy2,
         }
 
         if try_add_to_lists(entry):
@@ -1217,7 +867,6 @@ def validate(config, is_priority, is_white):
 
 
 def fetch_group_data(urls):
-    """Загружает конфиги из списка URL"""
     raw = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
@@ -1229,44 +878,37 @@ def fetch_group_data(urls):
 
 
 def finalize_list(results, is_vlm2=False):
-    """Финализирует список конфигов для vlm или vlm2"""
-    # ШАГ 1: Собираем все RU + SNI-RU и берём ТОП-5
     all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
     top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
-    
-    # ШАГ 2: XHTTP для vlm2
+
     xhttp_bucket = []
     if is_vlm2:
         xhttp_bucket = sorted([r for r in results if r.get('is_xhttp')], key=lambda x: x['ping'])
-    
-    # ШАГ 3: Создаём множества ссылок для быстрой проверки
+
     top_fixed_links = {r['link'] for r in top_fixed}
     xhttp_bucket_links = {r['link'] for r in xhttp_bucket}
-    
+
     ru_sni_configs = []
     non_ru_sni_configs = []
-    
+
     for r in results:
-        # ИСПРАВЛЕНО: проверяем по link, а не по объекту
         if r['link'] in top_fixed_links or r['link'] in xhttp_bucket_links:
             continue
         if r['white_sni']:
             ru_sni_configs.append(r)
         else:
             non_ru_sni_configs.append(r)
-    
+
     ru_sni_configs.sort(key=lambda x: x['ping'])
     non_ru_sni_configs.sort(key=lambda x: x['ping'])
-    
-    # ШАГ 4: Собираем финальный список
+
     final = list(top_fixed)
     final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
-    
+
     while len(final) < MAX_CONFIGS:
         added_any = False
-        
-        # Добавляем XHTTP сразу после ТОП-5
+
         if is_vlm2 and xhttp_bucket and len(final) == len(top_fixed):
             count = 0
             while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
@@ -1276,8 +918,7 @@ def finalize_list(results, is_vlm2=False):
                     final_links.add(config['link'])
                     count += 1
                     added_any = True
-        
-        # Добавляем обычные конфиги
+
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
             config = non_ru_sni_configs.pop(0)
@@ -1286,8 +927,7 @@ def finalize_list(results, is_vlm2=False):
                 final_links.add(config['link'])
                 count += 1
                 added_any = True
-        
-        # Добавляем дополнительные SNI-RU
+
         count = 0
         while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_configs:
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
@@ -1299,16 +939,15 @@ def finalize_list(results, is_vlm2=False):
                 count += 1
                 added_any = True
                 current_ru_sni_total += 1
-        
+
         if not added_any:
             break
-    
-    # ШАГ 5: Финальная нумерация по скорости
+
     speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-    return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'], r.get('is_ss', False), r.get('is_hy2', False)) for r in final]
+    return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
+
 
 def print_statistics():
-    """Выводит статистику обработки"""
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
     print(f"Добавлено: {stats['added']}", flush=True)
     print(f"Запросов к ip-api: {api_calls_count} (кэш попаданий: {stats['duplicate_ip'] + stats['race_duplicate']})", flush=True)
@@ -1324,12 +963,12 @@ def print_statistics():
     print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
-    if XRAY_ENABLED:
-        print(f"Xray мёртвых (реальная проверка): {stats['xray_dead']}", flush=True)
-    else:
-        print("⚠️  Xray не найден — реальная проверка отключена", flush=True)
+    # НОВОЕ: статистика RU-проверки
+    print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
+    print(f"Не прошло RU-прокси: {stats['ru_proxy_failed']}", flush=True)
+    print(f"Не прошло TLS-fingerprint: {stats['tls_fp_failed']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, SS: {ss_count}, HY2: {hy2_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
+    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
 
 def main():
@@ -1337,99 +976,61 @@ def main():
 
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
-    
+
     sni_domains = set()
     extra_urls, std_urls, gh_repo = [], [], None
-    
+
     try:
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
     except:
         pass
-    
+
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
-        
+
         def get_list(var):
             m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
             return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
-        
+
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
-        
+
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update([l.strip().lower() for l in sec_text.splitlines() if l.strip()])
     except:
         pass
-    
+
     print(f"Загружено SNI доменов: {len(sni_domains)}", flush=True)
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
-    
+
+    # НОВОЕ: загружаем базу РКН и RU-прокси один раз перед основным циклом
+    load_ru_blocklist_and_proxies()
+
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
 
-    # Объединяем extra + std для не-SNI-RU в одну корзину с перемешиванием
     raw_nonwhite = list(set(raw_extra + raw_std))
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
     check_order = [
-        (raw_extra, True, True),    # extra + SNI-RU
-        (raw_std, False, True),     # std + SNI-RU
-        (raw_nonwhite, True, False) # extra+std объединённые, не SNI-RU
+        (raw_extra, True, True),
+        (raw_std, False, True),
+        (raw_nonwhite, True, False)
     ]
 
-    def run_validation_pass(pass_num):
-        """Один проход по всем конфигам. Уже найденные пропустятся как дубли."""
-        print(f"🔁 Проход {pass_num}...", flush=True)
-        if pass_num > 1:
-            random.shuffle(raw_nonwhite)  # новый порядок для второго прокси
-        for group, priority, white in check_order:
-            if stop_event.is_set():
-                break
-            workers = min(len(group), 40) if group else 1
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-                for c in group:
-                    if stop_event.is_set():
-                        break
-                    v.submit(validate, c, priority, white)
+    for group, priority, white in check_order:
+        if stop_event.is_set():
+            break
+        workers = min(len(group), 40) if group else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+            for c in group:
+                if stop_event.is_set():
+                    break
+                v.submit(validate, c, priority, white)
 
-    # Первый проход — останавливаемся на половине MAX_CONFIGS
-    global pass_limit
-    pass_limit = MAX_CONFIGS // 2
-    run_validation_pass(1)
-    stop_event.clear()
-
-    # Второй проход — если есть второй прокси, добираем до полного MAX_CONFIGS
-    pass_limit = MAX_CONFIGS
-    if os.path.exists("proxy_configs.json"):
-        try:
-            with open("proxy_configs.json") as f:
-                proxy_list = json.load(f)
-            if len(proxy_list) >= 2:
-                print("🔀 Переключаемся на второй прокси для второго прохода...", flush=True)
-                # Запускаем с таймаутом 45с чтобы не зависнуть
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    fut = ex.submit(switch_to_secondary_proxy)
-                    try:
-                        fut.result(timeout=20)
-                    except concurrent.futures.TimeoutError:
-                        print("⚠️ Переключение прокси превысило таймаут 20с", flush=True)
-                if proxy_switched and _ru_proxy:
-                    with lock:
-                        failed_ips.clear()
-                        failed_subnets.clear()
-                        subnet_counts.clear()
-                        sni_usage_counts.clear()
-                        subnet16_counts.clear()
-                    stop_event.clear()
-                    run_validation_pass(2)
-                else:
-                    print("⚠️ Второй прокси недоступен, пропускаем второй проход", flush=True)
-        except Exception as e:
-            print(f"⚠️ Ошибка при переключении прокси: {e}", flush=True)
-    
     print_statistics()
-    
+
     if gh_repo:
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
@@ -1441,18 +1042,9 @@ def main():
             except:
                 gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
                 print(f"✅ Создан {fn}: {len(output)} конфигов", flush=True)
-    
-    # Останавливаем второй прокси если был запущен
-    if secondary_proxy_proc and secondary_proxy_proc.poll() is None:
-        secondary_proxy_proc.terminate()
-        try:
-            secondary_proxy_proc.wait(timeout=2)
-        except:
-            secondary_proxy_proc.kill()
 
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 
 if __name__ == "__main__":
     main()
-            
