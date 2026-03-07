@@ -75,10 +75,10 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL = "http://cp.cloudflare.com"
-XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
+XRAY_TEST_URL = "https://www.gstatic.com/generate_204"
+XRAY_TIMEOUT = 8          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
-XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
+XRAY_MAX_PARALLEL = 6     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 
 
@@ -400,6 +400,10 @@ def xray_test(config_link):
                 timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
                 verify=False,
             )
+            h_m = re.search(r'@([^:/?#\s]+):(\d+)', config_link)
+            host_log = h_m.group(1) if h_m else "?"
+            port_log = h_m.group(2) if h_m else "?"
+            print(f"[XRAY] {host_log}:{port_log} | HTTP: {r.status_code} | байт: {len(r.content)}", flush=True)
             if r.status_code in (200, 204):
                 return True
             else:
@@ -963,7 +967,7 @@ def print_statistics():
     print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
-    print(f"[XRAY] {host}:{port} | статус процесса: {proc.poll()} | HTTP статус: {r.status_code} | размер ответа: {len(r.content)}", flush=True)
+
 
 def main():
     global sni_domains, xray_available
