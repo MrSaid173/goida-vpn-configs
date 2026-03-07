@@ -442,6 +442,8 @@ def is_technically_broken(link):
     l = link.lower()
     if "type=" not in l:
         return True
+    if "type=ws" in l and "security=tls" in l:
+        return True
     if "type=http" in l and "type=httpupgrade" not in l:
         return True
     if "type=splithttp" in l:
