@@ -80,6 +80,7 @@ XRAY_TIMEOUT = 10         # секунд на весь тест одного к�
 XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 6     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
+XRAY_MIN_SPEED_KBPS = 100 # минимальная скорость KB/s чтобы конфиг прошёл тест
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -410,9 +411,14 @@ def xray_test(config_link):
                 downloaded += len(chunk)
                 if time.perf_counter() - start_dl > 2.0:
                     break
-            if downloaded < 50_000:
+            elapsed = time.perf_counter() - start_dl
+            speed_kbps = (downloaded / elapsed) / 1024 if elapsed > 0 else 0
+            if downloaded < 50_000 or speed_kbps < XRAY_MIN_SPEED_KBPS:
                 stats['xray_failed'] += 1
+                stats['xray_slow'] += 1
                 return False
+            stats['xray_speed_sum'] += int(speed_kbps)
+            stats['xray_speed_count'] += 1
             return True
 
         except requests.exceptions.ConnectionError:
@@ -970,6 +976,9 @@ def print_statistics():
     # НОВОЕ: статистика RU-проверки
     print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
     print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
+    if stats['xray_speed_count'] > 0:
+        avg_speed = stats['xray_speed_sum'] // stats['xray_speed_count']
+        print(f"Средняя скорость Xray: {avg_speed} KB/s (по {stats['xray_speed_count']} конфигам)", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
 
