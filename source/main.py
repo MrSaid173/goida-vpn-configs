@@ -963,7 +963,7 @@ def print_statistics():
     print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
     print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
     print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
-
+    print(f"[XRAY] {host}:{port} | статус процесса: {proc.poll()} | HTTP статус: {r.status_code} | размер ответа: {len(r.content)}", flush=True)
 
 def main():
     global sni_domains, xray_available
