@@ -75,10 +75,10 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL = "http://cp.cloudflare.com"
-XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
+XRAY_TEST_URL = "https://speed.cloudflare.com/__down?bytes=500000"
+XRAY_TIMEOUT = 10         # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
-XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
+XRAY_MAX_PARALLEL = 6     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 
 
@@ -345,10 +345,7 @@ def _build_xray_config(config_link, socks_port):
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": False},
         }],
-        "outbounds": [outbound],
-        "routing": {
-            "rules": [{"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}]
-        },
+        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
     }
     return config
 
@@ -401,13 +398,22 @@ def xray_test(config_link):
                 XRAY_TEST_URL,
                 proxies=proxies,
                 timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
+                stream=True,
                 verify=False,
             )
-            if r.status_code in (200, 204):
-                return True
-            else:
+            if r.status_code != 200:
                 stats['xray_failed'] += 1
                 return False
+            downloaded = 0
+            start_dl = time.perf_counter()
+            for chunk in r.iter_content(chunk_size=8192):
+                downloaded += len(chunk)
+                if time.perf_counter() - start_dl > 2.0:
+                    break
+            if downloaded < 50_000:
+                stats['xray_failed'] += 1
+                return False
+            return True
 
         except requests.exceptions.ConnectionError:
             stats['xray_failed'] += 1
