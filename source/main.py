@@ -56,7 +56,7 @@ MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU_RU = 3  # RU IP + white SNI
+MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
