@@ -1,11 +1,25 @@
 # mine mine mine mine mine mine mine
 
-import os, re, requests, urllib3, concurrent.futures, ipaddress, base64, json, time, socket, ssl, random
-from datetime import datetime, timedelta
+import os
+import re
+import base64
+import json
+import time
+import socket
+import ssl
+import random
+import subprocess
+import tempfile
+import threading
+import concurrent.futures
+import ipaddress
+from collections import defaultdict
+from datetime import datetime
+
+import urllib3
+import requests
 import zoneinfo
 from github import Github, Auth
-import threading
-from collections import defaultdict
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
@@ -25,7 +39,11 @@ MAX_HOST_CONFIGS = 13
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_KEYWORDS = ["cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google", "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb", "m247", "akamai", "host", "baykov", "dataforest"]
+BAD_HOSTING_KEYWORDS = [
+    "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
+    "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
+    "m247", "akamai", "host", "baykov", "dataforest",
+]
 
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
@@ -35,7 +53,7 @@ BANNED_ASNAME_PATTERNS = [
     #"-lv", "-lt", "-si", "-sk", "-hr", "-rs", "-me", "-ba", "-al", "-is", "-lu", "-mt",
     #"-cn", "-hk", "-sg", "-jp", "-kr", "-in", "-tw", "-vn", "-th", "-my", "-ph", "-id",
     #"-ae", "-il", "-sa", "-ir", "-iq", "-jo", "-kw", "-qa", "-om", "-ye",
-    "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn"
+    "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn",
 ]
 
 # Настройки Jitter
@@ -67,6 +85,15 @@ MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
+# Таймауты (секунды)
+FAST_PING_TIMEOUT = 1.2
+FULL_PING_PAUSE = 0.15
+FULL_PING_ATTEMPTS = 3
+FULL_PING_MIN_SAMPLES = 4
+
+# Rate-limit для ip-api.com
+API_RATE_LIMIT_INTERVAL = 1.4  # минимальный интервал между запросами
+
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
     "https://antifilter.download/list/subnet.lst",
@@ -82,7 +109,7 @@ XRAY_TIMEOUT = 4          # секунд на весь тест одного к�
 XRAY_STARTUP_WAIT = 1.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
-
+XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -135,10 +162,11 @@ COUNTRY_MAP = {
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
 lock = threading.Lock()
+stats_lock = threading.Lock()   # отдельный лок для счётчиков статистики
 api_semaphore = threading.Semaphore(3)
 stop_event = threading.Event()
 
-# Кэши и счетчики
+# Кэши и счетчики (защищены основным lock)
 ip_cache = {}
 failed_ips = set()
 failed_subnets = defaultdict(int)
@@ -148,7 +176,7 @@ subnet16_counts = defaultdict(lambda: defaultdict(int))
 id_counts = defaultdict(int)
 sni_usage_counts = defaultdict(int)
 
-# Счетчики для vlm/vlm2
+# Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
@@ -156,15 +184,15 @@ xhttp_count = 0
 vlm_results = []
 vlm2_results = []
 
-last_api_call = 0
+last_api_call = 0.0
 
-# Статистика для отладки
+# Статистика для отладки (защищена stats_lock)
 stats = defaultdict(int)
 api_calls_count = 0
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ ---
 blocked_networks = []       # список IPv4Network из antifilter
-_blocked_cache = {}
+_blocked_cache: dict = {}
 _blocked_cache_lock = threading.Lock()
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ XRAY-ТЕСТА ---
@@ -174,19 +202,26 @@ _xray_port_lock = threading.Lock()
 xray_available = False      # выставляется в main() если бинарь найден
 
 
+def _inc_stat(key: str, amount: int = 1) -> None:
+    """Потокобезопасное увеличение счётчика статистики."""
+    with stats_lock:
+        stats[key] += amount
+
+
 # ============================================================
 # СЛОЙ 1: Загрузка базы РКН и RU-прокси
 # ============================================================
 
-def load_ru_blocklist():
+def load_ru_blocklist() -> None:
     """Загружает заблокированные подсети РКН из antifilter.download."""
     global blocked_networks
 
     print("📥 Загрузка базы РКН (antifilter.download)...", flush=True)
-    nets = []
+    nets: list[ipaddress.IPv4Network] = []
     for url in ANTIFILTER_URLS:
         try:
             resp = session.get(url, timeout=15, verify=False)
+            resp.raise_for_status()
             count = 0
             for line in resp.text.splitlines():
                 line = line.strip()
@@ -199,41 +234,60 @@ def load_ru_blocklist():
                     try:
                         nets.append(ipaddress.IPv4Network(f"{line}/32", strict=False))
                         count += 1
-                    except:
+                    except ValueError:
                         pass
             print(f"  ✅ {url.split('/')[-1]}: {count} записей", flush=True)
-        except Exception as e:
+        except requests.RequestException as e:
             print(f"  ⚠️  Не удалось загрузить {url}: {e}", flush=True)
 
-    blocked_networks = nets
+    # Сортируем для бинарного поиска (по int-представлению сети)
+    blocked_networks = sorted(nets, key=lambda n: int(n.network_address))
     print(f"📊 Заблокированных подсетей РКН: {len(blocked_networks)}", flush=True)
 
 
 # ============================================================
-# СЛОЙ 1: Проверка IP по базе РКН
+# СЛОЙ 1: Проверка IP по базе РКН  (бинарный поиск)
 # ============================================================
 
-def is_blocked_in_ru(ip_str):
-    """Проверяет IP по загруженным подсетям РКН. Работает до пинга."""
+def is_blocked_in_ru(ip_str: str) -> bool:
+    """
+    Проверяет IP по загруженным подсетям РКН.
+    Использует бинарный поиск вместо линейного перебора — O(log n).
+    """
     with _blocked_cache_lock:
         if ip_str in _blocked_cache:
             return _blocked_cache[ip_str]
+
+    result = False
     try:
         addr = ipaddress.IPv4Address(ip_str)
-        result = any(addr in net for net in blocked_networks)
-    except:
+        addr_int = int(addr)
+        # Бинарный поиск: ищем правую границу по network_address
+        lo, hi = 0, len(blocked_networks) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            net = blocked_networks[mid]
+            net_int = int(net.network_address)
+            if net_int <= addr_int:
+                if addr in net:
+                    result = True
+                    break
+                lo = mid + 1
+            else:
+                hi = mid - 1
+    except ValueError:
         result = False
+
     with _blocked_cache_lock:
         _blocked_cache[ip_str] = result
     return result
-
 
 
 # ============================================================
 # XRAY-ТЕСТ: реальная проверка туннеля
 # ============================================================
 
-def _get_xray_port():
+def _get_xray_port() -> int:
     """Выдаёт уникальный порт для каждого потока."""
     global _xray_port_counter
     with _xray_port_lock:
@@ -242,7 +296,7 @@ def _get_xray_port():
     return port
 
 
-def _build_xray_config(config_link, socks_port):
+def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     """
     Строит минимальный config.json для Xray из vless:// ссылки.
     Поддерживает: REALITY/tcp, TLS/tcp, TLS/ws, TLS/xhttp.
@@ -289,13 +343,15 @@ def _build_xray_config(config_link, socks_port):
         tls_settings = {}
         security = "none"
 
+    tls_key = "tlsSettings" if security == "tls" else "realitySettings"
+
     # Транспорт
     if net_type == "ws":
         path = requests.utils.unquote(path_m.group(1)) if path_m else "/"
         stream_settings = {
             "network": "ws",
             "security": security,
-            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+            tls_key: tls_settings,
             "wsSettings": {"path": path, "headers": {"Host": sni}},
         }
     elif net_type == "xhttp":
@@ -303,7 +359,7 @@ def _build_xray_config(config_link, socks_port):
         stream_settings = {
             "network": "xhttp",
             "security": security,
-            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+            tls_key: tls_settings,
             "xhttpSettings": {"path": path, "host": sni},
         }
     else:
@@ -311,7 +367,7 @@ def _build_xray_config(config_link, socks_port):
         stream_settings = {
             "network": "tcp",
             "security": security,
-            "tlsSettings" if security == "tls" else "realitySettings": tls_settings,
+            tls_key: tls_settings,
         }
 
     # Убираем пустой ключ если security=none
@@ -350,7 +406,7 @@ def _build_xray_config(config_link, socks_port):
     return config
 
 
-def xray_test(config_link):
+def xray_test(config_link: str) -> bool:
     """
     Запускает Xray с конфигом и пробует скачать 204-страницу через SOCKS5.
     Возвращает True если туннель реально работает, False иначе.
@@ -359,26 +415,23 @@ def xray_test(config_link):
     if not xray_available:
         return True
 
-    import subprocess, tempfile
-
     socks_port = _get_xray_port()
     xray_cfg = _build_xray_config(config_link, socks_port)
     if not xray_cfg:
         return True  # не смогли построить конфиг — не блокируем
 
     proc = None
-    tmp = None
+    tmp_path = None
     with xray_semaphore:
         try:
-            tmp = tempfile.NamedTemporaryFile(
+            with tempfile.NamedTemporaryFile(
                 mode='w', suffix='.json', delete=False, prefix='xray_cfg_'
-            )
-            json.dump(xray_cfg, tmp)
-            tmp.flush()
-            tmp.close()
+            ) as tmp:
+                json.dump(xray_cfg, tmp)
+                tmp_path = tmp.name
 
             proc = subprocess.Popen(
-                [XRAY_BINARY, "run", "-config", tmp.name],
+                [XRAY_BINARY, "run", "-config", tmp_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -387,7 +440,7 @@ def xray_test(config_link):
 
             if proc.poll() is not None:
                 # Xray сразу упал — конфиг нерабочий
-                stats['xray_failed'] += 1
+                _inc_stat('xray_failed')
                 return False
 
             proxies = {
@@ -402,12 +455,11 @@ def xray_test(config_link):
             )
             if r.status_code in (200, 204):
                 return True
-            else:
-                stats['xray_failed'] += 1
-                return False
+            _inc_stat('xray_failed')
+            return False
 
         except requests.exceptions.ConnectionError:
-            stats['xray_failed'] += 1
+            _inc_stat('xray_failed')
             return False
         except Exception:
             # Любая другая ошибка — не блокируем конфиг
@@ -417,28 +469,28 @@ def xray_test(config_link):
                 proc.terminate()
                 try:
                     proc.wait(timeout=2)
-                except:
+                except subprocess.TimeoutExpired:
                     proc.kill()
-            if tmp:
+            if tmp_path:
                 try:
-                    os.unlink(tmp.name)
-                except:
+                    os.unlink(tmp_path)
+                except OSError:
                     pass
 
 
 # ============================================================
-# ОРИГИНАЛЬНЫЕ ФУНКЦИИ (без изменений)
+# ОРИГИНАЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-def is_valid_ipv4(ip):
+def is_valid_ipv4(ip: str) -> bool:
     try:
         ipaddress.IPv4Address(ip)
         return True
-    except:
+    except ValueError:
         return False
 
 
-def is_technically_broken(link):
+def is_technically_broken(link: str) -> bool:
     l = link.lower()
     if "type=" not in l:
         return True
@@ -464,7 +516,7 @@ def is_technically_broken(link):
 
     s_m = re.search(r'[?&]sni=([^&#\s]*)', l)
     h_m = re.search(r'@([^:/?#\s]+):(\d+)', l)
-    if ("security=tls" in l or "security=reality" in l):
+    if "security=tls" in l or "security=reality" in l:
         if not s_m:
             return True
         sni = s_m.group(1)
@@ -478,55 +530,57 @@ def is_technically_broken(link):
     return False
 
 
-def fast_ping(host, port, sni):
+def fast_ping(host: str, port: int, sni: str) -> int | None:
     try:
         start = time.perf_counter()
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=1.2) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None) as ssock:
+        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT) as sock:
+            with context.wrap_socket(sock, server_hostname=sni if sni else None):
                 return int((time.perf_counter() - start) * 1000)
-    except:
+    except (socket.timeout, socket.error, ssl.SSLError, OSError):
         return None
 
 
-def full_ping_analysis(host, port, sni, initial_ping, min_limit, max_limit):
+def full_ping_analysis(
+    host: str, port: int, sni: str,
+    initial_ping: int, min_limit: float, max_limit: float
+) -> tuple[int, int] | None:
     pings = [initial_ping]
 
     if initial_ping < min_limit or initial_ping > max_limit:
-        stats['ping_out_of_range'] += 1
+        _inc_stat('ping_out_of_range')
         return None
 
-    max_attempts = 3
     try:
-        for _ in range(max_attempts):
+        for _ in range(FULL_PING_ATTEMPTS):
             if stop_event.is_set():
                 return None
-            time.sleep(0.15)
+            time.sleep(FULL_PING_PAUSE)
             p = fast_ping(host, port, sni)
-            if p:
+            if p is not None:
                 if p < min_limit or p > max_limit:
-                    stats['ping_out_of_range'] += 1
+                    _inc_stat('ping_out_of_range')
                     return None
                 pings.append(p)
 
-        if len(pings) < 4:
+        if len(pings) < FULL_PING_MIN_SAMPLES:
             return None
 
         avg = sum(pings) // len(pings)
         jit = sum(abs(p - avg) for p in pings) // len(pings)
 
         if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
-            stats['jitter_failed'] += 1
+            _inc_stat('jitter_failed')
             return None
 
         return avg, jit
-    except:
+    except Exception:
         return None
 
 
-def get_config_details(link):
+def get_config_details(link: str) -> tuple:
     try:
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         cid_match = re.search(r'://([^@]+)@', clean_link)
@@ -535,50 +589,53 @@ def get_config_details(link):
         if h_m and is_valid_ipv4(h_m.group(1)):
             sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
             return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
-    except:
+    except (AttributeError, ValueError):
         pass
     return None, None, None, None
 
 
-def get_config_type(ip_cc, is_white):
+def get_config_type(ip_cc: str, is_white: bool) -> str:
     if is_white:
-        if ip_cc == "RU":
-            return "ru_sni"
-        else:
-            return "nonru_sni"
-    else:
-        return "others"
+        return "ru_sni" if ip_cc == "RU" else "nonru_sni"
+    return "others"
 
 
-def get_subnet16_limit(config_type):
+def get_subnet16_limit(config_type: str) -> int:
     limits = {
         "ru_sni": MAX_PER_SUBNET16_RU_SNI,
         "nonru_sni": MAX_PER_SUBNET16_NONRU_SNI,
-        "others": MAX_PER_SUBNET16_OTHERS
+        "others": MAX_PER_SUBNET16_OTHERS,
     }
     return limits.get(config_type, MAX_PER_SUBNET16_OTHERS)
 
 
-def check_isp_info(ip_str):
+def check_isp_info(ip_str: str) -> tuple:
     global last_api_call, api_calls_count
+
     with lock:
         if ip_str in ip_cache:
             return ip_cache[ip_str]
+
     with api_semaphore:
-        try:
-            for attempt in range(2):
-                if stop_event.is_set():
-                    return None, False
-                if attempt > 0:
-                    time.sleep(1.0)
+        for attempt in range(2):
+            if stop_event.is_set():
+                return None, False
+            if attempt > 0:
+                time.sleep(1.0)
+            try:
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
-                    sleep_time = max(0.0, 1.4 - elapsed)
+                    sleep_time = max(0.0, API_RATE_LIMIT_INTERVAL - elapsed)
                     last_api_call = time.perf_counter()
                     api_calls_count += 1
                 if sleep_time > 0:
                     time.sleep(sleep_time)
-                resp = session.get(f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting", timeout=5)
+
+                resp = session.get(
+                    f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting",
+                    timeout=5,
+                )
+                resp.raise_for_status()
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
@@ -590,21 +647,39 @@ def check_isp_info(ip_str):
                     with lock:
                         ip_cache[ip_str] = res
                     return res
-        except:
-            pass
-        return None, False
+            except (requests.RequestException, ValueError):
+                pass
+
+    return None, False
 
 
-def apply_clean_params(config_link):
+def apply_clean_params(config_link: str) -> str:
+    """Удаляет fp/udp443 параметры и выставляет fp=random. Нормализует URL."""
     parts = config_link.split("#", 1)
     base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', parts[0])
+
+    # Нормализация: убираем дублирование разделителей и слешей в пути
+    # Сохраняем схему (://) нетронутой, нормализуем остальное
+    scheme_match = re.match(r'^([a-zA-Z][a-zA-Z0-9+\-.]*://)', base)
+    if scheme_match:
+        scheme = scheme_match.group(1)
+        rest = base[len(scheme):]
+        # Убираем дублирующиеся & и ? внутри query
+        rest = re.sub(r'\?&', '?', rest)
+        rest = re.sub(r'&&+', '&', rest)
+        base = scheme + rest
+    else:
+        base = re.sub(r'\?&', '?', base)
+        base = re.sub(r'&&+', '&', base)
+
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
-    base = base.replace("?&", "?").replace("&&", "&").replace("//", "/").replace(":/", "://")
+
     return f"{base}#{parts[1]}" if len(parts) > 1 else base
 
 
-def rename_config(link, country_code, index, is_hosting=False, is_white_sni=False):
+def rename_config(link: str, country_code: str, index: int,
+                  is_hosting=False, is_white_sni: bool = False) -> str:
     country_info = COUNTRY_MAP.get(country_code, {"full": country_code, "flag": "🌐"})
     tags = []
     if is_hosting is True:
@@ -616,36 +691,34 @@ def rename_config(link, country_code, index, is_hosting=False, is_white_sni=Fals
     return f"{link.split('#')[0]}#{requests.utils.quote(new_name)}"
 
 
-def fetch_raw_configs(url):
+def fetch_raw_configs(url: str) -> list[str]:
     try:
         resp = session.get(url, timeout=7, verify=False).text
         if "://" not in resp[:50]:
             try:
                 resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
-            except:
+            except (ValueError, UnicodeDecodeError):
                 pass
         return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
-    except:
+    except requests.RequestException:
         return []
 
 
-def get_sni_limit(is_white, ip_cc):
+def get_sni_limit(is_white: bool, ip_cc: str) -> int:
     is_ru = (ip_cc == "RU")
     if is_white:
-        if is_ru:
-            return MAX_SAME_SNI_RU_RU
-        return MAX_SAME_SNI_RU
+        return MAX_SAME_SNI_RU_RU if is_ru else MAX_SAME_SNI_RU
     return MAX_SAME_SNI_WORLD
 
 
-def can_add_hosting(is_hosting, target_list):
+def can_add_hosting(is_hosting, target_list: list) -> bool:
     if is_hosting is True:
         count = sum(1 for r in target_list if r['is_hosting'] is True)
         return count < MAX_HOST_CONFIGS
     return True
 
 
-def try_add_to_lists(entry):
+def try_add_to_lists(entry: dict) -> bool:
     global ru_vlm_count, ru_vlm2_count, xhttp_count
 
     is_ru = (entry['country'] == 'RU')
@@ -691,7 +764,7 @@ def try_add_to_lists(entry):
     return added_vlm or added_vlm2
 
 
-def check_completion():
+def check_completion() -> bool:
     vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
     if vlm_done and vlm2_done:
@@ -700,27 +773,27 @@ def check_completion():
     return False
 
 
-def validate(config, is_priority, is_white):
+def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if stop_event.is_set():
-        stats['stopped'] += 1
+        _inc_stat('stopped')
         return
 
     if is_technically_broken(config):
-        stats['broken'] += 1
+        _inc_stat('broken')
         return
 
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
-        stats['no_details'] += 1
+        _inc_stat('no_details')
         return
 
     if host in failed_ips:
-        stats['failed_ip_cache'] += 1
+        _inc_stat('failed_ip_cache')
         return
 
     # ── СЛОЙ 1: фильтр РКН (до пинга — быстро) ──────────────────────────────
     if is_blocked_in_ru(host):
-        stats['blocked_rkn'] += 1
+        _inc_stat('blocked_rkn')
         return
 
     is_xhttp = "xhttp" in config.lower()
@@ -729,23 +802,23 @@ def validate(config, is_priority, is_white):
 
     with lock:
         if host in seen_ips:
-            stats['duplicate_ip'] += 1
+            _inc_stat('duplicate_ip')
             return
 
         if (sni in sni_domains) != is_white:
-            stats['sni_mismatch'] += 1
+            _inc_stat('sni_mismatch')
             return
 
         if any(exc in sni for exc in EXCLUDED_SNI_DOMAINS):
-            stats['excluded_sni'] += 1
+            _inc_stat('excluded_sni')
             return
 
         if subnet_counts[subnet] >= MAX_PER_SUBNET:
-            stats['subnet_limit'] += 1
+            _inc_stat('subnet_limit')
             return
 
         if id_counts[cid] >= MAX_PER_ID:
-            stats['id_limit'] += 1
+            _inc_stat('id_limit')
             return
 
     # Первый пинг
@@ -755,13 +828,13 @@ def validate(config, is_priority, is_white):
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(host)
-        stats['first_ping_failed'] += 1
+        _inc_stat('first_ping_failed')
         return
 
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
-        stats['isp_banned'] += 1
+        _inc_stat('isp_banned')
         return
 
     # Проверка лимита подсети /16
@@ -771,7 +844,7 @@ def validate(config, is_priority, is_white):
     subnet16_reserved = False
     with lock:
         if subnet16_counts[subnet16][config_type] >= subnet16_limit:
-            stats['subnet16_limit'] += 1
+            _inc_stat('subnet16_limit')
             return
         subnet16_counts[subnet16][config_type] += 1
         subnet16_reserved = True
@@ -781,7 +854,7 @@ def validate(config, is_priority, is_white):
     with lock:
         sni_limit = get_sni_limit(is_white, ip_cc)
         if sni_usage_counts[sni] >= sni_limit:
-            stats['sni_limit'] += 1
+            _inc_stat('sni_limit')
             return
         sni_usage_counts[sni] += 1
         sni_reserved = True
@@ -823,7 +896,7 @@ def validate(config, is_priority, is_white):
                 sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
-            stats['race_duplicate'] += 1
+            _inc_stat('race_duplicate')
             return
 
         if failed_subnets[subnet] >= MAX_FAILED_PER_SUBNET:
@@ -831,7 +904,7 @@ def validate(config, is_priority, is_white):
                 sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
-            stats['subnet_banned'] += 1
+            _inc_stat('subnet_banned')
             return
 
         entry = {
@@ -852,17 +925,17 @@ def validate(config, is_priority, is_white):
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
-            stats['added'] += 1
+            _inc_stat('added')
             check_completion()
         else:
             sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
-            stats['not_added'] += 1
+            _inc_stat('not_added')
 
 
-def fetch_group_data(urls):
-    raw = []
+def fetch_group_data(urls: list[str]) -> list[str]:
+    raw: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_raw_configs, u) for u in set(urls)]
         for f in concurrent.futures.as_completed(futures):
@@ -872,8 +945,11 @@ def fetch_group_data(urls):
     return unique
 
 
-def finalize_list(results, is_vlm2=False):
-    all_ru_sni = sorted([r for r in results if r['country'] == 'RU' and r['white_sni']], key=lambda x: x['ping'])
+def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
+    all_ru_sni = sorted(
+        [r for r in results if r['country'] == 'RU' and r['white_sni']],
+        key=lambda x: x['ping'],
+    )
     top_fixed = all_ru_sni[:MAX_TOP_RU_SNI]
 
     xhttp_bucket = []
@@ -897,6 +973,12 @@ def finalize_list(results, is_vlm2=False):
     ru_sni_configs.sort(key=lambda x: x['ping'])
     non_ru_sni_configs.sort(key=lambda x: x['ping'])
 
+    # Используем deque для эффективного popleft() вместо pop(0)
+    from collections import deque
+    xhttp_dq = deque(xhttp_bucket)
+    non_ru_dq = deque(non_ru_sni_configs)
+    ru_sni_dq = deque(ru_sni_configs)
+
     final = list(top_fixed)
     final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
@@ -904,10 +986,10 @@ def finalize_list(results, is_vlm2=False):
     while len(final) < MAX_CONFIGS:
         added_any = False
 
-        if is_vlm2 and xhttp_bucket and len(final) == len(top_fixed):
+        if is_vlm2 and xhttp_dq and len(final) == len(top_fixed):
             count = 0
-            while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_bucket:
-                config = xhttp_bucket.pop(0)
+            while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_dq:
+                config = xhttp_dq.popleft()
                 if config['link'] not in final_links:
                     final.append(config)
                     final_links.add(config['link'])
@@ -915,8 +997,8 @@ def finalize_list(results, is_vlm2=False):
                     added_any = True
 
         count = 0
-        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_sni_configs:
-            config = non_ru_sni_configs.pop(0)
+        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_dq:
+            config = non_ru_dq.popleft()
             if config['link'] not in final_links:
                 final.append(config)
                 final_links.add(config['link'])
@@ -924,10 +1006,10 @@ def finalize_list(results, is_vlm2=False):
                 added_any = True
 
         count = 0
-        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_configs:
+        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and ru_sni_dq:
             if current_ru_sni_total >= MAX_TOTAL_SNI_RU:
                 break
-            config = ru_sni_configs.pop(0)
+            config = ru_sni_dq.popleft()
             if config['link'] not in final_links:
                 final.append(config)
                 final_links.add(config['link'])
@@ -938,60 +1020,85 @@ def finalize_list(results, is_vlm2=False):
         if not added_any:
             break
 
-    speed_rating = {r['link']: rank + 1 for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))}
-    return [rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni']) for r in final]
+    speed_rating = {
+        r['link']: rank + 1
+        for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))
+    }
+    return [
+        rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
+        for r in final
+    ]
 
 
-def print_statistics():
+def print_statistics() -> None:
+    with stats_lock:
+        s = dict(stats)
+    with lock:
+        vlm_len = len(vlm_results)
+        vlm2_len = len(vlm2_results)
+        _ru_vlm = ru_vlm_count
+        _ru_vlm2 = ru_vlm2_count
+        _xhttp = xhttp_count
+        vlm_host = sum(1 for r in vlm_results if r['is_hosting'] is True)
+        vlm2_host = sum(1 for r in vlm2_results if r['is_hosting'] is True)
+    with stats_lock:
+        _api = api_calls_count
+
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
-    print(f"Добавлено: {stats['added']}", flush=True)
-    print(f"Запросов к ip-api: {api_calls_count} (кэш попаданий: {stats['duplicate_ip'] + stats['race_duplicate']})", flush=True)
-    print(f"Технически битые: {stats['broken']}", flush=True)
-    print(f"Без деталей: {stats['no_details']}", flush=True)
-    print(f"Дубликаты IP: {stats['duplicate_ip']}", flush=True)
-    print(f"Кэш неудачных IP: {stats['failed_ip_cache']}", flush=True)
-    print(f"Первый пинг провален: {stats['first_ping_failed']}", flush=True)
-    print(f"ISP забанен: {stats['isp_banned']}", flush=True)
-    print(f"Пинг вне диапазона: {stats['ping_out_of_range']}", flush=True)
-    print(f"Jitter провален: {stats['jitter_failed']}", flush=True)
-    print(f"Лимиты SNI: {stats['sni_limit']}", flush=True)
-    print(f"Лимиты подсети: {stats['subnet_limit']}", flush=True)
-    print(f"Подсеть забанена: {stats['subnet_banned']}", flush=True)
-    print(f"Не добавлено (нет места): {stats['not_added']}", flush=True)
-    # НОВОЕ: статистика RU-проверки
-    print(f"Заблокировано РКН: {stats['blocked_rkn']}", flush=True)
-    print(f"Не прошло Xray-тест: {stats['xray_failed']}", flush=True)
-    print(f"\nVLM: {len(vlm_results)} (RU: {ru_vlm_count}, HOST: {sum(1 for r in vlm_results if r['is_hosting'] is True)})", flush=True)
-    print(f"VLM2: {len(vlm2_results)} (RU: {ru_vlm2_count}, XHTTP: {xhttp_count}, HOST: {sum(1 for r in vlm2_results if r['is_hosting'] is True)})", flush=True)
+    print(f"Добавлено: {s['added']}", flush=True)
+    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
+    print(f"Технически битые: {s['broken']}", flush=True)
+    print(f"Без деталей: {s['no_details']}", flush=True)
+    print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
+    print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
+    print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
+    print(f"ISP забанен: {s['isp_banned']}", flush=True)
+    print(f"Пинг вне диапазона: {s['ping_out_of_range']}", flush=True)
+    print(f"Jitter провален: {s['jitter_failed']}", flush=True)
+    print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
+    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
+    print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
+    print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
+    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
+    print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
+    print(f"\nVLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
+    print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
 
 
-def main():
+def main() -> None:
     global sni_domains, xray_available
 
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
 
     # Проверяем наличие Xray
-    import subprocess
     try:
-        result = subprocess.run([XRAY_BINARY, "version"], capture_output=True, timeout=5)
+        result = subprocess.run(
+            [XRAY_BINARY, "version"],
+            capture_output=True,
+            timeout=XRAY_PROCESS_TIMEOUT,
+        )
         xray_available = result.returncode == 0
-    except:
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         xray_available = False
-    print(f"{'✅' if xray_available else '⚠️ '} Xray: {'доступен' if xray_available else 'не найден, тест отключён'}", flush=True)
+    print(
+        f"{'✅' if xray_available else '⚠️ '} Xray: "
+        f"{'доступен' if xray_available else 'не найден, тест отключён'}",
+        flush=True,
+    )
 
-    sni_domains = set()
+    sni_domains: set[str] = set()
     extra_urls, std_urls, gh_repo = [], [], None
 
     try:
         gh_repo = Github(auth=Auth.Token(GITHUB_TOKEN)).get_repo(REPO_NAME)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️  GitHub недоступен: {e}", flush=True)
 
     try:
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
 
-        def get_list(var):
+        def get_list(var: str) -> list[str]:
             m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text, re.S | re.I)
             return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
 
@@ -999,14 +1106,13 @@ def main():
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
 
         sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
-        sni_domains.update([l.strip().lower() for l in sec_text.splitlines() if l.strip()])
-    except:
-        pass
+        sni_domains.update(line.strip().lower() for line in sec_text.splitlines() if line.strip())
+    except requests.RequestException as e:
+        print(f"⚠️  Не удалось загрузить источники: {e}", flush=True)
 
     print(f"Загружено SNI доменов: {len(sni_domains)}", flush=True)
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
 
-    # НОВОЕ: загружаем базу РКН и RU-прокси один раз перед основным циклом
     load_ru_blocklist()
 
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
@@ -1019,7 +1125,7 @@ def main():
     check_order = [
         (raw_extra, True, True),
         (raw_std, False, True),
-        (raw_nonwhite, True, False)
+        (raw_nonwhite, True, False),
     ]
 
     for group, priority, white in check_order:
@@ -1042,9 +1148,12 @@ def main():
                 sha = gh_repo.get_contents(path).sha
                 gh_repo.update_file(path, f"🚀 {fn} | {len(output)} | {offset}", content, sha)
                 print(f"✅ Обновлен {fn}: {len(output)} конфигов", flush=True)
-            except:
-                gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
-                print(f"✅ Создан {fn}: {len(output)} конфигов", flush=True)
+            except Exception:
+                try:
+                    gh_repo.create_file(path, f"🚀 {fn} | {len(output)} | {offset}", content)
+                    print(f"✅ Создан {fn}: {len(output)} конфигов", flush=True)
+                except Exception as e:
+                    print(f"❌ Ошибка записи {fn}: {e}", flush=True)
 
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
