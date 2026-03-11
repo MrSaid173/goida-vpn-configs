@@ -16,6 +16,8 @@ import ipaddress
 from collections import defaultdict
 from datetime import datetime
 
+import sys
+
 import urllib3
 import requests
 import zoneinfo
@@ -420,6 +422,9 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
 
     socks_port = _get_xray_port()
     xray_cfg = _build_xray_config(config_link, socks_port)
+    print(json.dumps(xray_cfg, indent=2), file=sys.stderr, flush=True)
+    if xray_cfg:
+        print(f"[XRAY CFG] {json.dumps(xray_cfg)}", flush=True, file=sys.stderr)
     if not xray_cfg:
         return True  # не смогли построить конфиг — не блокируем
 
