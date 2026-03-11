@@ -104,7 +104,8 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL = "https://cp.cloudflare.com"
+XRAY_TEST_URL_RU = "https://cp.cloudflare.com"
+XRAY_TEST_URL_WORLD = "https://www.gosuslugi.ru/"
 XRAY_TIMEOUT = 4          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
@@ -406,9 +407,11 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     return config
 
 
-def xray_test(config_link: str) -> bool:
+def xray_test(config_link: str, is_ru: bool = False) -> bool:
     """
-    Запускает Xray с конфигом и пробует скачать 204-страницу через SOCKS5.
+    Запускает Xray с конфигом и пробует достучаться до тестового ресурса через SOCKS5.
+    - RU-конфиги проверяются через gosuslugi.ru (доступен только из РФ).
+    - Остальные — через cp.cloudflare.com (глобальный, лёгкий 204).
     Возвращает True если туннель реально работает, False иначе.
     Если xray недоступен — всегда возвращает True (не блокируем).
     """
@@ -447,8 +450,9 @@ def xray_test(config_link: str) -> bool:
                 "http":  f"socks5://127.0.0.1:{socks_port}",
                 "https": f"socks5://127.0.0.1:{socks_port}",
             }
+            test_url = XRAY_TEST_URL_RU if is_ru else XRAY_TEST_URL_WORLD
             r = requests.get(
-                XRAY_TEST_URL,
+                test_url,
                 proxies=proxies,
                 timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
                 verify=False,
@@ -880,7 +884,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля ─────────────────────────────────
-    if not xray_test(config):
+    if not xray_test(config, is_ru=is_ru):
         if sni_reserved:
             with lock:
                 sni_usage_counts[sni] -= 1
@@ -1160,3 +1164,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+                
