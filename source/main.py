@@ -1032,7 +1032,7 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
 
 def print_statistics() -> None:
     with stats_lock:
-        s = dict(stats)
+        s = defaultdict(int, stats)
     with lock:
         vlm_len = len(vlm_results)
         vlm2_len = len(vlm2_results)
@@ -1160,4 +1160,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
