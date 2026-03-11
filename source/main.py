@@ -16,8 +16,6 @@ import ipaddress
 from collections import defaultdict
 from datetime import datetime
 
-import sys
-
 import urllib3
 import requests
 import zoneinfo
@@ -106,9 +104,9 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL_RU = "https://cp.cloudflare.com"
-XRAY_TEST_URL_WORLD = "http://captive.apple.com/hotspot-detect.html"
-XRAY_TIMEOUT = 3.5          # секунд на весь тест одного конфига
+XRAY_TEST_URL_RU = "https://www.gosuslugi.ru/"    # для RU-конфигов: доступен только из РФ
+XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com" # для остальных: лёгкий 204, глобальный
+XRAY_TIMEOUT = 4          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
@@ -314,6 +312,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     path_m = re.search(r'[?&]path=([^&#\s]*)', config_link, re.I)
     flow_m = re.search(r'[?&]flow=([^&#\s]*)', config_link, re.I)
     type_m = re.search(r'[?&]type=([^&#\s]*)', config_link, re.I)
+    enc_m  = re.search(r'[?&]packetEncoding=([^&#\s]*)', config_link, re.I)
 
     if not h_m or not id_m:
         return None
@@ -325,6 +324,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     fp = fp_m.group(1) if fp_m else "chrome"
     net_type = type_m.group(1) if type_m else "tcp"
     flow = flow_m.group(1) if flow_m else ""
+    packet_encoding = enc_m.group(1) if enc_m else None
 
     # TLS или REALITY
     if pbk_m:
@@ -389,6 +389,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
                     "id": uuid,
                     "encryption": "none",
                     "flow": flow,
+                    **({"packetEncoding": packet_encoding} if packet_encoding else {}),
                 }]
             }]
         },
@@ -422,9 +423,6 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
 
     socks_port = _get_xray_port()
     xray_cfg = _build_xray_config(config_link, socks_port)
-    print(json.dumps(xray_cfg, indent=2), file=sys.stderr, flush=True)
-    if xray_cfg:
-        print(f"[XRAY CFG] {json.dumps(xray_cfg)}", flush=True, file=sys.stderr)
     if not xray_cfg:
         return True  # не смогли построить конфиг — не блокируем
 
@@ -934,7 +932,6 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
-            print(f"[FOUND LINK] {config}", flush=True)
             _inc_stat('added')
             check_completion()
         else:
@@ -1170,4 +1167,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-                
+            
