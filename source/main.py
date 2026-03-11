@@ -1087,7 +1087,7 @@ def main() -> None:
         flush=True,
     )
 
-    sni_domains: set[str] = set()
+    sni_domains = set()
     extra_urls, std_urls, gh_repo = [], [], None
 
     try:
@@ -1160,3 +1160,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
