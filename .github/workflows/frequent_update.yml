@@ -23,17 +23,41 @@ jobs:
         run: |
           pip install requests PyGithub urllib3 maxminddb pysocks
 
-      - name: Install Xray-core
+      - name: Get latest Xray version
+        id: xray_version
         run: |
-          XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-          wget -q "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" -O /tmp/xray.zip
+          VERSION=$(curl -sf https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          if [ -z "$VERSION" ]; then
+            VERSION="v25.3.6"
+            echo "⚠️ GitHub API недоступен, используем fallback: $VERSION"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Xray версия: $VERSION"
+
+      - name: Restore Xray cache
+        id: xray_cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/xray
+          key: xray-${{ steps.xray_version.outputs.version }}
+
+      - name: Install Xray-core
+        if: steps.xray_cache.outputs.cache-hit != 'true'
+        run: |
+          VERSION=${{ steps.xray_version.outputs.version }}
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${VERSION}/Xray-linux-64.zip" -O /tmp/xray.zip
           unzip -q /tmp/xray.zip -d /tmp/xray
           chmod +x /tmp/xray/xray
+          echo "✅ Xray ${VERSION} скачан и установлен"
+
+      - name: Verify Xray
+        run: |
+          chmod +x /tmp/xray/xray
           echo "/tmp/xray" >> $GITHUB_PATH
-          echo "✅ Xray ${XRAY_VERSION} установлен: $(/tmp/xray/xray version | head -1)"
+          echo "✅ Xray: $(/tmp/xray/xray version | head -1)"
 
       - name: Restore Tools Cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             source/GeoLite2-Country.mmdb
@@ -45,4 +69,4 @@ jobs:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
         run: |
           cd source
-          python main.py
+          python main.py   
