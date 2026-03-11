@@ -934,6 +934,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
+            print(f"[FOUND LINK] {config}", flush=True)
             _inc_stat('added')
             check_completion()
         else:
