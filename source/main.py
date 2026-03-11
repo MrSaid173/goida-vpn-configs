@@ -105,7 +105,7 @@ ANTIFILTER_URLS = [
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "https://cp.cloudflare.com"
-XRAY_TEST_URL_WORLD = "https://www.gosuslugi.ru/"
+XRAY_TEST_URL_WORLD = "https://mayaknet.ru/"
 XRAY_TIMEOUT = 4          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
