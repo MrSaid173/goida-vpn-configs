@@ -71,6 +71,7 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 ANTIFILTER_URLS = [
     "https://antifilter.download/list/subnet.lst",
     "https://antifilter.download/list/allyouneed.lst",
+    "https://antifilter.download/list/ip.lst",
 ]
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
@@ -199,9 +200,7 @@ def load_ru_blocklist():
                         count += 1
                     except:
                         pass
-            print(f"  ✅ {url.split('/')[-1]}: {count} подсетей", flush=True)
-            if count > 1000:
-                break
+            print(f"  ✅ {url.split('/')[-1]}: {count} записей", flush=True)
         except Exception as e:
             print(f"  ⚠️  Не удалось загрузить {url}: {e}", flush=True)
 
