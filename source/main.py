@@ -72,6 +72,7 @@ ANTIFILTER_URLS = [
     "https://antifilter.download/list/subnet.lst",
     "https://antifilter.download/list/allyouneed.lst",
     "https://antifilter.download/list/ip.lst",
+    "https://antifilter.download/list/ipresolve.lst",
 ]
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
