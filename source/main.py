@@ -106,7 +106,7 @@ ANTIFILTER_URLS = [
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "https://www.gosuslugi.ru/"    # для RU-конфигов: доступен только из РФ
 XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com" # для остальных: лёгкий 204, глобальный
-XRAY_TIMEOUT = 4          # секунд на весь тест одного конфига
+XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
@@ -469,8 +469,8 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
             _inc_stat('xray_failed')
             return False
         except Exception:
-            # Любая другая ошибка — не блокируем конфиг
-            return True
+            _inc_stat('xray_failed')
+            return False
         finally:
             if proc and proc.poll() is None:
                 proc.terminate()
