@@ -23,6 +23,7 @@ from github import Github, Auth
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
+RU_PROXY = os.environ.get("RU_PROXY", None)  # передаётся из find_ru_proxy.py через GITHUB_ENV
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
@@ -57,8 +58,8 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 150
-MAX_JITTER_RATIO = 0.2
+MAX_JITTER = 80
+MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -78,8 +79,8 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -87,12 +88,12 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-FULL_PING_PAUSE = 0.17
+FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 3
 FULL_PING_MIN_SAMPLES = 4
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 1.45  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 1.4  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
@@ -115,6 +116,9 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
+if RU_PROXY:
+    session.proxies.update({"http": RU_PROXY, "https": RU_PROXY})
+    print(f"🌐 Все запросы идут через RU прокси: {RU_PROXY}", flush=True)
 
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
@@ -450,8 +454,8 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
                 return False
 
             proxies = {
-                "http":  f"socks5://127.0.0.1:{socks_port}",
-                "https": f"socks5://127.0.0.1:{socks_port}",
+                "http":  RU_PROXY if RU_PROXY else f"socks5://127.0.0.1:{socks_port}",
+                "https": RU_PROXY if RU_PROXY else f"socks5://127.0.0.1:{socks_port}",
             }
             test_url = XRAY_TEST_URL_RU if is_ru else XRAY_TEST_URL_WORLD
             r = requests.get(
@@ -1145,6 +1149,33 @@ def main() -> None:
                     break
                 v.submit(validate, c, priority, white)
 
+    # --- FALLBACK: если не добрали конфиги через RU прокси ---
+    if RU_PROXY:
+        vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
+        vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
+        if not vlm_done or not vlm2_done:
+            print(f"⚠️  Не добрали конфиги через RU прокси (VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)})", flush=True)
+            print("🔄 Запускаем повторный проход напрямую...", flush=True)
+
+            # Отключаем прокси у сессии
+            session.proxies.clear()
+
+            # Сбрасываем stop_event если он был установлен
+            stop_event.clear()
+
+            # Прогоняем снова
+            for group, priority, white in check_order:
+                if stop_event.is_set():
+                    break
+                workers = min(len(group), 40) if group else 1
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                    for c in group:
+                        if stop_event.is_set():
+                            break
+                        v.submit(validate, c, priority, white)
+
+            print(f"✅ После fallback: VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)}", flush=True)
+
     print_statistics()
 
     if gh_repo:
@@ -1167,4 +1198,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
+
+        
