@@ -63,10 +63,17 @@ jobs:
             source/cloudflare_ips.txt
           key: tools-v2
 
+      - name: Find RU proxy
+        env:
+          XRAY_BINARY: /tmp/xray/xray
+        run: |
+          cd source
+          python find_ru_proxy.py
+
       - name: Run script
         env:
           MY_TOKEN: ${{ secrets.MY_TOKEN }}
+          XRAY_BINARY: /tmp/xray/xray
         run: |
           cd source
           python main.py
-          
