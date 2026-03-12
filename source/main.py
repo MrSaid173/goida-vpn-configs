@@ -104,7 +104,7 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL_RU = "https://www.gosuslugi.ru/"    # для RU-конфигов: доступен только из РФ
+XRAY_TEST_URL_RU = "https://cp.cloudlfare.com/"    # для RU-конфигов: доступен только из РФ
 XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com" # для остальных: лёгкий 204, глобальный
 XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
