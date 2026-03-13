@@ -445,7 +445,6 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
                 [XRAY_BINARY, "run", "-config", tmp_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
             )
 
             time.sleep(XRAY_STARTUP_WAIT)
