@@ -23,7 +23,6 @@ from github import Github, Auth
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
-RU_PROXY = os.environ.get("RU_PROXY", None)  # передаётся из find_ru_proxy.py через GITHUB_ENV
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
@@ -58,7 +57,7 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 80
+MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
@@ -79,8 +78,8 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -89,11 +88,11 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
 FULL_PING_PAUSE = 0.15
-FULL_PING_ATTEMPTS = 3
-FULL_PING_MIN_SAMPLES = 4
+FULL_PING_ATTEMPTS = 2
+FULL_PING_MIN_SAMPLES = 3
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 1.4  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
@@ -105,20 +104,17 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL_RU = "https://cp.cloudlfare.com/"    # для RU-конфигов: доступен только из РФ
-XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com" # для остальных: лёгкий 204, глобальный
-XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
-XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
-XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
+XRAY_TEST_URL_RU = "https://cp.cloudflare.com/" 
+XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com/"
+XRAY_TIMEOUT = 8          # секунд на весь тест одного конфига
+XRAY_STARTUP_WAIT = 4.0   # секунд ждём пока xray поднимется
+XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
-XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
+XRAY_PROCESS_TIMEOUT = 7  # таймаут на запуск xray version
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
-if RU_PROXY:
-    session.proxies.update({"http": RU_PROXY, "https": RU_PROXY})
-    print(f"🌐 Все запросы идут через RU прокси: {RU_PROXY}", flush=True)
 
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
@@ -225,8 +221,7 @@ def load_ru_blocklist() -> None:
     nets: list[ipaddress.IPv4Network] = []
     for url in ANTIFILTER_URLS:
         try:
-            direct = requests.Session()
-            resp = direct.get(url, timeout=15, verify=False)
+            resp = session.get(url, timeout=15, verify=False)
             resp.raise_for_status()
             count = 0
             for line in resp.text.splitlines():
@@ -401,20 +396,6 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
         "streamSettings": stream_settings,
     }
 
-    outbounds = [outbound, {"tag": "direct", "protocol": "freedom"}]
-
-    if RU_PROXY:
-        # Цепочка: тестируемый конфиг → RU прокси → интернет
-        outbound["proxySettings"] = {"tag": "ru-proxy", "transportLayer": True}
-        ru_proxy_port = int(RU_PROXY.split(":")[-1])
-        outbounds.append({
-            "tag": "ru-proxy",
-            "protocol": "socks",
-            "settings": {
-                "servers": [{"address": "127.0.0.1", "port": ru_proxy_port}]
-            }
-        })
-
     config = {
         "log": {"loglevel": "none"},
         "inbounds": [{
@@ -424,7 +405,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": False},
         }],
-        "outbounds": outbounds,
+        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
     }
     return config
 
@@ -1048,11 +1029,6 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
                 current_ru_sni_total += 1
 
         if not added_any:
-            while len(final) < MAX_CONFIGS and non_ru_dq:
-                config = non_ru_dq.popleft()
-                if config['link'] not in final_links:
-                    final.append(config)
-                    final_links.add(config['link'])
             break
 
     speed_rating = {
@@ -1134,7 +1110,6 @@ def main() -> None:
         print(f"⚠️  GitHub недоступен: {e}", flush=True)
 
     try:
-        direct_session = requests.Session()
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
 
         def get_list(var: str) -> list[str]:
@@ -1144,7 +1119,7 @@ def main() -> None:
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
 
-        sec_text = direct_session.get(SECONDARY_WHITELIST_URL, timeout=10).text
+        sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update(line.strip().lower() for line in sec_text.splitlines() if line.strip())
     except requests.RequestException as e:
         print(f"⚠️  Не удалось загрузить источники: {e}", flush=True)
@@ -1177,33 +1152,6 @@ def main() -> None:
                     break
                 v.submit(validate, c, priority, white)
 
-    # --- FALLBACK: если не добрали конфиги через RU прокси ---
-    if RU_PROXY:
-        vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
-        vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
-        if not vlm_done or not vlm2_done:
-            print(f"⚠️  Не добрали конфиги через RU прокси (VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)})", flush=True)
-            print("🔄 Запускаем повторный проход напрямую...", flush=True)
-
-            # Отключаем прокси у сессии
-            session.proxies.clear()
-
-            # Сбрасываем stop_event если он был установлен
-            stop_event.clear()
-
-            # Прогоняем снова
-            for group, priority, white in check_order:
-                if stop_event.is_set():
-                    break
-                workers = min(len(group), 40) if group else 1
-                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-                    for c in group:
-                        if stop_event.is_set():
-                            break
-                        v.submit(validate, c, priority, white)
-
-            print(f"✅ После fallback: VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)}", flush=True)
-
     print_statistics()
 
     if gh_repo:
@@ -1226,3 +1174,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+            
