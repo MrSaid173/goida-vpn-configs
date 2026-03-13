@@ -1034,6 +1034,11 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
                 current_ru_sni_total += 1
 
         if not added_any:
+            while len(final) < MAX_CONFIGS and non_ru_dq:
+                config = non_ru_dq.popleft()
+                if config['link'] not in final_links:
+                    final.append(config)
+                    final_links.add(config['link'])
             break
 
     speed_rating = {
