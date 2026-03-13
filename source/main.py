@@ -105,10 +105,10 @@ ANTIFILTER_URLS = [
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
-XRAY_TEST_URL_WORLD = "http://invalid.rkn.gov.ru/"
-XRAY_TIMEOUT = 8          # секунд на весь тест одного конфига
+XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
+XRAY_TIMEOUT = 7          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 3.0   # секунд ждём пока xray поднимется
-XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
+XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
