@@ -225,7 +225,8 @@ def load_ru_blocklist() -> None:
     nets: list[ipaddress.IPv4Network] = []
     for url in ANTIFILTER_URLS:
         try:
-            resp = session.get(url, timeout=15, verify=False)
+            direct = requests.Session()
+            resp = direct.get(url, timeout=15, verify=False)
             resp.raise_for_status()
             count = 0
             for line in resp.text.splitlines():
@@ -1116,6 +1117,7 @@ def main() -> None:
         print(f"⚠️  GitHub недоступен: {e}", flush=True)
 
     try:
+        direct_session = requests.Session()
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
 
         def get_list(var: str) -> list[str]:
@@ -1125,7 +1127,7 @@ def main() -> None:
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
 
-        sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
+        sec_text = direct_session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update(line.strip().lower() for line in sec_text.splitlines() if line.strip())
     except requests.RequestException as e:
         print(f"⚠️  Не удалось загрузить источники: {e}", flush=True)
