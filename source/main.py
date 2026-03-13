@@ -737,8 +737,8 @@ def try_add_to_lists(entry: dict) -> bool:
     is_hosting = entry['is_hosting']
 
     # RU конфиги — только SNI-RU
-    if is_ru and not is_white:
-        return False
+    #if is_ru and not is_white:
+        #return False
     # RU конфиги не должны быть хостинговыми
     #if is_ru and is_hosting is True:
         #return False
