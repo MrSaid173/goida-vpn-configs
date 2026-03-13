@@ -473,8 +473,7 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
         except requests.exceptions.ConnectionError:
             _inc_stat('xray_failed')
             return False
-        except Exception as e:
-            print(f"[XRAY ERROR] {e}", flush=True)
+        except Exception:
             _inc_stat('xray_failed')
             return False
         finally:
