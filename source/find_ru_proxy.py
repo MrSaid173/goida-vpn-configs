@@ -47,14 +47,53 @@ FULL_PING_MIN_SAMPLES = 2
 MAX_WORKERS = 20
 MAX_CANDIDATES = 5               # сколько рабочих RU конфигов попробовать прежде чем выбрать лучший
 
+BAD_HOSTING_KEYWORDS = [
+    "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
+    "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
+    "m247", "akamai", "host", "baykov", "dataforest",
+]
+
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
 
 _port_counter = XRAY_PORT_BASE
 _port_lock = threading.Lock()
 _found_lock = threading.Lock()
+_seen_ips_lock = threading.Lock()
 found_configs = []               # список рабочих (link, ping)
+seen_ips = set()                 # для исключения дубликатов
 stop_event = threading.Event()
+last_api_call = 0.0
+api_lock = threading.Lock()
+
+
+def check_ip_country(ip: str) -> str | None:
+    """Проверяет страну IP через ip-api.com. Возвращает код страны или None если не RU/забанен."""
+    global last_api_call
+    try:
+        with api_lock:
+            elapsed = time.perf_counter() - last_api_call
+            sleep_time = max(0.0, 1.4 - elapsed)
+            last_api_call = time.perf_counter()
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+        resp = session.get(
+            f"http://ip-api.com/json/{ip}?fields=status,countryCode,isp,org,as,asname",
+            timeout=5,
+        )
+        r = resp.json()
+        if r.get("status") != "success":
+            return None
+        cc = r.get("countryCode")
+        if cc != "RU":
+            return None
+        full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
+        if any(word in full_info for word in BAD_HOSTING_KEYWORDS):
+            return None
+        return cc
+    except Exception:
+        return None
 
 
 def get_port() -> int:
@@ -323,9 +362,21 @@ def check_candidate(config: str, sni_domains: set) -> None:
     if sni not in sni_domains:
         return  # не SNI-RU
 
+    # Проверка дубликата IP
+    with _seen_ips_lock:
+        if host in seen_ips:
+            return
+        seen_ips.add(host)
+
     # Быстрый пинг
     p1 = fast_ping(host, port, sni)
     if not p1 or p1 < MIN_RU_PING or p1 > MAX_RU_PING:
+        return
+
+    # Проверка страны через ip-api — только RU
+    cc = check_ip_country(host)
+    if not cc:
+        print(f"⛔ [NOT RU] {host} — пропускаем", flush=True)
         return
 
     # Полный анализ пинга
@@ -490,4 +541,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-      
