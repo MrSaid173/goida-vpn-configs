@@ -23,6 +23,7 @@ from github import Github, Auth
 
 # --- НАСТРОЙКИ ---
 GITHUB_TOKEN = os.environ.get("MY_TOKEN")
+RU_PROXY = os.environ.get("RU_PROXY", None)  # передаётся из find_ru_proxy.py через GITHUB_ENV
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
@@ -35,7 +36,7 @@ MAX_XHTTP = 5
 MIN_RU_CONFIGS = 3
 MAX_RU_CONFIGS = 7
 MIN_HOST_CONFIGS = 3
-MAX_HOST_CONFIGS = 9
+MAX_HOST_CONFIGS = 13
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -57,8 +58,8 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 70
-MAX_JITTER_RATIO = 0.5
+MAX_JITTER = 80
+MAX_JITTER_RATIO = 0.4
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -78,8 +79,8 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 550.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 700.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 500.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 650.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -92,7 +93,7 @@ FULL_PING_ATTEMPTS = 3
 FULL_PING_MIN_SAMPLES = 4
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 1.4  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
@@ -104,10 +105,10 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
-XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
-XRAY_TIMEOUT = 7          # секунд на весь тест одного конфига
-XRAY_STARTUP_WAIT = 3   # секунд ждём пока xray поднимется
+XRAY_TEST_URL_RU = "https://cp.cloudlfare.com/"    # для RU-конфигов: доступен только из РФ
+XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com" # для остальных: лёгкий 204, глобальный
+XRAY_TIMEOUT = 5          # секунд на весь тест одного конфига
+XRAY_STARTUP_WAIT = 2.5   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
@@ -115,6 +116,9 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
 session.headers.update({'Connection': 'keep-alive'})
+if RU_PROXY:
+    session.proxies.update({"http": RU_PROXY, "https": RU_PROXY})
+    print(f"🌐 Все запросы идут через RU прокси: {RU_PROXY}", flush=True)
 
 zone = zoneinfo.ZoneInfo("Europe/Moscow")
 offset = datetime.now(zone).strftime("%H:%M | %d.%m.%Y")
@@ -202,6 +206,12 @@ _xray_port_counter = XRAY_PORT_BASE
 _xray_port_lock = threading.Lock()
 xray_available = False      # выставляется в main() если бинарь найден
 
+# --- УПРАВЛЕНИЕ PROXY-ФАЗОЙ ---
+RU_PROXY_TIMEOUT = 8 * 60   # 8 минут в секундах
+proxy_phase_active = False
+proxy_start_time: float = 0.0
+proxy_cutoff_event = threading.Event()
+
 
 def _inc_stat(key: str, amount: int = 1) -> None:
     """Потокобезопасное увеличение счётчика статистики."""
@@ -221,7 +231,8 @@ def load_ru_blocklist() -> None:
     nets: list[ipaddress.IPv4Network] = []
     for url in ANTIFILTER_URLS:
         try:
-            resp = session.get(url, timeout=15, verify=False)
+            direct = requests.Session()
+            resp = direct.get(url, timeout=15, verify=False)
             resp.raise_for_status()
             count = 0
             for line in resp.text.splitlines():
@@ -396,6 +407,20 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
         "streamSettings": stream_settings,
     }
 
+    outbounds = [outbound, {"tag": "direct", "protocol": "freedom"}]
+
+    if RU_PROXY:
+        # Цепочка: тестируемый конфиг → RU прокси → интернет
+        outbound["proxySettings"] = {"tag": "ru-proxy", "transportLayer": True}
+        ru_proxy_port = int(RU_PROXY.split(":")[-1])
+        outbounds.append({
+            "tag": "ru-proxy",
+            "protocol": "socks",
+            "settings": {
+                "servers": [{"address": "127.0.0.1", "port": ru_proxy_port}]
+            }
+        })
+
     config = {
         "log": {"loglevel": "none"},
         "inbounds": [{
@@ -405,7 +430,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": False},
         }],
-        "outbounds": [outbound, {"tag": "direct", "protocol": "freedom"}],
+        "outbounds": outbounds,
     }
     return config
 
@@ -781,6 +806,26 @@ def check_completion() -> bool:
     if vlm_done and vlm2_done:
         stop_event.set()
         return True
+
+    # Проверяем условия для отключения RU прокси во время proxy-фазы
+    if proxy_phase_active and not proxy_cutoff_event.is_set():
+        # Условие 1: таймаут 8 минут
+        if proxy_start_time and (time.perf_counter() - proxy_start_time) >= RU_PROXY_TIMEOUT:
+            print("⏱️  Таймаут RU прокси (8 мин), переключаемся на прямое подключение", flush=True)
+            proxy_cutoff_event.set()
+            stop_event.set()
+            return False
+
+        # Условие 2: иностранных конфигов уже достаточно (MAX_CONFIGS - MAX_TOTAL_SNI_RU)
+        nonru_vlm = sum(1 for r in vlm_results if not r['white_sni'])
+        nonru_vlm2 = sum(1 for r in vlm2_results if not r['white_sni'])
+        nonru_target = MAX_CONFIGS - MAX_TOTAL_SNI_RU
+        if nonru_vlm >= nonru_target and nonru_vlm2 >= nonru_target:
+            print(f"✅ Иностранных конфигов достаточно ({nonru_vlm}/{nonru_vlm2}), переключаемся на прямое подключение", flush=True)
+            proxy_cutoff_event.set()
+            stop_event.set()
+            return False
+
     return False
 
 
@@ -847,6 +892,10 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
         _inc_stat('isp_banned')
         return
+    # Исключаем RU IP без белого SNI
+    if ip_cc == "RU" and not is_white:
+        _inc_stat('ru_no_sni_excluded')
+        return 
 
     # Проверка лимита подсети /16
     config_type = get_config_type(ip_cc, is_white)
@@ -1029,6 +1078,11 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
                 current_ru_sni_total += 1
 
         if not added_any:
+            while len(final) < MAX_CONFIGS and non_ru_dq:
+                config = non_ru_dq.popleft()
+                if config['link'] not in final_links:
+                    final.append(config)
+                    final_links.add(config['link'])
             break
 
     speed_rating = {
@@ -1080,7 +1134,7 @@ def print_statistics() -> None:
 
 
 def main() -> None:
-    global sni_domains, xray_available
+    global sni_domains, xray_available, proxy_phase_active, proxy_start_time
 
     start_total = time.perf_counter()
     print(f"--- 🟢 ЗАПУСК [{offset}] ---", flush=True)
@@ -1110,6 +1164,7 @@ def main() -> None:
         print(f"⚠️  GitHub недоступен: {e}", flush=True)
 
     try:
+        direct_session = requests.Session()
         src_text = session.get(REMOTE_SOURCE_URL, timeout=10).text
 
         def get_list(var: str) -> list[str]:
@@ -1119,7 +1174,7 @@ def main() -> None:
         extra_urls, std_urls = get_list("EXTRA_URLS_FOR_26"), get_list("URLS")
         sni_domains.update(s.lower() for s in get_list("SNI_DOMAINS"))
 
-        sec_text = session.get(SECONDARY_WHITELIST_URL, timeout=10).text
+        sec_text = direct_session.get(SECONDARY_WHITELIST_URL, timeout=10).text
         sni_domains.update(line.strip().lower() for line in sec_text.splitlines() if line.strip())
     except requests.RequestException as e:
         print(f"⚠️  Не удалось загрузить источники: {e}", flush=True)
@@ -1142,15 +1197,60 @@ def main() -> None:
         (raw_nonwhite, True, False),
     ]
 
-    for group, priority, white in check_order:
-        if stop_event.is_set():
-            break
-        workers = min(len(group), 40) if group else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
+    if RU_PROXY:
+        # --- ФАЗА 1: проход через RU прокси ---
+        proxy_start_time = time.perf_counter()
+        proxy_phase_active = True
+        proxy_cutoff_event.clear()
+        stop_event.clear()
+
+        print(f"🌐 Фаза 1: проход через RU прокси (таймаут {RU_PROXY_TIMEOUT // 60} мин)...", flush=True)
+
+        for group, priority, white in check_order:
+            if stop_event.is_set():
+                break
+            workers = min(len(group), 40) if group else 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                for c in group:
+                    if stop_event.is_set():
+                        break
+                    v.submit(validate, c, priority, white)
+
+        proxy_phase_active = False
+        elapsed = time.perf_counter() - proxy_start_time
+
+        vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
+        vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
+
+        if not vlm_done or not vlm2_done or proxy_cutoff_event.is_set():
+            print(f"🔄 Фаза 2: прямое подключение (VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)}, прошло {elapsed:.0f}с)...", flush=True)
+            session.proxies.clear()
+            stop_event.clear()
+
+            for group, priority, white in check_order:
                 if stop_event.is_set():
                     break
-                v.submit(validate, c, priority, white)
+                workers = min(len(group), 40) if group else 1
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                    for c in group:
+                        if stop_event.is_set():
+                            break
+                        v.submit(validate, c, priority, white)
+
+            print(f"✅ После фазы 2: VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)}", flush=True)
+        else:
+            print(f"✅ Фаза 1 завершена успешно за {elapsed:.0f}с", flush=True)
+    else:
+        # Без прокси — обычный проход
+        for group, priority, white in check_order:
+            if stop_event.is_set():
+                break
+            workers = min(len(group), 40) if group else 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                for c in group:
+                    if stop_event.is_set():
+                        break
+                    v.submit(validate, c, priority, white)
 
     print_statistics()
 
@@ -1174,4 +1274,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
