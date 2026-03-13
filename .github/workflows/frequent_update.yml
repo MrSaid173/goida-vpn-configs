@@ -26,10 +26,17 @@ jobs:
       - name: Get latest Xray version
         id: xray_version
         run: |
-          VERSION=$(curl -sf https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          for i in 1 2 3; do
+            VERSION=$(curl -sf --max-time 10 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)
+            if [ -n "$VERSION" ]; then
+              break
+            fi
+            echo "⚠️ Попытка $i не удалась, повтор..."
+            sleep 3
+          done
           if [ -z "$VERSION" ]; then
             VERSION="v25.3.6"
-            echo "⚠️ GitHub API недоступен, используем fallback: $VERSION"
+            echo "⚠️ Используем fallback: $VERSION"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "✅ Xray версия: $VERSION"
