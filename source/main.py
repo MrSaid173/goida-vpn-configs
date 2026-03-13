@@ -892,10 +892,6 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
         _inc_stat('isp_banned')
         return
-    # Исключаем RU IP без белого SNI
-    if ip_cc == "RU" and not is_white:
-        _inc_stat('ru_no_sni_excluded')
-        return 
 
     # Проверка лимита подсети /16
     config_type = get_config_type(ip_cc, is_white)
@@ -1226,6 +1222,13 @@ def main() -> None:
             print(f"🔄 Фаза 2: прямое подключение (VLM: {len(vlm_results)}, VLM2: {len(vlm2_results)}, прошло {elapsed:.0f}с)...", flush=True)
             session.proxies.clear()
             stop_event.clear()
+
+            # Сбрасываем кэши IP чтобы перепроверить конфиги без прокси
+            with lock:
+                seen_ips.clear()
+                failed_ips.clear()
+            with _blocked_cache_lock:
+                _blocked_cache.clear()
 
             for group, priority, white in check_order:
                 if stop_event.is_set():
