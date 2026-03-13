@@ -57,8 +57,8 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.4
+MAX_JITTER = 70
+MAX_JITTER_RATIO = 0.5
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -78,8 +78,8 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 550.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 700.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -88,8 +88,8 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
 FULL_PING_PAUSE = 0.15
-FULL_PING_ATTEMPTS = 2
-FULL_PING_MIN_SAMPLES = 3
+FULL_PING_ATTEMPTS = 3
+FULL_PING_MIN_SAMPLES = 4
 
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
@@ -104,8 +104,8 @@ ANTIFILTER_URLS = [
 
 # --- НАСТРОЙКИ XRAY-ТЕСТА ---
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
-XRAY_TEST_URL_RU = "https://cp.cloudflare.com/" 
-XRAY_TEST_URL_WORLD = "https://cp.cloudflare.com/"
+XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
+XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_TIMEOUT = 7          # секунд на весь тест одного конфига
 XRAY_STARTUP_WAIT = 3   # секунд ждём пока xray поднимется
 XRAY_MAX_PARALLEL = 5     # максимум одновременных xray-процессов
