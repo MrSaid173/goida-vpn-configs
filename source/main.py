@@ -444,6 +444,7 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
                 [XRAY_BINARY, "run", "-config", tmp_path],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
 
             time.sleep(XRAY_STARTUP_WAIT)
@@ -472,7 +473,8 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
         except requests.exceptions.ConnectionError:
             _inc_stat('xray_failed')
             return False
-        except Exception:
+        except Exception as e:
+            print(f"[XRAY ERROR] {e}", flush=True)
             _inc_stat('xray_failed')
             return False
         finally:
@@ -653,6 +655,10 @@ def check_isp_info(ip_str: str) -> tuple:
                     is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_bad_hosting or is_banned_pattern
+                    if is_bad_hosting:
+                        _inc_stat('banned_hosting')
+                    if is_banned_pattern:
+                        _inc_stat('banned_asname')
                     is_hosting_flag = r.get("hosting", False) and not is_bad_hosting
                     res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
@@ -1064,8 +1070,11 @@ def print_statistics() -> None:
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
+    print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
+    print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
     print(f"Пинг вне диапазона: {s['ping_out_of_range']}", flush=True)
     print(f"Jitter провален: {s['jitter_failed']}", flush=True)
+    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
     print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
     print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
