@@ -376,7 +376,6 @@ def check_candidate(config: str, sni_domains: set) -> None:
     # Проверка страны через ip-api — только RU
     cc = check_ip_country(host)
     if not cc:
-        print(f"⛔ [NOT RU] {host} — пропускаем", flush=True)
         return
 
     # Полный анализ пинга
