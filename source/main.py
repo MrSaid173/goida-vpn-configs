@@ -61,18 +61,18 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT = 180  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX  = 1    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX  = 2    # максимум попыток добора SNI-RU
 
 # Настройки конфигураций
-MAX_CONFIGS = 50
+MAX_CONFIGS = 30
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
-MAX_PER_SUBNET = 3
+MAX_PER_SUBNET = 2
 MAX_PER_SUBNET16_RU_SNI = 1
-MAX_PER_SUBNET16_NONRU_SNI = 7
-MAX_PER_SUBNET16_OTHERS = 10
+MAX_PER_SUBNET16_NONRU_SNI = 5
+MAX_PER_SUBNET16_OTHERS = 7
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
@@ -80,7 +80,7 @@ MAX_FAILED_PER_SUBNET = 6
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
-MAX_SAME_SNI_WORLD = 3  # Любой IP + не-white SNI
+MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
 MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
@@ -91,7 +91,7 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-FULL_PING_PAUSE = 0.2
+FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
@@ -779,16 +779,23 @@ def rename_config(link: str, country_code: str, index: int,
 
 
 def fetch_raw_configs(url: str) -> list[str]:
-    try:
-        resp = session.get(url, timeout=7, verify=False).text
-        if "://" not in resp[:50]:
-            try:
-                resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
-            except (ValueError, UnicodeDecodeError):
-                pass
-        return [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
-    except requests.RequestException:
-        return []
+    for attempt in range(2):
+        try:
+            resp = session.get(url, timeout=7, verify=False).text
+            if "://" not in resp[:50]:
+                try:
+                    resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
+                except (ValueError, UnicodeDecodeError):
+                    pass
+            result = [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+            if result:
+                return result
+            if attempt == 0:
+                time.sleep(1.5)
+        except requests.RequestException:
+            if attempt == 0:
+                time.sleep(1.5)
+    return []
 
 
 def get_sni_limit(is_white: bool, ip_cc: str) -> int:
@@ -1347,4 +1354,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-                
