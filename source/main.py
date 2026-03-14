@@ -1240,7 +1240,7 @@ def main() -> None:
 
     raw_nonwhite = list(set(raw_extra + raw_std))
     random.shuffle(raw_nonwhite)
-    print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
+    print(f"Объединённая корзина: {len(raw_nonwhite)}", flush=True)
 
     def _sni_ru_targets_met() -> bool:
         """Все условия по SNI-RU выполнены — повтор не нужен."""
