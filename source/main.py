@@ -874,12 +874,19 @@ def try_add_to_lists(entry: dict) -> bool:
 
 
 def check_completion() -> bool:
-    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
-    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
+    vlm_full  = len(vlm_results)  >= MAX_CONFIGS
+    vlm2_full = len(vlm2_results) >= MAX_CONFIGS
+    vlm_done  = vlm_full  and ru_vlm_count  >= MIN_RU_CONFIGS
+    vlm2_done = vlm2_full and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP
     if vlm_done and vlm2_done:
         stop_event.set()
         sni_ru_done_event.set()
         return True
+    if vlm_full and vlm2_full:
+        stop_event.set()
+        sni_ru_done_event.set()
+        return True
+    return False
     # Проверяем достигнуты ли цели SNI-RU фазы
     ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
     ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
