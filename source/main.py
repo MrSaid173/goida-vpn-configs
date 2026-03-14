@@ -61,11 +61,11 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT = 210  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX  = 2    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT = 360  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX  = 1    # максимум попыток добора SNI-RU
 
 # Настройки конфигураций
-MAX_CONFIGS = 30
+MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
