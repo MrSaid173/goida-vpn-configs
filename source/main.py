@@ -1039,6 +1039,7 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
         r['link']: rank + 1
         for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))
     }
+    print(f"[DEBUG finalize] top_fixed={len(top_fixed)}, non_ru={len(non_ru_sni_configs)}, ru_sni={len(ru_sni_configs)}, xhttp={len(xhttp_bucket)}, final={len(final)}", flush=True)
     return [
         rename_config(r['link'], r['country'], speed_rating[r['link']], r['is_hosting'], r['white_sni'])
         for r in final
