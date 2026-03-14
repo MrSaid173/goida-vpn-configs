@@ -32,8 +32,8 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 6
-MAX_RU_CONFIGS = 6
+MIN_RU_CONFIGS = 3
+MAX_RU_CONFIGS = 7
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 5
 
@@ -207,6 +207,52 @@ def _inc_stat(key: str, amount: int = 1) -> None:
     """Потокобезопасное увеличение счётчика статистики."""
     with stats_lock:
         stats[key] += amount
+
+
+def _partial_cache_reset() -> None:
+    """
+    Частичный сброс кэшей перед повторным поиском RU-конфигов.
+    - seen_ips рабочих конфигов НЕ трогаем (чтобы не было дублей).
+    - failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts:
+      оставляем записи рабочих IP нетронутыми, из остальных удаляем половину случайно.
+    """
+    global failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts
+
+    with lock:
+        # IP рабочих конфигов — не трогаем
+        working_ips = {
+            re.search(r'@([^:/?#\s]+):', r['link']).group(1)
+            for r in vlm_results + vlm2_results
+            if re.search(r'@([^:/?#\s]+):', r['link'])
+        }
+
+        # failed_ips: удаляем половину не-рабочих случайно
+        non_working_failed = list(failed_ips - working_ips)
+        to_remove = set(random.sample(non_working_failed, len(non_working_failed) // 2))
+        failed_ips -= to_remove
+
+        # ip_cache: удаляем половину записей не рабочих IP случайно
+        non_working_cached = [k for k in ip_cache if k not in working_ips]
+        to_remove_cache = set(random.sample(non_working_cached, len(non_working_cached) // 2))
+        for k in to_remove_cache:
+            del ip_cache[k]
+
+        # failed_subnets: удаляем половину случайно
+        fs_keys = list(failed_subnets.keys())
+        for k in random.sample(fs_keys, len(fs_keys) // 2):
+            del failed_subnets[k]
+
+        # sni_usage_counts: удаляем половину случайно
+        sni_keys = list(sni_usage_counts.keys())
+        for k in random.sample(sni_keys, len(sni_keys) // 2):
+            del sni_usage_counts[k]
+
+        # subnet16_counts: удаляем половину случайно
+        s16_keys = list(subnet16_counts.keys())
+        for k in random.sample(s16_keys, len(s16_keys) // 2):
+            del subnet16_counts[k]
+
+    print("🔄 Частичный сброс кэшей выполнен", flush=True)
 
 
 # ============================================================
@@ -1140,15 +1186,90 @@ def main() -> None:
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
-    check_order = [
+    sni_ru_groups = [
         (raw_extra, True, True),
         (raw_std, False, True),
-        (raw_nonwhite, True, False),
     ]
+    non_sni_ru_group = (raw_nonwhite, True, False)
 
-    for group, priority, white in check_order:
+    # --- Фаза 1: SNI-RU конфиги ---
+    for group, priority, white in sni_ru_groups:
         if stop_event.is_set():
             break
+        workers = min(len(group), 40) if group else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+            for c in group:
+                if stop_event.is_set():
+                    break
+                v.submit(validate, c, priority, white)
+
+    # --- Проверка: добрали ли RU до MIN_RU_CONFIGS ---
+    RU_RETRY_WAIT = 180   # секунд ожидания перед повтором
+    RU_RETRY_MAX  = 2     # максимум попыток
+
+    for attempt in range(1, RU_RETRY_MAX + 1):
+        if stop_event.is_set():
+            break
+        with lock:
+            ru_vlm_ok  = ru_vlm_count  >= MIN_RU_CONFIGS
+            ru_vlm2_ok = ru_vlm2_count >= MIN_RU_CONFIGS
+        if ru_vlm_ok and ru_vlm2_ok:
+            break
+
+        print(
+            f"⚠️  RU не добран (vlm={ru_vlm_count}, vlm2={ru_vlm2_count}, нужно {MIN_RU_CONFIGS}). "
+            f"Попытка {attempt}/{RU_RETRY_MAX}: жду {RU_RETRY_WAIT}с...",
+            flush=True,
+        )
+        time.sleep(RU_RETRY_WAIT)
+
+        # Сброс части кэшей
+        _partial_cache_reset()
+
+        # Перезагружаем источники
+        try:
+            src_text_retry = session.get(REMOTE_SOURCE_URL, timeout=10).text
+
+            def get_list_retry(var: str) -> list[str]:
+                m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text_retry, re.S | re.I)
+                return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
+
+            extra_urls_retry = get_list_retry("EXTRA_URLS_FOR_26")
+            std_urls_retry   = get_list_retry("URLS")
+        except requests.RequestException as e:
+            print(f"⚠️  Не удалось перезагрузить источники: {e}", flush=True)
+            extra_urls_retry = extra_urls
+            std_urls_retry   = std_urls
+
+        raw_extra_retry = fetch_group_data(extra_urls_retry)
+        raw_std_retry   = fetch_group_data(std_urls_retry)
+        print(
+            f"🔁 Повтор SNI-RU: Extra={len(raw_extra_retry)}, Std={len(raw_std_retry)}",
+            flush=True,
+        )
+
+        for group, priority, white in [
+            (raw_extra_retry, True, True),
+            (raw_std_retry, False, True),
+        ]:
+            if stop_event.is_set():
+                break
+            workers = min(len(group), 40) if group else 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                for c in group:
+                    if stop_event.is_set():
+                        break
+                    v.submit(validate, c, priority, white)
+
+        with lock:
+            print(
+                f"📊 После попытки {attempt}: vlm RU={ru_vlm_count}, vlm2 RU={ru_vlm2_count}",
+                flush=True,
+            )
+
+    # --- Фаза 2: NON SNI-RU конфиги ---
+    if not stop_event.is_set():
+        group, priority, white = non_sni_ru_group
         workers = min(len(group), 40) if group else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
             for c in group:
@@ -1178,4 +1299,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
