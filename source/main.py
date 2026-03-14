@@ -29,10 +29,6 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
-# Настройки повтора SNI-RU
-RU_RETRY_WAIT = 120  # секунд ожидания перед повтором
-RU_RETRY_MAX  = 2    # максимум попыток добора
-
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
@@ -63,6 +59,10 @@ BANNED_ASNAME_PATTERNS = [
 # Настройки Jitter
 MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
+
+# Настройки повтора SNI-RU
+RU_RETRY_WAIT = 120  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX  = 2    # максимум попыток добора SNI-RU
 
 # Настройки конфигураций
 MAX_CONFIGS = 50
@@ -215,46 +215,71 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 def _partial_cache_reset() -> None:
     """
-    Частичный сброс кэшей перед повторным поиском RU-конфигов.
-    - seen_ips рабочих конфигов НЕ трогаем (чтобы не было дублей).
-    - failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts:
-      оставляем записи рабочих IP нетронутыми, из остальных удаляем половину случайно.
+    Частичный сброс кэшей перед повторным поиском SNI-RU конфигов.
+    Всё что связано с уже принятыми конфигами — не трогаем:
+    - seen_ips, subnet_counts, id_counts рабочих IP остаются нетронутыми.
+    - sni_usage_counts, subnet16_counts пересчитываются из рабочих конфигов,
+      затем из остатка удаляем половину случайно.
+    - failed_ips, ip_cache, failed_subnets: записи рабочих IP не трогаем,
+      из остальных удаляем половину случайно.
     """
     global failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts
 
     with lock:
-        # IP рабочих конфигов — не трогаем
-        working_ips = {
-            re.search(r'@([^:/?#\s]+):', r['link']).group(1)
-            for r in vlm_results + vlm2_results
-            if re.search(r'@([^:/?#\s]+):', r['link'])
-        }
+        all_accepted = vlm_results + vlm2_results
+
+        # IP и SNI принятых конфигов
+        working_ips = set()
+        working_snis = []
+        working_subnets16 = []  # список (subnet16, config_type) принятых конфигов
+        for r in all_accepted:
+            m = re.search(r'@([^:/?#\s]+):', r['link'])
+            if not m:
+                continue
+            ip = m.group(1)
+            working_ips.add(ip)
+            s_m = re.search(r'[?&]sni=([^&#\s]*)', r['link'], re.I)
+            sni = s_m.group(1).lower() if s_m else ""
+            working_snis.append(sni)
+            subnet16 = ".".join(ip.split(".")[:2])
+            config_type = get_config_type(r['country'], r['white_sni'])
+            working_subnets16.append((subnet16, config_type))
 
         # failed_ips: удаляем половину не-рабочих случайно
         non_working_failed = list(failed_ips - working_ips)
         to_remove = set(random.sample(non_working_failed, len(non_working_failed) // 2))
         failed_ips -= to_remove
 
-        # ip_cache: удаляем половину записей не рабочих IP случайно
+        # ip_cache: удаляем половину не-рабочих случайно
         non_working_cached = [k for k in ip_cache if k not in working_ips]
-        to_remove_cache = set(random.sample(non_working_cached, len(non_working_cached) // 2))
-        for k in to_remove_cache:
+        for k in random.sample(non_working_cached, len(non_working_cached) // 2):
             del ip_cache[k]
 
-        # failed_subnets: удаляем половину случайно
+        # failed_subnets: удаляем половину случайно (не связаны с конкретными конфигами)
         fs_keys = list(failed_subnets.keys())
         for k in random.sample(fs_keys, len(fs_keys) // 2):
             del failed_subnets[k]
 
-        # sni_usage_counts: удаляем половину случайно
-        sni_keys = list(sni_usage_counts.keys())
-        for k in random.sample(sni_keys, len(sni_keys) // 2):
+        # sni_usage_counts: пересчитываем с нуля из принятых, остаток удаляем наполовину
+        working_sni_set = set(working_snis)
+        non_working_sni = [k for k in sni_usage_counts if k not in working_sni_set]
+        for k in random.sample(non_working_sni, len(non_working_sni) // 2):
             del sni_usage_counts[k]
+        # восстанавливаем точные счётчики принятых SNI
+        for sni in working_snis:
+            if sni:
+                sni_usage_counts[sni] = working_snis.count(sni)
 
-        # subnet16_counts: удаляем половину случайно
-        s16_keys = list(subnet16_counts.keys())
-        for k in random.sample(s16_keys, len(s16_keys) // 2):
+        # subnet16_counts: пересчитываем из принятых, остаток удаляем наполовину
+        working_s16_set = {s16 for s16, _ in working_subnets16}
+        non_working_s16 = [k for k in subnet16_counts if k not in working_s16_set]
+        for k in random.sample(non_working_s16, len(non_working_s16) // 2):
             del subnet16_counts[k]
+        # восстанавливаем точные счётчики принятых subnet16
+        for s16, ctype in working_subnets16:
+            subnet16_counts[s16][ctype] = sum(
+                1 for s, c in working_subnets16 if s == s16 and c == ctype
+            )
 
     print("🔄 Частичный сброс кэшей выполнен", flush=True)
 
@@ -1207,6 +1232,7 @@ def main() -> None:
                     break
                 v.submit(validate, c, priority, white)
 
+    # --- Проверка: добрали ли RU до MIN_RU_CONFIGS ---
     def _sni_ru_targets_met() -> bool:
         """Все условия по SNI-RU выполнены — повтор не нужен."""
         with lock:
