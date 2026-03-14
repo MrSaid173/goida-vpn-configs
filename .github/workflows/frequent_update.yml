@@ -27,7 +27,7 @@ jobs:
         id: xray_version
         run: |
           for i in 1 2 3; do
-            VERSION=$(curl -sf --max-time 10 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null)
+            VERSION=$(curl -sf --max-time 10 "https://api.github.com/repos/XTLS/Xray-core/releases/latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" 2>/dev/null || true)
             if [ -n "$VERSION" ]; then
               break
             fi
