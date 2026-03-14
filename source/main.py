@@ -32,8 +32,8 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 3
-MAX_RU_CONFIGS = 7
+MIN_RU_CONFIGS = 6
+MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 5
 
