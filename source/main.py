@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT = 180  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX  = 1    # максимум попыток добора SNI-RU
 
 # Настройки конфигураций
@@ -80,7 +80,7 @@ MAX_FAILED_PER_SUBNET = 6
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
-MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
+MAX_SAME_SNI_WORLD = 3  # Любой IP + не-white SNI
 
 MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
 MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
@@ -91,7 +91,7 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-FULL_PING_PAUSE = 0.15
+FULL_PING_PAUSE = 0.2
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
@@ -170,6 +170,7 @@ lock = threading.Lock()
 stats_lock = threading.Lock()   # отдельный лок для счётчиков статистики
 api_semaphore = threading.Semaphore(3)
 stop_event = threading.Event()
+sni_ru_done_event = threading.Event()  # сигнал завершения фазы SNI-RU
 
 # Кэши и счетчики (защищены основным lock)
 ip_cache = {}
@@ -863,13 +864,24 @@ def check_completion() -> bool:
     vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
     if vlm_done and vlm2_done:
         stop_event.set()
+        sni_ru_done_event.set()
         return True
+    # Проверяем достигнуты ли цели SNI-RU фазы
+    ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
+    ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
+    sni_vlm_ok  = sum(1 for r in vlm_results  if r['white_sni']) >= MAX_TOTAL_SNI_RU
+    sni_vlm2_ok = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
+    if ru_vlm_ok and ru_vlm2_ok and sni_vlm_ok and sni_vlm2_ok:
+        sni_ru_done_event.set()
     return False
 
 
 def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if stop_event.is_set():
         _inc_stat('stopped')
+        return
+    # Во время фазы SNI-RU останавливаемся по sni_ru_done_event
+    if is_white and sni_ru_done_event.is_set():
         return
 
     if is_technically_broken(config):
@@ -1223,33 +1235,47 @@ def main() -> None:
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
-    sni_ru_groups = [
-        (raw_extra, True, True),
-        (raw_std, False, True),
-    ]
-    non_sni_ru_group = (raw_nonwhite, True, False)
-
-    # --- Фаза 1: SNI-RU конфиги ---
-    for group, priority, white in sni_ru_groups:
-        if stop_event.is_set():
-            break
-        workers = min(len(group), 40) if group else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
-                if stop_event.is_set():
-                    break
-                v.submit(validate, c, priority, white)
-
-    # --- Проверка: добрали ли RU до MIN_RU_CONFIGS ---
     def _sni_ru_targets_met() -> bool:
         """Все условия по SNI-RU выполнены — повтор не нужен."""
         with lock:
-            ru_vlm_ok  = ru_vlm_count  >= MIN_RU_CONFIGS
-            ru_vlm2_ok = ru_vlm2_count >= MIN_RU_CONFIGS
+            ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
+            ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
             sni_vlm_ok  = sum(1 for r in vlm_results  if r['white_sni']) >= MAX_TOTAL_SNI_RU
-            sni_vlm2_ok  = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
+            sni_vlm2_ok = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
         return ru_vlm_ok and ru_vlm2_ok and sni_vlm_ok and sni_vlm2_ok
 
+    def _run_sni_ru_phase(extra: list, std: list) -> None:
+        """Прогоняет SNI-RU группы, останавливается по sni_ru_done_event или stop_event."""
+        for group, priority, white in [(extra, True, True), (std, False, True)]:
+            if stop_event.is_set() or sni_ru_done_event.is_set():
+                break
+            workers = min(len(group), 40) if group else 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+                for c in group:
+                    if stop_event.is_set() or sni_ru_done_event.is_set():
+                        break
+                    v.submit(validate, c, priority, white)
+
+    def _run_non_sni_ru_phase() -> None:
+        """Ждёт сигнала завершения SNI-RU фазы, затем запускает NON SNI-RU."""
+        sni_ru_done_event.wait()
+        if stop_event.is_set():
+            return
+        workers = min(len(raw_nonwhite), 40) if raw_nonwhite else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
+            for c in raw_nonwhite:
+                if stop_event.is_set():
+                    break
+                v.submit(validate, c, True, False)
+
+    # Запускаем NON SNI-RU в отдельном потоке — он будет ждать sni_ru_done_event
+    non_sni_thread = threading.Thread(target=_run_non_sni_ru_phase, daemon=True)
+    non_sni_thread.start()
+
+    # --- Фаза 1: SNI-RU конфиги ---
+    _run_sni_ru_phase(raw_extra, raw_std)
+
+    # --- Повтор если не добрали ---
     for attempt in range(1, RU_RETRY_MAX + 1):
         if stop_event.is_set():
             break
@@ -1270,7 +1296,6 @@ def main() -> None:
         )
         time.sleep(RU_RETRY_WAIT)
 
-        # Сброс части кэшей
         _partial_cache_reset()
 
         raw_extra_retry = fetch_group_data(extra_urls)
@@ -1280,18 +1305,9 @@ def main() -> None:
             flush=True,
         )
 
-        for group, priority, white in [
-            (raw_extra_retry, True, True),
-            (raw_std_retry, False, True),
-        ]:
-            if stop_event.is_set():
-                break
-            workers = min(len(group), 40) if group else 1
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-                for c in group:
-                    if stop_event.is_set():
-                        break
-                    v.submit(validate, c, priority, white)
+        # Сбрасываем sni_ru_done_event чтобы повтор мог искать
+        sni_ru_done_event.clear()
+        _run_sni_ru_phase(raw_extra_retry, raw_std_retry)
 
         with lock:
             _ru_vlm   = ru_vlm_count
@@ -1305,15 +1321,9 @@ def main() -> None:
             flush=True,
         )
 
-    # --- Фаза 2: NON SNI-RU конфиги ---
-    if not stop_event.is_set():
-        group, priority, white = non_sni_ru_group
-        workers = min(len(group), 40) if group else 1
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
-            for c in group:
-                if stop_event.is_set():
-                    break
-                v.submit(validate, c, priority, white)
+    # Сигналим NON SNI-RU потоку что SNI-RU фаза окончательно завершена
+    sni_ru_done_event.set()
+    non_sni_thread.join()
 
     print_statistics()
 
