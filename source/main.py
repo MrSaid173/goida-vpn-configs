@@ -29,6 +29,10 @@ FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
+# Настройки повтора SNI-RU
+RU_RETRY_WAIT = 120  # секунд ожидания перед повтором
+RU_RETRY_MAX  = 2    # максимум попыток добора
+
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
@@ -1202,10 +1206,6 @@ def main() -> None:
                 if stop_event.is_set():
                     break
                 v.submit(validate, c, priority, white)
-
-    # --- Проверка: добрали ли RU до MIN_RU_CONFIGS ---
-    RU_RETRY_WAIT = 180   # секунд ожидания перед повтором
-    RU_RETRY_MAX  = 2     # максимум попыток
 
     def _sni_ru_targets_met() -> bool:
         """Все условия по SNI-RU выполнены — повтор не нужен."""
