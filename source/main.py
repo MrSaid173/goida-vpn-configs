@@ -1207,17 +1207,30 @@ def main() -> None:
     RU_RETRY_WAIT = 180   # секунд ожидания перед повтором
     RU_RETRY_MAX  = 2     # максимум попыток
 
+    def _sni_ru_targets_met() -> bool:
+        """Все условия по SNI-RU выполнены — повтор не нужен."""
+        with lock:
+            ru_vlm_ok       = ru_vlm_count  >= MIN_RU_CONFIGS
+            ru_vlm2_ok      = ru_vlm2_count >= MIN_RU_CONFIGS
+            sni_vlm_ok      = sum(1 for r in vlm_results  if r['white_sni']) >= MAX_TOTAL_SNI_RU
+            sni_vlm2_ok     = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
+        return ru_vlm_ok and ru_vlm2_ok and sni_vlm_ok and sni_vlm2_ok
+
     for attempt in range(1, RU_RETRY_MAX + 1):
         if stop_event.is_set():
             break
-        with lock:
-            ru_vlm_ok  = ru_vlm_count  >= MIN_RU_CONFIGS
-            ru_vlm2_ok = ru_vlm2_count >= MIN_RU_CONFIGS
-        if ru_vlm_ok and ru_vlm2_ok:
+        if _sni_ru_targets_met():
             break
 
+        with lock:
+            _ru_vlm   = ru_vlm_count
+            _ru_vlm2  = ru_vlm2_count
+            _sni_vlm  = sum(1 for r in vlm_results  if r['white_sni'])
+            _sni_vlm2 = sum(1 for r in vlm2_results if r['white_sni'])
         print(
-            f"⚠️  RU не добран (vlm={ru_vlm_count}, vlm2={ru_vlm2_count}, нужно {MIN_RU_CONFIGS}). "
+            f"⚠️  SNI-RU не добран ("
+            f"vlm: RU={_ru_vlm}/{MIN_RU_CONFIGS}, SNI={_sni_vlm}/{MAX_TOTAL_SNI_RU} | "
+            f"vlm2: RU={_ru_vlm2}/{MIN_RU_CONFIGS}, SNI={_sni_vlm2}/{MAX_TOTAL_SNI_RU}). "
             f"Попытка {attempt}/{RU_RETRY_MAX}: жду {RU_RETRY_WAIT}с...",
             flush=True,
         )
@@ -1262,10 +1275,16 @@ def main() -> None:
                     v.submit(validate, c, priority, white)
 
         with lock:
-            print(
-                f"📊 После попытки {attempt}: vlm RU={ru_vlm_count}, vlm2 RU={ru_vlm2_count}",
-                flush=True,
-            )
+            _ru_vlm   = ru_vlm_count
+            _ru_vlm2  = ru_vlm2_count
+            _sni_vlm  = sum(1 for r in vlm_results  if r['white_sni'])
+            _sni_vlm2 = sum(1 for r in vlm2_results if r['white_sni'])
+        print(
+            f"📊 После попытки {attempt}: "
+            f"vlm RU={_ru_vlm}, SNI={_sni_vlm} | "
+            f"vlm2 RU={_ru_vlm2}, SNI={_sni_vlm2}",
+            flush=True,
+        )
 
     # --- Фаза 2: NON SNI-RU конфиги ---
     if not stop_event.is_set():
