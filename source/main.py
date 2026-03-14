@@ -1278,6 +1278,12 @@ def main() -> None:
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
 
     load_ru_blocklist()
+    # Моя геолокация на раннере
+    try:
+    geo = session.get("http://ip-api.com/json/?fields=query,country,city", timeout=5).json()
+    print(f"🌍 Раннер: {geo.get('query')} | {geo.get('country')} | {geo.get('city')}", flush=True)
+except Exception:
+    print("🌍 Раннер: не удалось определить IP", flush=True)
 
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
