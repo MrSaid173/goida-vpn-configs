@@ -61,11 +61,12 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT = 360  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX  = 1    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT       = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX        = 2    # максимум попыток добора SNI-RU
+CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
-MAX_CONFIGS = 50
+MAX_CONFIGS = 30
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
@@ -216,23 +217,26 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 def _partial_cache_reset() -> None:
     """
-    Частичный сброс кэшей перед повторным поиском SNI-RU конфигов.
-    Всё что связано с уже принятыми конфигами — не трогаем:
-    - seen_ips, subnet_counts, id_counts рабочих IP остаются нетронутыми.
-    - sni_usage_counts, subnet16_counts пересчитываются из рабочих конфигов,
-      затем из остатка удаляем половину случайно.
-    - failed_ips, ip_cache, failed_subnets: записи рабочих IP не трогаем,
-      из остальных удаляем половину случайно.
+    Сброс кэшей перед повторным поиском SNI-RU конфигов.
+    Поведение определяется CACHE_RESET_MODE:
+      0 - не очищать ничего
+      1 - очищать наполовину (случайно)
+      2 - очищать полностью
+    Во всех режимах данные принятых конфигов не трогаются.
     """
     global failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts
+
+    if CACHE_RESET_MODE == 0:
+        print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
+        return
 
     with lock:
         all_accepted = vlm_results + vlm2_results
 
-        # IP и SNI принятых конфигов
+        # Собираем данные принятых конфигов
         working_ips = set()
         working_snis = []
-        working_subnets16 = []  # список (subnet16, config_type) принятых конфигов
+        working_subnets16 = []
         for r in all_accepted:
             m = re.search(r'@([^:/?#\s]+):', r['link'])
             if not m:
@@ -246,43 +250,46 @@ def _partial_cache_reset() -> None:
             config_type = get_config_type(r['country'], r['white_sni'])
             working_subnets16.append((subnet16, config_type))
 
-        # failed_ips: удаляем половину не-рабочих случайно
-        non_working_failed = list(failed_ips - working_ips)
-        to_remove = set(random.sample(non_working_failed, len(non_working_failed) // 2))
-        failed_ips -= to_remove
+        def _keys_to_remove(keys: list) -> list:
+            if CACHE_RESET_MODE == 2:
+                return keys
+            return random.sample(keys, len(keys) // 2)
 
-        # ip_cache: удаляем половину не-рабочих случайно
+        # failed_ips
+        non_working_failed = list(failed_ips - working_ips)
+        failed_ips -= set(_keys_to_remove(non_working_failed))
+
+        # ip_cache
         non_working_cached = [k for k in ip_cache if k not in working_ips]
-        for k in random.sample(non_working_cached, len(non_working_cached) // 2):
+        for k in _keys_to_remove(non_working_cached):
             del ip_cache[k]
 
-        # failed_subnets: удаляем половину случайно (не связаны с конкретными конфигами)
+        # failed_subnets
         fs_keys = list(failed_subnets.keys())
-        for k in random.sample(fs_keys, len(fs_keys) // 2):
+        for k in _keys_to_remove(fs_keys):
             del failed_subnets[k]
 
-        # sni_usage_counts: пересчитываем с нуля из принятых, остаток удаляем наполовину
+        # sni_usage_counts
         working_sni_set = set(working_snis)
         non_working_sni = [k for k in sni_usage_counts if k not in working_sni_set]
-        for k in random.sample(non_working_sni, len(non_working_sni) // 2):
+        for k in _keys_to_remove(non_working_sni):
             del sni_usage_counts[k]
-        # восстанавливаем точные счётчики принятых SNI
         for sni in working_snis:
             if sni:
                 sni_usage_counts[sni] = working_snis.count(sni)
 
-        # subnet16_counts: пересчитываем из принятых, остаток удаляем наполовину
+        # subnet16_counts
         working_s16_set = {s16 for s16, _ in working_subnets16}
         non_working_s16 = [k for k in subnet16_counts if k not in working_s16_set]
-        for k in random.sample(non_working_s16, len(non_working_s16) // 2):
+        for k in _keys_to_remove(non_working_s16):
             del subnet16_counts[k]
-        # восстанавливаем точные счётчики принятых subnet16
         for s16, ctype in working_subnets16:
             subnet16_counts[s16][ctype] = sum(
                 1 for s, c in working_subnets16 if s == s16 and c == ctype
             )
 
-    print("🔄 Частичный сброс кэшей выполнен", flush=True)
+    mode_str = "наполовину" if CACHE_RESET_MODE == 1 else "полностью"
+    print(f"🔄 Кэши сброшены ({mode_str})", flush=True)
 
 
 # ============================================================
@@ -1240,7 +1247,7 @@ def main() -> None:
 
     raw_nonwhite = list(set(raw_extra + raw_std))
     random.shuffle(raw_nonwhite)
-    print(f"Объединённая корзина: {len(raw_nonwhite)}", flush=True)
+    print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
     def _sni_ru_targets_met() -> bool:
         """Все условия по SNI-RU выполнены — повтор не нужен."""
