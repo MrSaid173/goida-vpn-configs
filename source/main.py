@@ -61,19 +61,19 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 390  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
-CACHE_RESET_MODE    = 2    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
+RU_RETRY_WAIT       = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX        = 2    # максимум попыток добора SNI-RU
+CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
-MAX_CONFIGS = 50
+MAX_CONFIGS = 30
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
-MAX_PER_SUBNET = 3
+MAX_PER_SUBNET = 2
 MAX_PER_SUBNET16_RU_SNI = 1
-MAX_PER_SUBNET16_NONRU_SNI = 7
-MAX_PER_SUBNET16_OTHERS = 10
+MAX_PER_SUBNET16_NONRU_SNI = 5
+MAX_PER_SUBNET16_OTHERS = 7
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
@@ -92,7 +92,11 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-FULL_PING_PAUSE = 0.20
+
+FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
+FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
+FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
+FULL_PING_PAUSES = [round(FULL_PING_PAUSE_MIN + i * FULL_PING_PAUSE_STEP, 4) for i in range(FULL_PING_PAUSE_COUNT)]
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
@@ -216,6 +220,14 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 
 def _partial_cache_reset() -> None:
+    """
+    Сброс failed_ips перед повторным поиском SNI-RU конфигов.
+    Поведение определяется CACHE_RESET_MODE:
+      0 - не очищать
+      1 - очищать failed_ips наполовину
+      2 - очищать failed_ips полностью
+    Принятые конфиги не трогаются никогда.
+    """
     global failed_ips
 
     if CACHE_RESET_MODE == 0:
@@ -236,47 +248,6 @@ def _partial_cache_reset() -> None:
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
             print("🔄 Кэши сброшены (failed_ips полностью)", flush=True)
-
-        def _keys_to_remove(keys: list) -> list:
-            if CACHE_RESET_MODE == 2:
-                return keys
-            return random.sample(keys, len(keys) // 2)
-
-        # failed_ips
-        non_working_failed = list(failed_ips - working_ips)
-        failed_ips -= set(_keys_to_remove(non_working_failed))
-
-        # ip_cache
-        non_working_cached = [k for k in ip_cache if k not in working_ips]
-        for k in _keys_to_remove(non_working_cached):
-            del ip_cache[k]
-
-        # failed_subnets
-        fs_keys = list(failed_subnets.keys())
-        for k in _keys_to_remove(fs_keys):
-            del failed_subnets[k]
-
-        # sni_usage_counts
-        working_sni_set = set(working_snis)
-        non_working_sni = [k for k in sni_usage_counts if k not in working_sni_set]
-        for k in _keys_to_remove(non_working_sni):
-            del sni_usage_counts[k]
-        for sni in working_snis:
-            if sni:
-                sni_usage_counts[sni] = working_snis.count(sni)
-
-        # subnet16_counts
-        working_s16_set = {s16 for s16, _ in working_subnets16}
-        non_working_s16 = [k for k in subnet16_counts if k not in working_s16_set]
-        for k in _keys_to_remove(non_working_s16):
-            del subnet16_counts[k]
-        for s16, ctype in working_subnets16:
-            subnet16_counts[s16][ctype] = sum(
-                1 for s, c in working_subnets16 if s == s16 and c == ctype
-            )
-
-    mode_str = "наполовину" if CACHE_RESET_MODE == 1 else "полностью"
-    print(f"🔄 Кэши сброшены ({mode_str})", flush=True)
 
 
 # ============================================================
@@ -631,10 +602,18 @@ def full_ping_analysis(
         return None
 
     try:
-        for _ in range(FULL_PING_ATTEMPTS):
+        used_pauses = []
+        for i in range(FULL_PING_ATTEMPTS):
             if stop_event.is_set():
                 return None
-            time.sleep(FULL_PING_PAUSE)
+            # Перед последней паузой: если все предыдущие одинаковые — исключаем это значение
+            if i == FULL_PING_ATTEMPTS - 1 and len(used_pauses) >= 2 and len(set(used_pauses)) == 1:
+                options = [p for p in FULL_PING_PAUSES if p != used_pauses[0]]
+            else:
+                options = FULL_PING_PAUSES
+            pause = random.choice(options)
+            used_pauses.append(pause)
+            time.sleep(pause)
             p = fast_ping(host, port, sni)
             if p is not None:
                 if p < min_limit or p > max_limit:
@@ -861,19 +840,12 @@ def try_add_to_lists(entry: dict) -> bool:
 
 
 def check_completion() -> bool:
-    vlm_full  = len(vlm_results)  >= MAX_CONFIGS
-    vlm2_full = len(vlm2_results) >= MAX_CONFIGS
-    vlm_done  = vlm_full  and ru_vlm_count  >= MIN_RU_CONFIGS
-    vlm2_done = vlm2_full and ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP
+    vlm_done = (ru_vlm_count >= MIN_RU_CONFIGS and len(vlm_results) >= MAX_CONFIGS)
+    vlm2_done = (ru_vlm2_count >= MIN_RU_CONFIGS and xhttp_count >= MIN_XHTTP and len(vlm2_results) >= MAX_CONFIGS)
     if vlm_done and vlm2_done:
         stop_event.set()
         sni_ru_done_event.set()
         return True
-    if vlm_full and vlm2_full:
-        stop_event.set()
-        sni_ru_done_event.set()
-        return True
-    return False
     # Проверяем достигнуты ли цели SNI-RU фазы
     ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
     ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
@@ -1355,3 +1327,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
