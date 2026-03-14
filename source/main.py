@@ -804,6 +804,14 @@ def can_add_hosting(is_hosting, target_list: list) -> bool:
     return True
 
 
+def can_add_sni_ru(entry: dict, target_list: list) -> bool:
+    """Проверяет не превышен ли лимит MAX_TOTAL_SNI_RU для данного списка."""
+    if not entry['white_sni']:
+        return True
+    current = sum(1 for r in target_list if r['white_sni'])
+    return current < MAX_TOTAL_SNI_RU
+
+
 def try_add_to_lists(entry: dict) -> bool:
     global ru_vlm_count, ru_vlm2_count, xhttp_count
 
@@ -816,34 +824,34 @@ def try_add_to_lists(entry: dict) -> bool:
 
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results) and can_add_sni_ru(entry, vlm_results):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results) and can_add_sni_ru(entry, vlm_results):
             vlm_results.append(entry)
             added_vlm = True
 
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
             vlm2_results.append(entry)
             added_vlm2 = True
 
@@ -1329,3 +1337,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+                
