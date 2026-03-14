@@ -92,7 +92,6 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-
 FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
 FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
 FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
@@ -115,8 +114,9 @@ ANTIFILTER_URLS = [
 XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
-XRAY_TIMEOUT = 7          # секунд на весь тест одного конфига
-XRAY_STARTUP_WAIT = 3.0   # секунд ждём пока xray поднимется
+XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
+XRAY_HTTP_TIMEOUT = 2.5     # секунд на HTTP запрос через туннель
+XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
@@ -483,10 +483,22 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
                 stderr=subprocess.DEVNULL,
             )
 
-            time.sleep(XRAY_STARTUP_WAIT)
+            # Умное ожидание: проверяем готовность SOCKS5 порта каждые XRAY_STARTUP_CHECK_INTERVAL
+            deadline = time.perf_counter() + XRAY_STARTUP_WAIT
+            xray_ready = False
+            while time.perf_counter() < deadline:
+                if proc.poll() is not None:
+                    # Xray сразу упал — конфиг нерабочий
+                    _inc_stat('xray_failed')
+                    return False
+                try:
+                    with socket.create_connection(("127.0.0.1", socks_port), timeout=0.1):
+                        xray_ready = True
+                        break
+                except OSError:
+                    time.sleep(XRAY_STARTUP_CHECK_INTERVAL)
 
-            if proc.poll() is not None:
-                # Xray сразу упал — конфиг нерабочий
+            if not xray_ready:
                 _inc_stat('xray_failed')
                 return False
 
@@ -498,7 +510,7 @@ def xray_test(config_link: str, is_ru: bool = False) -> bool:
             r = requests.get(
                 test_url,
                 proxies=proxies,
-                timeout=XRAY_TIMEOUT - XRAY_STARTUP_WAIT,
+                timeout=XRAY_HTTP_TIMEOUT,
                 verify=False,
             )
             if r.status_code in (200, 204):
