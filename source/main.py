@@ -216,39 +216,26 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 
 def _partial_cache_reset() -> None:
-    """
-    Сброс кэшей перед повторным поиском SNI-RU конфигов.
-    Поведение определяется CACHE_RESET_MODE:
-      0 - не очищать ничего
-      1 - очищать наполовину (случайно)
-      2 - очищать полностью
-    Во всех режимах данные принятых конфигов не трогаются.
-    """
-    global failed_ips, ip_cache, failed_subnets, sni_usage_counts, subnet16_counts
+    global failed_ips
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
         return
 
     with lock:
-        all_accepted = vlm_results + vlm2_results
+        working_ips = {
+            re.search(r'@([^:/?#\s]+):', r['link']).group(1)
+            for r in vlm_results + vlm2_results
+            if re.search(r'@([^:/?#\s]+):', r['link'])
+        }
+        non_working_failed = list(failed_ips - working_ips)
 
-        # Собираем данные принятых конфигов
-        working_ips = set()
-        working_snis = []
-        working_subnets16 = []
-        for r in all_accepted:
-            m = re.search(r'@([^:/?#\s]+):', r['link'])
-            if not m:
-                continue
-            ip = m.group(1)
-            working_ips.add(ip)
-            s_m = re.search(r'[?&]sni=([^&#\s]*)', r['link'], re.I)
-            sni = s_m.group(1).lower() if s_m else ""
-            working_snis.append(sni)
-            subnet16 = ".".join(ip.split(".")[:2])
-            config_type = get_config_type(r['country'], r['white_sni'])
-            working_subnets16.append((subnet16, config_type))
+        if CACHE_RESET_MODE == 1:
+            failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
+            print("🔄 Кэши сброшены (failed_ips наполовину)", flush=True)
+        elif CACHE_RESET_MODE == 2:
+            failed_ips -= set(non_working_failed)
+            print("🔄 Кэши сброшены (failed_ips полностью)", flush=True)
 
         def _keys_to_remove(keys: list) -> list:
             if CACHE_RESET_MODE == 2:
