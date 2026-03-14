@@ -1265,20 +1265,26 @@ def main() -> None:
         # Сброс части кэшей
         _partial_cache_reset()
 
-        # Перезагружаем источники
-        try:
-            src_text_retry = session.get(REMOTE_SOURCE_URL, timeout=10).text
+        # Перезагружаем источники (3 попытки)
+        extra_urls_retry = extra_urls
+        std_urls_retry   = std_urls
+        for src_attempt in range(1, 4):
+            try:
+                src_text_retry = session.get(REMOTE_SOURCE_URL, timeout=10).text
 
-            def get_list_retry(var: str) -> list[str]:
-                m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text_retry, re.S | re.I)
-                return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
+                def get_list_retry(var: str) -> list[str]:
+                    m = re.search(rf'{var}\s*=\s*\[(.*?)\]', src_text_retry, re.S | re.I)
+                    return re.findall(r'["\']([^"\']+)["\']', m.group(1)) if m else []
 
-            extra_urls_retry = get_list_retry("EXTRA_URLS_FOR_26")
-            std_urls_retry   = get_list_retry("URLS")
-        except requests.RequestException as e:
-            print(f"⚠️  Не удалось перезагрузить источники: {e}", flush=True)
-            extra_urls_retry = extra_urls
-            std_urls_retry   = std_urls
+                extra_urls_retry = get_list_retry("EXTRA_URLS_FOR_26")
+                std_urls_retry   = get_list_retry("URLS")
+                break
+            except requests.RequestException as e:
+                print(f"⚠️  Попытка {src_attempt}/3 загрузить источники не удалась: {e}", flush=True)
+                if src_attempt < 3:
+                    time.sleep(5)
+                else:
+                    print("⚠️  Все попытки исчерпаны, используем старые источники", flush=True)
 
         raw_extra_retry = fetch_group_data(extra_urls_retry)
         raw_std_retry   = fetch_group_data(std_urls_retry)
