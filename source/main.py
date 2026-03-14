@@ -31,11 +31,11 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
-MAX_XHTTP = 5
+MAX_XHTTP = 3
 MIN_RU_CONFIGS = 6
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
-MAX_HOST_CONFIGS = 5
+MAX_HOST_CONFIGS = 3
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -65,14 +65,14 @@ RU_RETRY_WAIT = 210  # секунд ожидания перед каждой п�
 RU_RETRY_MAX  = 2    # максимум попыток добора SNI-RU
 
 # Настройки конфигураций
-MAX_CONFIGS = 50
+MAX_CONFIGS = 30
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
-MAX_PER_SUBNET = 3
+MAX_PER_SUBNET = 2
 MAX_PER_SUBNET16_RU_SNI = 1
-MAX_PER_SUBNET16_NONRU_SNI = 7
-MAX_PER_SUBNET16_OTHERS = 10
+MAX_PER_SUBNET16_NONRU_SNI = 5
+MAX_PER_SUBNET16_OTHERS = 7
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
