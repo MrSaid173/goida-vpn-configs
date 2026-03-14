@@ -61,8 +61,8 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 390  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT       = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX        = 2    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
@@ -186,6 +186,9 @@ subnet_counts = defaultdict(int)
 subnet16_counts = defaultdict(lambda: defaultdict(int))
 id_counts = defaultdict(int)
 sni_usage_counts = defaultdict(int)
+
+# Флаг режима повтора SNI-RU
+sni_ru_retry_mode = False
 
 # Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
@@ -802,7 +805,31 @@ def can_add_sni_ru(entry: dict, target_list: list) -> bool:
     if not entry['white_sni']:
         return True
     current = sum(1 for r in target_list if r['white_sni'])
+    # Во время повтора RU конфиги могут превышать лимит
+    if sni_ru_retry_mode and entry['country'] == 'RU':
+        return True
     return current < MAX_TOTAL_SNI_RU
+
+
+def _trim_excess_sni_ru() -> None:
+    """
+    Если после повтора SNI-RU конфигов больше MAX_TOTAL_SNI_RU —
+    удаляем случайные не-RU SNI-RU конфиги из обоих списков до лимита.
+    """
+    global ru_vlm_count, ru_vlm2_count
+    with lock:
+        for results_list in [vlm_results, vlm2_results]:
+            excess = sum(1 for r in results_list if r['white_sni']) - MAX_TOTAL_SNI_RU
+            if excess <= 0:
+                continue
+            # Кандидаты на удаление — не-RU SNI-RU конфиги
+            candidates = [r for r in results_list if r['white_sni'] and r['country'] != 'RU']
+            to_remove = random.sample(candidates, min(excess, len(candidates)))
+            for r in to_remove:
+                results_list.remove(r)
+            removed = len(to_remove)
+            if removed > 0:
+                print(f"✂️  Удалено {removed} лишних не-RU SNI-RU конфигов", flush=True)
 
 
 def try_add_to_lists(entry: dict) -> bool:
@@ -1299,7 +1326,12 @@ def main() -> None:
 
         # Сбрасываем sni_ru_done_event чтобы повтор мог искать
         sni_ru_done_event.clear()
+        sni_ru_retry_mode = True
         _run_sni_ru_phase(raw_extra_retry, raw_std_retry)
+        sni_ru_retry_mode = False
+
+        # Убираем лишние не-RU SNI-RU конфиги если превысили лимит
+        _trim_excess_sni_ru()
 
         with lock:
             _ru_vlm   = ru_vlm_count
