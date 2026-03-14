@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 390  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 420  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -1078,6 +1078,11 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             sni_tag = " SNI-RU" if is_white else ""
             print(f"[FOUND{host_tag}] {ip_cc} | {full[0]}ms | {host}{sni_tag}", flush=True)
             _inc_stat('added')
+            if is_white:
+                if is_priority:
+                    _inc_stat('sni_ru_from_extra')
+                else:
+                    _inc_stat('sni_ru_from_std')
             check_completion()
         else:
             sni_usage_counts[sni] -= 1
@@ -1218,6 +1223,10 @@ def print_statistics() -> None:
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
     print(f"\nVLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
     print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
+    with stats_lock:
+        _sni_extra = stats['sni_ru_from_extra']
+        _sni_std   = stats['sni_ru_from_std']
+    print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
 
 
 def main() -> None:
