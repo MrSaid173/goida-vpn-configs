@@ -61,8 +61,8 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 420  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT       = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX        = 2    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
@@ -1308,8 +1308,7 @@ def main() -> None:
                     v.submit(validate, c, priority, white)
 
     def _run_non_sni_ru_phase() -> None:
-        """Ждёт сигнала завершения SNI-RU фазы, затем запускает NON SNI-RU."""
-        sni_ru_done_event.wait()
+        """Запускает NON SNI-RU поиск."""
         if stop_event.is_set():
             return
         workers = min(len(raw_nonwhite), 40) if raw_nonwhite else 1
@@ -1319,9 +1318,52 @@ def main() -> None:
                     break
                 v.submit(validate, c, True, False)
 
-    # Запускаем NON SNI-RU в отдельном потоке — он будет ждать sni_ru_done_event
-    non_sni_thread = threading.Thread(target=_run_non_sni_ru_phase, daemon=True)
-    non_sni_thread.start()
+    def _replace_others_with_sni_ru(new_entries: list) -> None:
+        """
+        Заменяет случайные others конфиги на новые RU+SNI-RU.
+        Others кандидаты — только те у которых одинаковый ключ в обоих списках.
+        """
+        global ru_vlm_count, ru_vlm2_count
+        if not new_entries:
+            return
+        with lock:
+            # Находим ключи others которые есть в ОБОИХ списках
+            def get_key(r):
+                m = re.search(r'@([^:/?#\s]+):(\d+)', r['link'])
+                s = re.search(r'[?&]sni=([^&#\s]*)', r['link'], re.I)
+                cid = re.search(r'://([^@]+)@', r['link'])
+                if not m:
+                    return None
+                return f"{m.group(1)}:{m.group(2)}:{cid.group(1) if cid else ''}:{s.group(1).lower() if s else ''}"
+
+            vlm_others_keys  = {get_key(r): r for r in vlm_results  if not r['white_sni'] and get_key(r)}
+            vlm2_others_keys = {get_key(r): r for r in vlm2_results if not r['white_sni'] and get_key(r)}
+            common_keys = list(set(vlm_others_keys.keys()) & set(vlm2_others_keys.keys()))
+
+            to_remove = min(len(new_entries), len(common_keys))
+            if to_remove == 0:
+                print("⚠️  Нет общих others для замены", flush=True)
+                return
+
+            keys_to_remove = random.sample(common_keys, to_remove)
+            entries_to_add = new_entries[:to_remove]
+
+            # Удаляем из обоих списков
+            for k in keys_to_remove:
+                r_vlm  = vlm_others_keys[k]
+                r_vlm2 = vlm2_others_keys[k]
+                if r_vlm  in vlm_results:  vlm_results.remove(r_vlm)
+                if r_vlm2 in vlm2_results: vlm2_results.remove(r_vlm2)
+
+            # Добавляем новые SNI-RU конфиги
+            for entry in entries_to_add:
+                vlm_results.append(entry)
+                vlm2_results.append(entry)
+                if entry['country'] == 'RU':
+                    ru_vlm_count  += 1
+                    ru_vlm2_count += 1
+
+            print(f"🔄 Заменено {to_remove} others на RU+SNI-RU конфиги", flush=True)
 
     # --- Фаза 1: SNI-RU конфиги ---
     _run_sni_ru_phase(raw_extra, raw_std)
@@ -1342,10 +1384,17 @@ def main() -> None:
             f"⚠️  SNI-RU не добран ("
             f"vlm: RU={_ru_vlm}/{MIN_RU_CONFIGS}, SNI={_sni_vlm}/{MAX_TOTAL_SNI_RU} | "
             f"vlm2: RU={_ru_vlm2}/{MIN_RU_CONFIGS}, SNI={_sni_vlm2}/{MAX_TOTAL_SNI_RU}). "
-            f"Попытка {attempt}/{RU_RETRY_MAX}: жду {RU_RETRY_WAIT}с...",
+            f"Попытка {attempt}/{RU_RETRY_MAX}",
             flush=True,
         )
+
+        # --- Запускаем NON SNI-RU пока ждём повтор ---
+        print(f"🔍 Запускаем поиск остальных конфигов пока ждём {RU_RETRY_WAIT}с...", flush=True)
+        non_sni_thread = threading.Thread(target=_run_non_sni_ru_phase, daemon=True)
+        non_sni_thread.start()
         time.sleep(RU_RETRY_WAIT)
+        # Ждём завершения NON SNI-RU если ещё не закончил
+        non_sni_thread.join()
 
         _partial_cache_reset()
 
@@ -1356,14 +1405,53 @@ def main() -> None:
             flush=True,
         )
 
-        # Сбрасываем sni_ru_done_event чтобы повтор мог искать
+        # Собираем новые SNI-RU конфиги отдельно
+        new_sni_ru_found = []
+        sni_ru_retry_mode = True
+
+        def _collect_sni_ru(config, priority, white):
+            """Валидирует конфиг и если принят — добавляет в new_sni_ru_found."""
+            host_m = re.search(r'@([^:/?#\s]+):', config)
+            if not host_m:
+                return
+            # Временно убираем из seen_ips чтобы дать шанс — нет, просто проверяем
+            # через validate, но перехватываем добавление отдельно
+            pass
+
+        # Сбрасываем sni_ru_done_event
         sni_ru_done_event.clear()
+
+        # Временно подменяем vlm_results/vlm2_results на временные списки
+        # чтобы собрать только новые SNI-RU конфиги
+        temp_vlm  = []
+        temp_vlm2 = []
+
+        with lock:
+            orig_vlm_len  = len(vlm_results)
+            orig_vlm2_len = len(vlm2_results)
+            # Освобождаем место — убираем лимит на время повтора
+            # (sni_ru_retry_mode уже True — can_add_sni_ru пропустит RU)
+
         sni_ru_retry_mode = True
         _run_sni_ru_phase(raw_extra_retry, raw_std_retry)
         sni_ru_retry_mode = False
 
-        # Убираем лишние не-RU SNI-RU конфиги если превысили лимит
+        # Собираем что добавилось за время повтора
+        with lock:
+            new_sni_ru_found = [
+                r for r in vlm_results[orig_vlm_len:]
+                if r['white_sni']
+            ]
+
+        # Убираем лишние не-RU SNI-RU если превысили лимит
         _trim_excess_sni_ru()
+
+        # Заменяем others на найденные SNI-RU если списки уже полные
+        with lock:
+            vlm_full  = len(vlm_results)  >= MAX_CONFIGS
+            vlm2_full = len(vlm2_results) >= MAX_CONFIGS
+        if (vlm_full or vlm2_full) and new_sni_ru_found:
+            _replace_others_with_sni_ru(new_sni_ru_found)
 
         with lock:
             _ru_vlm   = ru_vlm_count
@@ -1377,9 +1465,12 @@ def main() -> None:
             flush=True,
         )
 
-    # Сигналим NON SNI-RU потоку что SNI-RU фаза окончательно завершена
-    sni_ru_done_event.set()
-    non_sni_thread.join()
+    # Если списки ещё не заполнены — запускаем NON SNI-RU
+    with lock:
+        needs_more = len(vlm_results) < MAX_CONFIGS or len(vlm2_results) < MAX_CONFIGS
+    if needs_more and not stop_event.is_set():
+        print("🔍 Добираем остальные конфиги...", flush=True)
+        _run_non_sni_ru_phase()
 
     print_statistics()
 
@@ -1403,4 +1494,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
+    
