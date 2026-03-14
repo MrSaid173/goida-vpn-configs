@@ -735,13 +735,6 @@ def try_add_to_lists(entry: dict) -> bool:
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
-
-    # RU конфиги — только SNI-RU
-    #if is_ru and not is_white:
-        #return False
-    # RU конфиги не должны быть хостинговыми
-    #if is_ru and is_hosting is True:
-        #return False
     
     added_vlm = False
     added_vlm2 = False
@@ -853,6 +846,10 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
         _inc_stat('isp_banned')
+        return
+    # RU принимаем только если SNI-RU
+    if ip_cc == "RU" and not is_white:
+        _inc_stat('ru_without_white_sni')
         return
 
     # Проверка лимита подсети /16
