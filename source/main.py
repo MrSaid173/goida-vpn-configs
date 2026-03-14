@@ -61,8 +61,8 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 390  # секунд ожидания перед каждой повторной попыткой
-RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
+RU_RETRY_WAIT       = 210  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_MAX        = 2    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
@@ -92,10 +92,7 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 1.2
-FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
-FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
-FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
-FULL_PING_PAUSES = [round(FULL_PING_PAUSE_MIN + i * FULL_PING_PAUSE_STEP, 4) for i in range(FULL_PING_PAUSE_COUNT)]
+FULL_PING_PAUSES = [0.15, 0.17, 0.19, 0.21]  # варианты пауз между замерами
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
@@ -115,7 +112,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 2.5     # секунд на HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 4     # секунд на HTTP запрос через туннель
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
@@ -189,6 +186,9 @@ sni_usage_counts = defaultdict(int)
 
 # Флаг режима повтора SNI-RU
 sni_ru_retry_mode = False
+
+# Кэш уже проверенных конфигов (ключ: host:port:uuid:sni)
+checked_configs = set()
 
 # Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
@@ -895,6 +895,11 @@ def check_completion() -> bool:
     return False
 
 
+
+def _get_config_key(host: str, port: int, sni: str, cid: str) -> str:
+    """Возвращает ключ конфига для кэша checked_configs."""
+    return f"{host}:{port}:{cid}:{sni}"
+
 def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if stop_event.is_set():
         _inc_stat('stopped')
@@ -911,6 +916,13 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if not host or not sni:
         _inc_stat('no_details')
         return
+
+    # Проверка кэша уже проверенных конфигов
+    config_key = _get_config_key(host, port, sni, cid)
+    with lock:
+        if config_key in checked_configs:
+            _inc_stat('checked_cache')
+            return
 
     if host in failed_ips:
         _inc_stat('failed_ip_cache')
@@ -959,10 +971,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
     if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+        with lock:
+            checked_configs.add(config_key)
         _inc_stat('isp_banned')
         return
     # RU принимаем только если SNI-RU
     if ip_cc == "RU" and not is_white:
+        with lock:
+            checked_configs.add(config_key)
         _inc_stat('ru_without_white_sni')
         return
 
@@ -1006,6 +1022,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if subnet16_reserved:
             with lock:
                 subnet16_counts[subnet16][config_type] -= 1
+        with lock:
+            checked_configs.add(config_key)
         return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля ─────────────────────────────────
@@ -1016,6 +1034,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if subnet16_reserved:
             with lock:
                 subnet16_counts[subnet16][config_type] -= 1
+        with lock:
+            checked_configs.add(config_key)
         return
 
     # Финальное добавление
@@ -1371,4 +1391,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
+            
