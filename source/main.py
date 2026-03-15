@@ -193,6 +193,9 @@ sni_ru_retry_mode = False
 # Кэш уже проверенных конфигов (ключ: host:port:uuid:sni)
 checked_configs = set()
 
+# Кэш базовых частей ссылок (до #) для быстрой проверки повторов
+checked_configs_raw = set()
+
 # Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
 ru_vlm2_count = 0
@@ -238,7 +241,7 @@ def _partial_cache_reset() -> None:
       2 - очищать failed_ips полностью
     Принятые конфиги не трогаются никогда.
     """
-    global failed_ips, checked_configs
+    global failed_ips, checked_configs, checked_configs_raw
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
@@ -261,15 +264,23 @@ def _partial_cache_reset() -> None:
 
         non_working_failed = list(failed_ips - working_ips)
         non_working_checked = list(checked_configs - working_keys)
+        # Для checked_configs_raw — рабочие базовые ссылки
+        working_raw = set()
+        for r in vlm_results + vlm2_results:
+            working_raw.add(r['link'].split('#')[0])
+        non_working_raw = list(checked_configs_raw - working_raw)
 
         if CACHE_RESET_MODE == 1:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
             for k in random.sample(non_working_checked, len(non_working_checked) // 2):
                 checked_configs.discard(k)
+            for k in random.sample(non_working_raw, len(non_working_raw) // 2):
+                checked_configs_raw.discard(k)
             print("🔄 Кэши сброшены (failed_ips и checked_configs наполовину)", flush=True)
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
             checked_configs -= set(non_working_checked)
+            checked_configs_raw -= set(non_working_raw)
             print("🔄 Кэши сброшены (failed_ips и checked_configs полностью)", flush=True)
 
 
@@ -946,6 +957,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     # Во время фазы SNI-RU останавливаемся по sni_ru_done_event
     if is_white and sni_ru_done_event.is_set():
         return
+
+    # Быстрая проверка по базовой части ссылки (до #)
+    config_base = config.split('#')[0]
+    with lock:
+        if config_base in checked_configs_raw:
+            _inc_stat('checked_cache')
+            return
+        checked_configs_raw.add(config_base)
 
     if is_technically_broken(config):
         _inc_stat('broken')
