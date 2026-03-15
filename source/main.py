@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 60  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -270,7 +270,11 @@ def _partial_cache_reset() -> None:
             base = r['link'].split('#')[0]
             working_raw.add((base, True))
             working_raw.add((base, False))
-        non_working_raw = list(checked_configs_raw - working_raw)
+        # Для повтора SNI-RU всегда полностью очищаем white=True записи из checked_configs_raw
+        non_working_raw_white = {k for k in checked_configs_raw if k[1] is True and k not in working_raw}
+        checked_configs_raw -= non_working_raw_white
+
+        non_working_raw = list({k for k in checked_configs_raw if k not in working_raw})
 
         if CACHE_RESET_MODE == 1:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
@@ -1471,6 +1475,14 @@ def main() -> None:
 
         _partial_cache_reset()
 
+        # Очищаем белые записи из checked_configs_raw чтобы повтор мог проверить те же конфиги
+        with lock:
+            working_raw = set()
+            for r in vlm_results + vlm2_results:
+                base = r['link'].split('#')[0]
+                working_raw.add((base, True))
+            checked_configs_raw -= {k for k in checked_configs_raw if k[1] is True and k not in working_raw}
+
         raw_extra_retry = fetch_group_data(extra_urls)
         raw_std_retry   = fetch_group_data(std_urls)
         print(
@@ -1567,4 +1579,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
