@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 60  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -179,6 +179,7 @@ sni_ru_done_event = threading.Event()  # сигнал завершения фа�
 
 # Кэши и счетчики (защищены основным lock)
 ip_cache = {}
+seen_configs = set()  # базовые части ссылок для подсчёта уникальных конфигов
 failed_ips = set()
 failed_subnets = defaultdict(int)
 seen_ips = set()
@@ -192,9 +193,6 @@ sni_ru_retry_mode = False
 
 # Кэш уже проверенных конфигов (ключ: host:port:uuid:sni)
 checked_configs = set()
-
-# Кэш базовых частей ссылок (до #) для быстрой проверки повторов
-checked_configs_raw = set()
 
 # Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
@@ -241,7 +239,7 @@ def _partial_cache_reset() -> None:
       2 - очищать failed_ips полностью
     Принятые конфиги не трогаются никогда.
     """
-    global failed_ips, checked_configs, checked_configs_raw
+    global failed_ips, checked_configs
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
@@ -264,29 +262,15 @@ def _partial_cache_reset() -> None:
 
         non_working_failed = list(failed_ips - working_ips)
         non_working_checked = list(checked_configs - working_keys)
-        # Для checked_configs_raw — рабочие базовые ссылки (оба варианта white)
-        working_raw = set()
-        for r in vlm_results + vlm2_results:
-            base = r['link'].split('#')[0]
-            working_raw.add((base, True))
-            working_raw.add((base, False))
-        # Для повтора SNI-RU всегда полностью очищаем white=True записи из checked_configs_raw
-        non_working_raw_white = {k for k in checked_configs_raw if k[1] is True and k not in working_raw}
-        checked_configs_raw -= non_working_raw_white
-
-        non_working_raw = list({k for k in checked_configs_raw if k not in working_raw})
 
         if CACHE_RESET_MODE == 1:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
             for k in random.sample(non_working_checked, len(non_working_checked) // 2):
                 checked_configs.discard(k)
-            for k in random.sample(non_working_raw, len(non_working_raw) // 2):
-                checked_configs_raw.discard(k)
             print("🔄 Кэши сброшены (failed_ips и checked_configs наполовину)", flush=True)
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
             checked_configs -= set(non_working_checked)
-            checked_configs_raw -= set(non_working_raw)
             print("🔄 Кэши сброшены (failed_ips и checked_configs полностью)", flush=True)
 
 
@@ -964,22 +948,22 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_white and sni_ru_done_event.is_set():
         return
 
-    # Быстрая проверка по базовой части ссылки (до #) + флагу white
+    # Определяем уникальность конфига для статистики
     config_base = config.split('#')[0]
-    config_raw_key = (config_base, is_white)
     with lock:
-        if config_raw_key in checked_configs_raw:
-            _inc_stat('checked_cache')
-            return
-        checked_configs_raw.add(config_raw_key)
+        is_unique = config_base not in seen_configs
+        if is_unique:
+            seen_configs.add(config_base)
 
     if is_technically_broken(config):
-        _inc_stat('broken')
+        if is_unique:
+            _inc_stat('broken')
         return
 
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
-        _inc_stat('no_details')
+        if is_unique:
+            _inc_stat('no_details')
         return
 
     # Проверка кэша уже проверенных конфигов
@@ -990,12 +974,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             return
 
     if host in failed_ips:
-        _inc_stat('failed_ip_cache')
+        if is_unique:
+            _inc_stat('failed_ip_cache')
         return
 
     # ── СЛОЙ 1: фильтр РКН (до пинга — быстро) ──────────────────────────────
     if is_blocked_in_ru(host):
-        _inc_stat('blocked_rkn')
+        if is_unique:
+            _inc_stat('blocked_rkn')
         return
 
     is_xhttp = "xhttp" in config.lower()
@@ -1004,7 +990,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
     with lock:
         if host in seen_ips:
-            _inc_stat('duplicate_ip')
+            if is_unique:
+                _inc_stat('duplicate_ip')
             return
 
         if (sni in sni_domains) != is_white:
@@ -1273,7 +1260,6 @@ def print_statistics() -> None:
     print("\n[Локальные проверки]", flush=True)
     print(f"Технически битые: {s['broken']}", flush=True)
     print(f"Без деталей: {s['no_details']}", flush=True)
-    print(f"Кэш проверенных: {s['checked_cache']}", flush=True)
     print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
@@ -1293,7 +1279,7 @@ def print_statistics() -> None:
     print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
 
-    print(f"\n[Итог]", flush=True)
+    print("\n[Итог]", flush=True)
     print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
     print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
     print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
@@ -1352,14 +1338,7 @@ def main() -> None:
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
 
-    def _has_white_sni(config: str) -> bool:
-        """Возвращает True если SNI конфига есть в белом списке."""
-        s_m = re.search(r'[?&]sni=([^&#\s]*)', config, re.I)
-        if not s_m:
-            return False
-        return s_m.group(1).lower() in sni_domains
-
-    raw_nonwhite = list(set(c for c in raw_extra + raw_std if not _has_white_sni(c)))
+    raw_nonwhite = list(set(raw_extra + raw_std))
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
@@ -1474,14 +1453,6 @@ def main() -> None:
         non_sni_thread.join()
 
         _partial_cache_reset()
-
-        # Очищаем белые записи из checked_configs_raw чтобы повтор мог проверить те же конфиги
-        with lock:
-            working_raw = set()
-            for r in vlm_results + vlm2_results:
-                base = r['link'].split('#')[0]
-                working_raw.add((base, True))
-            checked_configs_raw -= {k for k in checked_configs_raw if k[1] is True and k not in working_raw}
 
         raw_extra_retry = fetch_group_data(extra_urls)
         raw_std_retry   = fetch_group_data(std_urls)
