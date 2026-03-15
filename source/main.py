@@ -61,9 +61,9 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 450  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 5  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
-CACHE_RESET_MODE    = 2    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
+CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
 MAX_CONFIGS = 30
@@ -115,7 +115,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 2.5     # секунд на HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 2.2     # секунд на HTTP запрос через туннель
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
@@ -197,6 +197,10 @@ checked_configs = set()
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
+host_vlm_count = 0   # количество hosting конфигов в vlm
+host_vlm2_count = 0  # количество hosting конфигов в vlm2
+sni_vlm_count = 0    # количество white_sni конфигов в vlm
+sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 
 vlm_results = []
 vlm2_results = []
@@ -227,14 +231,14 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 def _partial_cache_reset() -> None:
     """
-    Сброс failed_ips перед повторным поиском SNI-RU конфигов.
+    Сброс failed_ips и части checked_configs перед повторным поиском SNI-RU конфигов.
     Поведение определяется CACHE_RESET_MODE:
       0 - не очищать
       1 - очищать failed_ips наполовину
       2 - очищать failed_ips полностью
     Принятые конфиги не трогаются никогда.
     """
-    global failed_ips
+    global failed_ips, checked_configs
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
@@ -246,14 +250,27 @@ def _partial_cache_reset() -> None:
             for r in vlm_results + vlm2_results
             if re.search(r'@([^:/?#\s]+):', r['link'])
         }
+        # Ключи принятых конфигов — не трогаем в checked_configs
+        working_keys = set()
+        for r in vlm_results + vlm2_results:
+            m = re.search(r'@([^:/?#\s]+):(\d+)', r['link'])
+            s = re.search(r'[?&]sni=([^&#\s]*)', r['link'], re.I)
+            cid = re.search(r'://([^@]+)@', r['link'])
+            if m:
+                working_keys.add(f"{m.group(1)}:{m.group(2)}:{cid.group(1) if cid else ''}:{s.group(1).lower() if s else ''}")
+
         non_working_failed = list(failed_ips - working_ips)
+        non_working_checked = list(checked_configs - working_keys)
 
         if CACHE_RESET_MODE == 1:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
-            print("🔄 Кэши сброшены (failed_ips наполовину)", flush=True)
+            for k in random.sample(non_working_checked, len(non_working_checked) // 2):
+                checked_configs.discard(k)
+            print("🔄 Кэши сброшены (failed_ips и checked_configs наполовину)", flush=True)
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
-            print("🔄 Кэши сброшены (failed_ips полностью)", flush=True)
+            checked_configs -= set(non_working_checked)
+            print("🔄 Кэши сброшены (failed_ips и checked_configs полностью)", flush=True)
 
 
 # ============================================================
@@ -564,11 +581,11 @@ def is_technically_broken(link: str) -> bool:
         return True
     if "type=splithttp" in l:
         return True
-    if re.search(r':(443|80)/\?', l):
-        return True
-    if "/??" in l:
-        return True
-    if "host=" in l or "packetencoding=" in l or "type=raw" in l:
+    #if re.search(r':(443|80)/\?', l):
+        #return True
+    #if "/??" in l:
+        #return True
+    if "host=" in l: #or "packetencoding=" in l or "type=raw" in l:
         return True
     if "vless://" in l:
         match = re.search(r'vless://([a-f0-9\-]{32,36})@', l)
@@ -796,21 +813,21 @@ def get_sni_limit(is_white: bool, ip_cc: str) -> int:
     return MAX_SAME_SNI_WORLD
 
 
-def can_add_hosting(is_hosting, target_list: list) -> bool:
+def can_add_hosting(is_hosting, is_vlm2: bool) -> bool:
     if is_hosting is True:
-        count = sum(1 for r in target_list if r['is_hosting'] is True)
+        count = host_vlm2_count if is_vlm2 else host_vlm_count
         return count < MAX_HOST_CONFIGS
     return True
 
 
-def can_add_sni_ru(entry: dict, target_list: list) -> bool:
+def can_add_sni_ru(entry: dict, is_vlm2: bool) -> bool:
     """Проверяет не превышен ли лимит MAX_TOTAL_SNI_RU для данного списка."""
     if not entry['white_sni']:
         return True
-    current = sum(1 for r in target_list if r['white_sni'])
     # Во время повтора RU конфиги могут превышать лимит
     if sni_ru_retry_mode and entry['country'] == 'RU':
         return True
+    current = sni_vlm2_count if is_vlm2 else sni_vlm_count
     return current < MAX_TOTAL_SNI_RU
 
 
@@ -819,63 +836,82 @@ def _trim_excess_sni_ru() -> None:
     Если после повтора SNI-RU конфигов больше MAX_TOTAL_SNI_RU —
     удаляем случайные не-RU SNI-RU конфиги из обоих списков до лимита.
     """
-    global ru_vlm_count, ru_vlm2_count
+    global sni_vlm_count, sni_vlm2_count, host_vlm_count, host_vlm2_count
     with lock:
-        for results_list in [vlm_results, vlm2_results]:
-            excess = sum(1 for r in results_list if r['white_sni']) - MAX_TOTAL_SNI_RU
+        for results_list, is_vlm2 in [(vlm_results, False), (vlm2_results, True)]:
+            sni_cnt = sni_vlm2_count if is_vlm2 else sni_vlm_count
+            excess = sni_cnt - MAX_TOTAL_SNI_RU
             if excess <= 0:
                 continue
-            # Кандидаты на удаление — не-RU SNI-RU конфиги
             candidates = [r for r in results_list if r['white_sni'] and r['country'] != 'RU']
             to_remove = random.sample(candidates, min(excess, len(candidates)))
             for r in to_remove:
                 results_list.remove(r)
-            removed = len(to_remove)
-            if removed > 0:
-                print(f"✂️  Удалено {removed} лишних не-RU SNI-RU конфигов", flush=True)
+                if is_vlm2:
+                    sni_vlm2_count -= 1
+                    if r['is_hosting'] is True: host_vlm2_count -= 1
+                else:
+                    sni_vlm_count -= 1
+                    if r['is_hosting'] is True: host_vlm_count -= 1
+            if to_remove:
+                print(f"✂️  Удалено {len(to_remove)} лишних не-RU SNI-RU конфигов", flush=True)
 
 
 def try_add_to_lists(entry: dict) -> bool:
     global ru_vlm_count, ru_vlm2_count, xhttp_count
+    global host_vlm_count, host_vlm2_count, sni_vlm_count, sni_vlm2_count
 
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
-    
+    is_white = entry['white_sni']
+
     added_vlm = False
     added_vlm2 = False
 
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
+                if is_hosting is True: host_vlm2_count += 1
+                if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
                 vlm2_results.append(entry)
                 xhttp_count += 1
+                if is_hosting is True: host_vlm2_count += 1
+                if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results) and can_add_sni_ru(entry, vlm_results):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
+                if is_hosting is True: host_vlm_count += 1
+                if is_white: sni_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, vlm_results) and can_add_sni_ru(entry, vlm_results):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False):
             vlm_results.append(entry)
+            if is_hosting is True: host_vlm_count += 1
+            if is_white: sni_vlm_count += 1
             added_vlm = True
 
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
+                if is_hosting is True: host_vlm2_count += 1
+                if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, vlm2_results) and can_add_sni_ru(entry, vlm2_results):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
             vlm2_results.append(entry)
+            if is_hosting is True: host_vlm2_count += 1
+            if is_white: sni_vlm2_count += 1
             added_vlm2 = True
 
     return added_vlm or added_vlm2
@@ -891,8 +927,8 @@ def check_completion() -> bool:
     # Проверяем достигнуты ли цели SNI-RU фазы
     ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
     ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
-    sni_vlm_ok  = sum(1 for r in vlm_results  if r['white_sni']) >= MAX_TOTAL_SNI_RU
-    sni_vlm2_ok = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
+    sni_vlm_ok  = sni_vlm_count  >= MAX_TOTAL_SNI_RU
+    sni_vlm2_ok = sni_vlm2_count >= MAX_TOTAL_SNI_RU
     if ru_vlm_ok and ru_vlm2_ok and sni_vlm_ok and sni_vlm2_ok:
         sni_ru_done_event.set()
     return False
@@ -1196,8 +1232,8 @@ def print_statistics() -> None:
         _ru_vlm = ru_vlm_count
         _ru_vlm2 = ru_vlm2_count
         _xhttp = xhttp_count
-        vlm_host = sum(1 for r in vlm_results if r['is_hosting'] is True)
-        vlm2_host = sum(1 for r in vlm2_results if r['is_hosting'] is True)
+        vlm_host  = host_vlm_count
+        vlm2_host = host_vlm2_count
     with stats_lock:
         _api = api_calls_count
 
@@ -1278,12 +1314,6 @@ def main() -> None:
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
 
     load_ru_blocklist()
-    # Моя геолокация на раннере
-    try:
-        geo = session.get("http://ip-api.com/json/?fields=query,country,city", timeout=5).json()
-        print(f"🌍 Раннер: {geo.get('query')} | {geo.get('country')} | {geo.get('city')}", flush=True)
-    except Exception:
-        print("🌍 Раннер: не удалось определить IP", flush=True)
 
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
@@ -1297,8 +1327,8 @@ def main() -> None:
         with lock:
             ru_vlm_ok   = ru_vlm_count  >= MIN_RU_CONFIGS
             ru_vlm2_ok  = ru_vlm2_count >= MIN_RU_CONFIGS
-            sni_vlm_ok  = sum(1 for r in vlm_results  if r['white_sni']) >= MAX_TOTAL_SNI_RU
-            sni_vlm2_ok = sum(1 for r in vlm2_results if r['white_sni']) >= MAX_TOTAL_SNI_RU
+            sni_vlm_ok  = sni_vlm_count  >= MAX_TOTAL_SNI_RU
+            sni_vlm2_ok = sni_vlm2_count >= MAX_TOTAL_SNI_RU
         return ru_vlm_ok and ru_vlm2_ok and sni_vlm_ok and sni_vlm2_ok
 
     def _run_sni_ru_phase(extra: list, std: list) -> None:
@@ -1384,8 +1414,8 @@ def main() -> None:
         with lock:
             _ru_vlm   = ru_vlm_count
             _ru_vlm2  = ru_vlm2_count
-            _sni_vlm  = sum(1 for r in vlm_results  if r['white_sni'])
-            _sni_vlm2 = sum(1 for r in vlm2_results if r['white_sni'])
+            _sni_vlm  = sni_vlm_count
+            _sni_vlm2 = sni_vlm2_count
         print(
             f"⚠️  SNI-RU не добран ("
             f"vlm: RU={_ru_vlm}/{MIN_RU_CONFIGS}, SNI={_sni_vlm}/{MAX_TOTAL_SNI_RU} | "
@@ -1462,8 +1492,8 @@ def main() -> None:
         with lock:
             _ru_vlm   = ru_vlm_count
             _ru_vlm2  = ru_vlm2_count
-            _sni_vlm  = sum(1 for r in vlm_results  if r['white_sni'])
-            _sni_vlm2 = sum(1 for r in vlm2_results if r['white_sni'])
+            _sni_vlm  = sni_vlm_count
+            _sni_vlm2 = sni_vlm2_count
         print(
             f"📊 После попытки {attempt}: "
             f"vlm RU={_ru_vlm}, SNI={_sni_vlm} | "
@@ -1500,4 +1530,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
