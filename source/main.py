@@ -91,7 +91,7 @@ MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 1.2
+FAST_PING_TIMEOUT = 1.5
 FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
 FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
 FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
@@ -115,7 +115,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 2.2     # секунд на HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 3.0     # секунд на HTTP запрос через туннель
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
@@ -179,6 +179,7 @@ sni_ru_done_event = threading.Event()  # сигнал завершения фа�
 
 # Кэши и счетчики (защищены основным lock)
 ip_cache = {}
+seen_configs = set()  # базовые части ссылок для подсчёта уникальных конфигов
 failed_ips = set()
 failed_subnets = defaultdict(int)
 seen_ips = set()
@@ -947,13 +948,22 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_white and sni_ru_done_event.is_set():
         return
 
+    # Определяем уникальность конфига для статистики
+    config_base = config.split('#')[0]
+    with lock:
+        is_unique = config_base not in seen_configs
+        if is_unique:
+            seen_configs.add(config_base)
+
     if is_technically_broken(config):
-        _inc_stat('broken')
+        if is_unique:
+            _inc_stat('broken')
         return
 
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
-        _inc_stat('no_details')
+        if is_unique:
+            _inc_stat('no_details')
         return
 
     # Проверка кэша уже проверенных конфигов
@@ -964,12 +974,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             return
 
     if host in failed_ips:
-        _inc_stat('failed_ip_cache')
+        if is_unique:
+            _inc_stat('failed_ip_cache')
         return
 
     # ── СЛОЙ 1: фильтр РКН (до пинга — быстро) ──────────────────────────────
     if is_blocked_in_ru(host):
-        _inc_stat('blocked_rkn')
+        if is_unique:
+            _inc_stat('blocked_rkn')
         return
 
     is_xhttp = "xhttp" in config.lower()
@@ -978,7 +990,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
     with lock:
         if host in seen_ips:
-            _inc_stat('duplicate_ip')
+            if is_unique:
+                _inc_stat('duplicate_ip')
             return
 
         if (sni in sni_domains) != is_white:
@@ -1237,31 +1250,38 @@ def print_statistics() -> None:
     with stats_lock:
         _api = api_calls_count
 
+    with stats_lock:
+        _sni_extra = stats['sni_ru_from_extra']
+        _sni_std   = stats['sni_ru_from_std']
+
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
     print(f"Добавлено: {s['added']}", flush=True)
-    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
+
+    print("\n[Локальные проверки]", flush=True)
     print(f"Технически битые: {s['broken']}", flush=True)
     print(f"Без деталей: {s['no_details']}", flush=True)
+    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
+    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
+    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
+
+    print("\n[Сетевые проверки]", flush=True)
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
+    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
     print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
     print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
     print(f"Пинг вне диапазона: {s['ping_out_of_range']}", flush=True)
     print(f"Jitter провален: {s['jitter_failed']}", flush=True)
-    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
     print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
-    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
-    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
-    print(f"\nVLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
+
+    print("\n[Итог]", flush=True)
+    print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
     print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
-    with stats_lock:
-        _sni_extra = stats['sni_ru_from_extra']
-        _sni_std   = stats['sni_ru_from_std']
     print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
 
 
