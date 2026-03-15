@@ -1237,31 +1237,39 @@ def print_statistics() -> None:
     with stats_lock:
         _api = api_calls_count
 
+    with stats_lock:
+        _sni_extra = stats['sni_ru_from_extra']
+        _sni_std   = stats['sni_ru_from_std']
+
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
     print(f"Добавлено: {s['added']}", flush=True)
-    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
+
+    print("\n[Локальные проверки]", flush=True)
     print(f"Технически битые: {s['broken']}", flush=True)
     print(f"Без деталей: {s['no_details']}", flush=True)
+    print(f"Кэш проверенных: {s['checked_cache']}", flush=True)
+    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
+    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
+    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
+
+    print("\n[Сетевые проверки]", flush=True)
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
+    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
     print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
     print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
     print(f"Пинг вне диапазона: {s['ping_out_of_range']}", flush=True)
     print(f"Jitter провален: {s['jitter_failed']}", flush=True)
-    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
     print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
-    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
-    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
-    print(f"\nVLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
+
+    print(f"\n[Итог]", flush=True)
+    print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
     print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
-    with stats_lock:
-        _sni_extra = stats['sni_ru_from_extra']
-        _sni_std   = stats['sni_ru_from_std']
     print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
 
 
@@ -1318,7 +1326,14 @@ def main() -> None:
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
 
-    raw_nonwhite = list(set(raw_extra + raw_std))
+    def _has_white_sni(config: str) -> bool:
+        """Возвращает True если SNI конфига есть в белом списке."""
+        s_m = re.search(r'[?&]sni=([^&#\s]*)', config, re.I)
+        if not s_m:
+            return False
+        return s_m.group(1).lower() in sni_domains
+
+    raw_nonwhite = list(set(c for c in raw_extra + raw_std if not _has_white_sni(c)))
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
