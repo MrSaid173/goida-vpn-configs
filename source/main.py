@@ -179,7 +179,6 @@ sni_ru_done_event = threading.Event()  # сигнал завершения фа�
 
 # Кэши и счетчики (защищены основным lock)
 ip_cache = {}
-seen_configs = set()  # базовые части ссылок для подсчёта уникальных конфигов
 failed_ips = set()
 failed_subnets = defaultdict(int)
 seen_ips = set()
@@ -948,22 +947,13 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_white and sni_ru_done_event.is_set():
         return
 
-    # Определяем уникальность конфига для статистики
-    config_base = config.split('#')[0]
-    with lock:
-        is_unique = config_base not in seen_configs
-        if is_unique:
-            seen_configs.add(config_base)
-
     if is_technically_broken(config):
-        if is_unique:
-            _inc_stat('broken')
+        _inc_stat('broken')
         return
 
     host, port, sni, cid = get_config_details(config)
     if not host or not sni:
-        if is_unique:
-            _inc_stat('no_details')
+        _inc_stat('no_details')
         return
 
     # Проверка кэша уже проверенных конфигов
@@ -974,14 +964,12 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             return
 
     if host in failed_ips:
-        if is_unique:
-            _inc_stat('failed_ip_cache')
+        _inc_stat('failed_ip_cache')
         return
 
     # ── СЛОЙ 1: фильтр РКН (до пинга — быстро) ──────────────────────────────
     if is_blocked_in_ru(host):
-        if is_unique:
-            _inc_stat('blocked_rkn')
+        _inc_stat('blocked_rkn')
         return
 
     is_xhttp = "xhttp" in config.lower()
@@ -990,8 +978,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
     with lock:
         if host in seen_ips:
-            if is_unique:
-                _inc_stat('duplicate_ip')
+            _inc_stat('duplicate_ip')
             return
 
         if (sni in sni_domains) != is_white:
@@ -1250,38 +1237,31 @@ def print_statistics() -> None:
     with stats_lock:
         _api = api_calls_count
 
-    with stats_lock:
-        _sni_extra = stats['sni_ru_from_extra']
-        _sni_std   = stats['sni_ru_from_std']
-
     print("\n--- 📊 СТАТИСТИКА ---", flush=True)
     print(f"Добавлено: {s['added']}", flush=True)
-
-    print("\n[Локальные проверки]", flush=True)
+    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
     print(f"Технически битые: {s['broken']}", flush=True)
     print(f"Без деталей: {s['no_details']}", flush=True)
-    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
-    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
-    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
-
-    print("\n[Сетевые проверки]", flush=True)
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
-    print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
     print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
     print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
     print(f"Пинг вне диапазона: {s['ping_out_of_range']}", flush=True)
     print(f"Jitter провален: {s['jitter_failed']}", flush=True)
+    print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
     print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
+    print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
     print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
+    print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
-
-    print("\n[Итог]", flush=True)
-    print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
+    print(f"\nVLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
     print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
+    with stats_lock:
+        _sni_extra = stats['sni_ru_from_extra']
+        _sni_std   = stats['sni_ru_from_std']
     print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
 
 
