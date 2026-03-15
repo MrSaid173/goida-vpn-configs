@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 5  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -264,10 +264,12 @@ def _partial_cache_reset() -> None:
 
         non_working_failed = list(failed_ips - working_ips)
         non_working_checked = list(checked_configs - working_keys)
-        # Для checked_configs_raw — рабочие базовые ссылки
+        # Для checked_configs_raw — рабочие базовые ссылки (оба варианта white)
         working_raw = set()
         for r in vlm_results + vlm2_results:
-            working_raw.add(r['link'].split('#')[0])
+            base = r['link'].split('#')[0]
+            working_raw.add((base, True))
+            working_raw.add((base, False))
         non_working_raw = list(checked_configs_raw - working_raw)
 
         if CACHE_RESET_MODE == 1:
@@ -958,13 +960,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_white and sni_ru_done_event.is_set():
         return
 
-    # Быстрая проверка по базовой части ссылки (до #)
+    # Быстрая проверка по базовой части ссылки (до #) + флагу white
     config_base = config.split('#')[0]
+    config_raw_key = (config_base, is_white)
     with lock:
-        if config_base in checked_configs_raw:
+        if config_raw_key in checked_configs_raw:
             _inc_stat('checked_cache')
             return
-        checked_configs_raw.add(config_base)
+        checked_configs_raw.add(config_raw_key)
 
     if is_technically_broken(config):
         _inc_stat('broken')
@@ -1564,3 +1567,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
