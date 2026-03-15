@@ -57,8 +57,8 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.4
+MAX_JITTER = 150
+MAX_JITTER_RATIO = 0.25
 
 # Настройки повтора SNI-RU
 RU_RETRY_WAIT       = 240  # секунд ожидания перед каждой повторной попыткой
@@ -83,15 +83,15 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 650.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 800.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 750.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 900.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 1.0
+FAST_PING_TIMEOUT = 1.4
 FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
 FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
 FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
