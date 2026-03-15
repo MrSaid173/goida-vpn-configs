@@ -57,11 +57,11 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки Jitter
-MAX_JITTER = 150
-MAX_JITTER_RATIO = 0.25
+MAX_JITTER = 80
+MAX_JITTER_RATIO = 0.3
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 240  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 5  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
