@@ -61,7 +61,7 @@ MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.4
 
 # Настройки повтора SNI-RU
-RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_WAIT       = 240  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -83,15 +83,15 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 1300.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 1300.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 650.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 800.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 1.5
+FAST_PING_TIMEOUT = 1.0
 FULL_PING_PAUSE_MIN   = 0.15  # минимальная пауза
 FULL_PING_PAUSE_STEP  = 0.02  # расстояние между шагами
 FULL_PING_PAUSE_COUNT = 4     # количество шагов → [0.15, 0.17, 0.19, 0.21]
@@ -115,7 +115,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 3.0     # секунд на HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 2.3     # секунд на HTTP запрос через туннель
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
