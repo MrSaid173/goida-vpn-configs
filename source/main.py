@@ -42,7 +42,7 @@ EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
-    "m247", "akamai", "host", "baykov", "dataforest",
+    "m247", "akamai", "host", #"baykov", "dataforest",
 ]
 
 BANNED_ASNAME_PATTERNS = [
