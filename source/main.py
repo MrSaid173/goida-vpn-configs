@@ -684,11 +684,11 @@ def check_isp_info(ip_str: str) -> tuple:
             return ip_cache[ip_str]
 
     with api_semaphore:
-        for attempt in range(2):
+        for attempt in range(3):
             if stop_event.is_set():
                 return None, False
             if attempt > 0:
-                time.sleep(1.0)
+                time.sleep(1.1)
             try:
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
