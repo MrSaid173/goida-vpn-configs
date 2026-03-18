@@ -32,7 +32,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 3
-MIN_RU_CONFIGS = 0
+MIN_RU_CONFIGS = 6
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 3
@@ -42,11 +42,12 @@ EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "oracle", "leaseweb",
-    "m247", "akamai", "host",
+    "m247", "akamai",
 ]
 
 HOST_TAG_KEYWORDS = [
-    "vps", "dataforest", "baykov", "servers", "work",
+    # ISP/провайдеры которые помечаются тегом HOST но не баниятся
+    "vps", "baykov", "dataforest", "servers", "host", "work",
 ]
 
 BANNED_ASNAME_PATTERNS = [
@@ -81,7 +82,7 @@ MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
-MAX_SAME_SNI_RU = 7     # Не-RU IP + white SNI
+MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
 MIN_RU_PING, MAX_RU_PING = 100.0, 3000.0
@@ -93,6 +94,14 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 3.0
+
+# Настройки полного анализа пинга (TCP)
+MAX_JITTER = 100
+MAX_JITTER_RATIO = 0.2
+FULL_PING_PAUSE = 0.15
+FULL_PING_ATTEMPTS = 2
+FULL_PING_MIN_SAMPLES = 3
+
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
@@ -118,10 +127,10 @@ XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, кажд�
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
 # Лимиты пинга через xray туннель (via proxy get)
-MIN_XRAY_PING = 10.0      # минимальный пинг через туннель (мс)
+MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER = 130     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -647,6 +656,44 @@ def fast_ping(host: str, port: int, sni: str) -> int | None:
         return None
 
 
+def full_ping_analysis(
+    host: str, port: int, sni: str,
+    initial_ping: int, min_limit: float, max_limit: float
+) -> tuple[int, int] | None:
+    pings = [initial_ping]
+
+    if initial_ping < min_limit or initial_ping > max_limit:
+        _inc_stat('ping_out_of_range')
+        return None
+
+    try:
+        for _ in range(FULL_PING_ATTEMPTS):
+            if stop_event.is_set():
+                return None
+            time.sleep(FULL_PING_PAUSE)
+            p = fast_ping(host, port, sni)
+            if p is not None:
+                if p < min_limit or p > max_limit:
+                    _inc_stat('ping_out_of_range')
+                    return None
+                pings.append(p)
+
+        if len(pings) < FULL_PING_MIN_SAMPLES:
+            _inc_stat('packet_loss')
+            return None
+
+        avg = sum(pings) // len(pings)
+        jit = sum(abs(p - avg) for p in pings) // len(pings)
+
+        if jit > (avg * MAX_JITTER_RATIO) or jit > MAX_JITTER:
+            _inc_stat('jitter_failed')
+            return None
+
+        return avg, jit
+    except Exception:
+        return None
+
+
 def get_config_details(link: str) -> tuple:
     try:
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
@@ -688,7 +735,7 @@ def check_isp_info(ip_str: str) -> tuple:
             if stop_event.is_set():
                 return None, False
             if attempt > 0:
-                time.sleep(1.1)
+                time.sleep(1.3)
             try:
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
@@ -1026,6 +1073,23 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         sni_reserved = True
 
     is_ru = (ip_cc == "RU")
+    if is_xhttp:
+        min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
+        max_p = MAX_RU_PING_XHTTP if is_ru else MAX_WORLD_PING_XHTTP
+    else:
+        min_p = MIN_RU_PING if is_ru else MIN_WORLD_PING
+        max_p = MAX_RU_PING if is_ru else MAX_WORLD_PING
+
+    # ── Полный анализ TCP пинга: потеря пакетов + jitter ─────────────────────
+    full = full_ping_analysis(host, port, sni, p1, min_p, max_p)
+    if not full:
+        if sni_reserved:
+            with lock:
+                sni_usage_counts[sni] -= 1
+        if subnet16_reserved:
+            with lock:
+                subnet16_counts[subnet16][config_type] -= 1
+        return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля + измерение пинга via proxy get ──
     xray_result = xray_test(config, is_ru=is_ru)
@@ -1227,6 +1291,9 @@ def print_statistics() -> None:
     print(f"Лимиты SNI: {s['sni_limit']}", flush=True)
     print(f"Подсеть забанена: {s['subnet_banned']}", flush=True)
     print(f"Не добавлено (нет места): {s['not_added']}", flush=True)
+    print(f"Потеря пакетов TCP: {s['packet_loss']}", flush=True)
+    print(f"Jitter TCP провален: {s['jitter_failed']}", flush=True)
+    print(f"Пинг TCP вне диапазона: {s['ping_out_of_range']}", flush=True)
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
     print(f"Xray пинг вне диапазона: {s['xray_ping_out_of_range']}", flush=True)
     print(f"Xray jitter провален: {s['xray_jitter_failed']}", flush=True)
@@ -1504,4 +1571,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
