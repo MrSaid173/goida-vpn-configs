@@ -32,17 +32,21 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 3
-MIN_RU_CONFIGS = 0
+MIN_RU_CONFIGS = 6
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 3
 
 INTERLEAVE_STEP = 3
-EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru", "io.ozone.ru"]
+EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
-    "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
-    "m247", "akamai", "host", "baykov", "dataforest",
+    "microsoft", "ovh", "linode", "oracle", "leaseweb",
+    "m247", "akamai", "host",
+]
+
+HOST_TAG_KEYWORDS = [
+    "vps", "dataforest", "baykov", "servers", "work",
 ]
 
 BANNED_ASNAME_PATTERNS = [
@@ -63,14 +67,14 @@ RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
-MAX_CONFIGS = 50
+MAX_CONFIGS = 30
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
-MAX_PER_SUBNET = 3
+MAX_PER_SUBNET = 2
 MAX_PER_SUBNET16_RU_SNI = 1
-MAX_PER_SUBNET16_NONRU_SNI = 6
-MAX_PER_SUBNET16_OTHERS = 9
+MAX_PER_SUBNET16_NONRU_SNI = 5
+MAX_PER_SUBNET16_OTHERS = 7
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
@@ -80,15 +84,15 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 2000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2000.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 2.0
+FAST_PING_TIMEOUT = 1.2
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
@@ -709,7 +713,10 @@ def check_isp_info(ip_str: str) -> tuple:
                         _inc_stat('banned_hosting')
                     if is_banned_pattern:
                         _inc_stat('banned_asname')
-                    is_hosting_flag = r.get("hosting", False) and not is_bad_hosting
+                    # HOST тег: либо ip-api пометил как hosting, либо совпал HOST_TAG_KEYWORDS
+                    is_api_hosting = r.get("hosting", False) and not is_bad_hosting
+                    is_kw_hosting = any(word in full_info for word in HOST_TAG_KEYWORDS)
+                    is_hosting_flag = is_api_hosting or is_kw_hosting
                     res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
                         ip_cache[ip_str] = res
@@ -982,7 +989,13 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
     # Проверка ISP
     ip_cc, ip_h_stat = check_isp_info(host)
-    if not ip_cc or ip_h_stat == "BANNED" or stop_event.is_set():
+    if stop_event.is_set():
+        return
+    if not ip_cc:
+        _inc_stat('isp_no_response')
+        return
+    if ip_h_stat == "BANNED":
+        # banned_hosting и banned_asname уже посчитаны внутри check_isp_info
         _inc_stat('isp_banned')
         return
     # RU принимаем только если SNI-RU
@@ -1207,6 +1220,7 @@ def print_statistics() -> None:
     print("\n[Сетевые проверки]", flush=True)
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
     print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
+    print(f"ISP не ответил: {s['isp_no_response']}", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
     print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
     print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
