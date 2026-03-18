@@ -32,7 +32,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 3
-MIN_RU_CONFIGS = 6
+MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 3
@@ -67,32 +67,32 @@ RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
-MAX_CONFIGS = 30
+MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
-MAX_PER_SUBNET = 2
+MAX_PER_SUBNET = 3
 MAX_PER_SUBNET16_RU_SNI = 1
-MAX_PER_SUBNET16_NONRU_SNI = 5
-MAX_PER_SUBNET16_OTHERS = 7
+MAX_PER_SUBNET16_NONRU_SNI = 6
+MAX_PER_SUBNET16_OTHERS = 9
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
 
 # Лимиты на повторение SNI
-MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
-MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
+MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
+MAX_SAME_SNI_RU = 7     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 600.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 750.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 3000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 3000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 1.2
+FAST_PING_TIMEOUT = 3.0
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
@@ -118,10 +118,10 @@ XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, кажд�
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
 # Лимиты пинга через xray туннель (via proxy get)
-MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
+MIN_XRAY_PING = 10.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 300     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.5  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
