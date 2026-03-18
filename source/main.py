@@ -1,4 +1,3 @@
-
 # mine mine mine mine mine mine mine
 
 import os
@@ -58,8 +57,8 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки повтора SNI-RU
-RU_RETRY_ENABLED    = True # включить/выключить повтор SNI-RU
-RU_RETRY_WAIT       = 120  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
+RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
@@ -69,8 +68,8 @@ MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
 MAX_PER_SUBNET = 3
-MAX_PER_SUBNET16_RU_SNI = 2
-MAX_PER_SUBNET16_NONRU_SNI = 5
+MAX_PER_SUBNET16_RU_SNI = 1
+MAX_PER_SUBNET16_NONRU_SNI = 6
 MAX_PER_SUBNET16_OTHERS = 9
 
 MAX_PER_ID = 6
@@ -81,15 +80,15 @@ MAX_SAME_SNI_RU_RU = 1  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 3000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 3000.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 2000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 3.0
+FAST_PING_TIMEOUT = 2.0
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
@@ -117,8 +116,8 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER = 300     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER_RATIO = 0.5  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -1491,3 +1490,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
