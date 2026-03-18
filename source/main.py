@@ -38,7 +38,7 @@ MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 3
 
 INTERLEAVE_STEP = 3
-EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
+EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru", "io.ozone.ru"]
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
