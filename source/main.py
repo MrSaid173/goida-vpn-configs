@@ -39,17 +39,19 @@ MAX_HOST_CONFIGS = 3
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
+BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
-    "microsoft", "ovh", "linode", "oracle", "leaseweb",
-    "m247", "akamai",
+    "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
+    "m247", "akamai", "host", "baykov", "dataforest",
 ]
 
 HOST_TAG_KEYWORDS = [
     # ISP/провайдеры которые помечаются тегом HOST но не баниятся
-    "vps", "baykov", "dataforest", "servers", "host", "work",
+    "vps", "dedicated", "colocation", "datacenter", "data center",
 ]
 
+BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
@@ -85,8 +87,8 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 3000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 3000.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 2800.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2800.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -97,13 +99,13 @@ FAST_PING_TIMEOUT = 3.0
 
 # Настройки полного анализа пинга (TCP)
 MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.2
+MAX_JITTER_RATIO = 0.3
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 1.55  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
@@ -129,8 +131,8 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 130     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -201,6 +203,10 @@ sni_usage_counts = defaultdict(int)
 
 # Флаг режима повтора SNI-RU
 sni_ru_retry_mode = False
+
+# Буфер вытесненных не-RU SNI-RU конфигов для динамического резервирования
+non_ru_sni_buffer_vlm  = []
+non_ru_sni_buffer_vlm2 = []
 
 # Счетчики для vlm/vlm2 (защищены основным lock)
 ru_vlm_count = 0
@@ -735,7 +741,7 @@ def check_isp_info(ip_str: str) -> tuple:
             if stop_event.is_set():
                 return None, False
             if attempt > 0:
-                time.sleep(1.3)
+                time.sleep(1.1)
             try:
                 with lock:
                     elapsed = time.perf_counter() - last_api_call
@@ -747,14 +753,14 @@ def check_isp_info(ip_str: str) -> tuple:
 
                 resp = session.get(
                     f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting",
-                    timeout=5,
+                    timeout=6,
                 )
                 resp.raise_for_status()
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    is_bad_hosting = any(word in full_info for word in BAD_HOSTING_KEYWORDS)
-                    is_banned_pattern = any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
+                    is_bad_hosting = BAD_HOSTING_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    is_banned_pattern = BANNED_ASNAME_ENABLED and any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_bad_hosting or is_banned_pattern
                     if is_bad_hosting:
                         _inc_stat('banned_hosting')
@@ -846,14 +852,43 @@ def can_add_hosting(is_hosting, is_vlm2: bool) -> bool:
     return True
 
 
+def _evict_non_ru_sni(is_vlm2: bool) -> None:
+    """Вытесняет один случайный не-RU SNI-RU конфиг в буфер."""
+    global sni_vlm_count, sni_vlm2_count, host_vlm_count, host_vlm2_count
+    results = vlm2_results if is_vlm2 else vlm_results
+    buffer  = non_ru_sni_buffer_vlm2 if is_vlm2 else non_ru_sni_buffer_vlm
+    candidates = [r for r in results if r['white_sni'] and r['country'] != 'RU']
+    if not candidates:
+        return
+    victim = random.choice(candidates)
+    results.remove(victim)
+    buffer.append(victim)
+    if is_vlm2:
+        sni_vlm2_count -= 1
+        if victim['is_hosting'] is True: host_vlm2_count -= 1
+    else:
+        sni_vlm_count -= 1
+        if victim['is_hosting'] is True: host_vlm_count -= 1
+
+
 def can_add_sni_ru(entry: dict, is_vlm2: bool) -> bool:
-    """Проверяет не превышен ли лимит MAX_TOTAL_SNI_RU для данного списка."""
+    """Проверяет не превышен ли лимит MAX_TOTAL_SNI_RU для данного списка.
+    Динамически резервирует слоты для RU конфигов.
+    """
     if not entry['white_sni']:
         return True
     # Во время повтора RU конфиги могут превышать лимит
     if sni_ru_retry_mode and entry['country'] == 'RU':
         return True
     current = sni_vlm2_count if is_vlm2 else sni_vlm_count
+    ru_count = ru_vlm2_count if is_vlm2 else ru_vlm_count
+    # Резервируем слоты для недобранных RU
+    ru_needed = max(0, MIN_RU_CONFIGS - ru_count)
+    effective_limit = MAX_TOTAL_SNI_RU - ru_needed
+    if current >= effective_limit and entry['country'] != 'RU':
+        # Вытесняем не-RU SNI-RU в буфер если есть место для RU
+        _evict_non_ru_sni(is_vlm2)
+        return False
     return current < MAX_TOTAL_SNI_RU
 
 
@@ -1251,6 +1286,30 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
     ]
 
 
+def _restore_non_ru_sni_buffer() -> None:
+    """Возвращает буферизованные не-RU SNI-RU конфиги обратно если RU слоты не заняты."""
+    global sni_vlm_count, sni_vlm2_count, host_vlm_count, host_vlm2_count
+    with lock:
+        for results, buffer, is_vlm2 in [
+            (vlm_results,  non_ru_sni_buffer_vlm,  False),
+            (vlm2_results, non_ru_sni_buffer_vlm2, True),
+        ]:
+            ru_count  = ru_vlm2_count if is_vlm2 else ru_vlm_count
+            ru_needed = max(0, MIN_RU_CONFIGS - ru_count)
+            # Возвращаем столько конфигов из буфера сколько слотов свободно
+            slots_free = MAX_TOTAL_SNI_RU - (sni_vlm2_count if is_vlm2 else sni_vlm_count)
+            can_restore = max(0, slots_free - ru_needed)
+            to_restore = buffer[:can_restore]
+            for r in to_restore:
+                results.append(r)
+                buffer.remove(r)
+                if is_vlm2:
+                    sni_vlm2_count += 1
+                    if r['is_hosting'] is True: host_vlm2_count += 1
+                else:
+                    sni_vlm_count += 1
+                    if r['is_hosting'] is True: host_vlm_count += 1
+
 def print_statistics() -> None:
     with stats_lock:
         s = defaultdict(int, stats)
@@ -1543,6 +1602,9 @@ def main() -> None:
         )
 
     # Если списки ещё не заполнены — запускаем NON SNI-RU
+    # Сначала восстанавливаем буфер если RU не добрали
+    _restore_non_ru_sni_buffer()
+
     with lock:
         needs_more = len(vlm_results) < MAX_CONFIGS or len(vlm2_results) < MAX_CONFIGS
     if needs_more and not stop_event.is_set():
@@ -1571,3 +1633,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
