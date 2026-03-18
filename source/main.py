@@ -39,19 +39,17 @@ MAX_HOST_CONFIGS = 3
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
-    "microsoft", "ovh", "linode", "servers", "work", "oracle", "leaseweb",
-    "m247", "akamai", "host", "baykov", "dataforest",
+    "microsoft", "ovh", "linode", "oracle", "leaseweb",
+    "m247", "akamai",
 ]
 
 HOST_TAG_KEYWORDS = [
     # ISP/провайдеры которые помечаются тегом HOST но не баниятся
-    "vps", "dedicated", "colocation", "datacenter", "data center",
+    "vps", "host", "baykov", "dataforest", "work", "servers"
 ]
 
-BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
@@ -62,6 +60,10 @@ BANNED_ASNAME_PATTERNS = [
     #"-ae", "-il", "-sa", "-ir", "-iq", "-jo", "-kw", "-qa", "-om", "-ye",
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn",
 ]
+
+# Включатели/выключатели фильтров
+BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
+BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
 RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
@@ -87,8 +89,8 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 2800.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2800.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 3000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 3000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -105,7 +107,7 @@ FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 2.5  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
@@ -220,7 +222,10 @@ sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 vlm_results = []
 vlm2_results = []
 
-last_api_call = 0.0
+# Токен-бакет для rate limiting ip-api
+_api_token_lock = threading.Lock()
+_api_last_token_time = 0.0  # время последней выдачи токена
+_api_retry_after = 0.0      # время до которого нельзя делать запросы (429)
 
 # Статистика для отладки (защищена stats_lock)
 stats = defaultdict(int)
@@ -729,8 +734,25 @@ def get_subnet16_limit(config_type: str) -> int:
     return limits.get(config_type, MAX_PER_SUBNET16_OTHERS)
 
 
+def _api_wait_for_token() -> None:
+    """Токен-бакет: выдаёт токен строго раз в API_RATE_LIMIT_INTERVAL секунд.
+    Также учитывает Retry-After от 429 ответов."""
+    global _api_last_token_time, _api_retry_after
+    with _api_token_lock:
+        now = time.perf_counter()
+        # Ждём если есть активный Retry-After
+        if _api_retry_after > now:
+            time.sleep(_api_retry_after - now)
+            now = time.perf_counter()
+        # Токен-бакет: ждём до следующего доступного токена
+        next_token = _api_last_token_time + API_RATE_LIMIT_INTERVAL
+        if next_token > now:
+            time.sleep(next_token - now)
+        _api_last_token_time = time.perf_counter()
+
+
 def check_isp_info(ip_str: str) -> tuple:
-    global last_api_call, api_calls_count
+    global api_calls_count, _api_retry_after
 
     with lock:
         if ip_str in ip_cache:
@@ -740,21 +762,24 @@ def check_isp_info(ip_str: str) -> tuple:
         for attempt in range(3):
             if stop_event.is_set():
                 return None, False
-            if attempt > 0:
-                time.sleep(1.1)
             try:
-                with lock:
-                    elapsed = time.perf_counter() - last_api_call
-                    sleep_time = max(0.0, API_RATE_LIMIT_INTERVAL - elapsed)
-                    last_api_call = time.perf_counter()
+                _api_wait_for_token()
+                with stats_lock:
                     api_calls_count += 1
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
 
                 resp = session.get(
                     f"http://ip-api.com/json/{ip_str}?fields=status,countryCode,isp,org,as,asname,hosting",
-                    timeout=6,
+                    timeout=5,
                 )
+
+                # Обработка 429 — читаем Retry-After
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("Retry-After", 10))
+                    with _api_token_lock:
+                        _api_retry_after = time.perf_counter() + retry_after
+                    _inc_stat('isp_rate_limited')
+                    continue
+
                 resp.raise_for_status()
                 r = resp.json()
                 if r.get("status") == "success":
@@ -775,7 +800,8 @@ def check_isp_info(ip_str: str) -> tuple:
                         ip_cache[ip_str] = res
                     return res
             except (requests.RequestException, ValueError):
-                pass
+                if attempt < 2:
+                    time.sleep(1.0)
 
     return None, False
 
@@ -1309,6 +1335,8 @@ def _restore_non_ru_sni_buffer() -> None:
                 else:
                     sni_vlm_count += 1
                     if r['is_hosting'] is True: host_vlm_count += 1
+            if to_restore:
+                print(f"♻️  Восстановлено {len(to_restore)} не-RU SNI-RU из буфера", flush=True)
 
 def print_statistics() -> None:
     with stats_lock:
@@ -1344,6 +1372,7 @@ def print_statistics() -> None:
     print(f"Первый пинг провален: {s['first_ping_failed']}", flush=True)
     print(f"Запросов к ip-api: {_api} (кэш попаданий: {s['duplicate_ip'] + s['race_duplicate']})", flush=True)
     print(f"ISP не ответил: {s['isp_no_response']}", flush=True)
+    print(f"ISP rate limit (429): {s['isp_rate_limited']}", flush=True)
     print(f"ISP забанен: {s['isp_banned']}", flush=True)
     print(f"Плохой хостинг (BAD_HOSTING): {s['banned_hosting']}", flush=True)
     print(f"Забанен по ASN паттерну: {s['banned_asname']}", flush=True)
@@ -1633,4 +1662,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
