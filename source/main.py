@@ -105,7 +105,7 @@ FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
 # Rate-limit для ip-api.com
-API_RATE_LIMIT_INTERVAL = 1.85  # минимальный интервал между запросами
+API_RATE_LIMIT_INTERVAL = 2.5  # минимальный интервал между запросами
 
 # --- НАСТРОЙКИ RU-ПРОВЕРКИ ---
 ANTIFILTER_URLS = [
