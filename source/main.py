@@ -1,3 +1,4 @@
+
 # mine mine mine mine mine mine mine
 
 import os
@@ -57,13 +58,13 @@ BANNED_ASNAME_PATTERNS = [
 ]
 
 # Настройки повтора SNI-RU
-RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
-RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_ENABLED    = True # включить/выключить повтор SNI-RU
+RU_RETRY_WAIT       = 120  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
 # Настройки конфигураций
-MAX_CONFIGS = 30
+MAX_CONFIGS = 50
 MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
