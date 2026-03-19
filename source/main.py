@@ -1132,11 +1132,6 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             if sni_vlm_count >= MAX_TOTAL_SNI_RU and sni_vlm2_count >= MAX_TOTAL_SNI_RU:
                 _inc_stat('sni_ru_limit_early')
                 return
-
-        # Общий лимит MAX_CONFIGS
-        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
-            _inc_stat('no_space_early')
-            return
             _inc_stat('id_limit')
             return
 
