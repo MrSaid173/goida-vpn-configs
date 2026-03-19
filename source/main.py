@@ -196,6 +196,7 @@ sni_ru_done_event = threading.Event()  # сигнал завершения фа�
 ip_cache = {}
 seen_configs = set()  # базовые части ссылок для подсчёта уникальных конфигов
 failed_ips = set()
+checked_configs_raw = set()  # (config_base, is_white) для быстрой проверки повторов
 failed_subnets = defaultdict(int)
 seen_ips = set()
 subnet_counts = defaultdict(int)
@@ -1650,3 +1651,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+            
