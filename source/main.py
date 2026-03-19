@@ -26,7 +26,6 @@ GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
-FILENAME_VLM3 = "vlm3"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
@@ -36,7 +35,8 @@ MAX_XHTTP = 3
 MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
-MAX_HOST_CONFIGS = 3
+MAX_HOST_NOWS_CONFIGS = 3   # лимит HOST конфигов (обычных)
+MAX_WS_HOST_CONFIGS = 5     # лимит WS конфигов с host= параметром
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -62,9 +62,17 @@ BANNED_ASNAME_PATTERNS = [
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn",
 ]
 
+BAD_HOSTING_KEYWORDS_WS = [
+    # Слова для бана WS конфигов с host= (cloudflare здесь НЕ добавляем)
+    "hetzner", "digitalocean", "vultr", "amazon", "google",
+    "microsoft", "ovh", "linode", "oracle", "leaseweb",
+    "m247", "akamai",
+]
+
 # Включатели/выключатели фильтров
-BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
-BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
+BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
+BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
+BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
 RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
@@ -216,14 +224,15 @@ non_ru_sni_buffer_vlm2 = []
 ru_vlm_count = 0
 ru_vlm2_count = 0
 xhttp_count = 0
-host_vlm_count = 0   # количество hosting конфигов в vlm
-host_vlm2_count = 0  # количество hosting конфигов в vlm2
+host_vlm_count = 0      # количество HOST конфигов в vlm
+host_vlm2_count = 0     # количество HOST конфигов в vlm2
+ws_host_vlm_count = 0   # количество WS host= конфигов в vlm
+ws_host_vlm2_count = 0  # количество WS host= конфигов в vlm2
 sni_vlm_count = 0    # количество white_sni конфигов в vlm
 sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 
 vlm_results = []
 vlm2_results = []
-vlm3_results = []  # технически битые конфиги
 
 # Токен-бакет для rate limiting ip-api
 _api_token_lock = threading.Lock()
@@ -617,8 +626,6 @@ def is_technically_broken(link: str) -> bool:
         #return True
     #if "/??" in l:
         #return True
-    if "host=" in l: #or "packetencoding=" in l or "type=raw" in l:
-        return True
     if "vless://" in l:
         match = re.search(r'vless://([a-f0-9\-]{32,36})@', l)
         if not match:
@@ -742,7 +749,7 @@ def _api_wait_for_token() -> None:
         _api_last_token_time = time.perf_counter()
 
 
-def check_isp_info(ip_str: str) -> tuple:
+def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     global api_calls_count, _api_retry_after
 
     with lock:
@@ -775,7 +782,10 @@ def check_isp_info(ip_str: str) -> tuple:
                 r = resp.json()
                 if r.get("status") == "success":
                     full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    is_bad_hosting = BAD_HOSTING_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+                    if is_ws_host:
+                        is_bad_hosting = BAD_HOSTING_WS_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS_WS)
+                    else:
+                        is_bad_hosting = BAD_HOSTING_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS)
                     is_banned_pattern = BANNED_ASNAME_ENABLED and any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
                     is_banned = is_bad_hosting or is_banned_pattern
                     if is_bad_hosting:
@@ -865,7 +875,14 @@ def get_sni_limit(is_white: bool, ip_cc: str) -> int:
 def can_add_hosting(is_hosting, is_vlm2: bool) -> bool:
     if is_hosting is True:
         count = host_vlm2_count if is_vlm2 else host_vlm_count
-        return count < MAX_HOST_CONFIGS
+        return count < MAX_HOST_NOWS_CONFIGS
+    return True
+
+
+def can_add_ws_host(is_ws_host: bool, is_vlm2: bool) -> bool:
+    if is_ws_host:
+        count = ws_host_vlm2_count if is_vlm2 else ws_host_vlm_count
+        return count < MAX_WS_HOST_CONFIGS
     return True
 
 
@@ -938,57 +955,65 @@ def _trim_excess_sni_ru() -> None:
 def try_add_to_lists(entry: dict) -> bool:
     global ru_vlm_count, ru_vlm2_count, xhttp_count
     global host_vlm_count, host_vlm2_count, sni_vlm_count, sni_vlm2_count
+    global ws_host_vlm_count, ws_host_vlm2_count
 
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
     is_white = entry['white_sni']
+    is_ws_host = entry.get('is_ws_host', False)
 
     added_vlm = False
     added_vlm2 = False
 
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
                 if is_hosting is True: host_vlm2_count += 1
+                if is_ws_host: ws_host_vlm2_count += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 if is_hosting is True: host_vlm2_count += 1
+                if is_ws_host: ws_host_vlm2_count += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 if is_hosting is True: host_vlm_count += 1
+                if is_ws_host: ws_host_vlm_count += 1
                 if is_white: sni_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False):
             vlm_results.append(entry)
             if is_hosting is True: host_vlm_count += 1
+            if is_ws_host: ws_host_vlm_count += 1
             if is_white: sni_vlm_count += 1
             added_vlm = True
 
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 if is_hosting is True: host_vlm2_count += 1
+                if is_ws_host: ws_host_vlm2_count += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
             vlm2_results.append(entry)
             if is_hosting is True: host_vlm2_count += 1
+            if is_ws_host: ws_host_vlm2_count += 1
             if is_white: sni_vlm2_count += 1
             added_vlm2 = True
 
@@ -1013,6 +1038,23 @@ def check_completion() -> bool:
 
 
 
+def resolve_ws_host(config: str) -> str | None:
+    """Резолвит домен из параметра host= WS конфига, возвращает IP или None."""
+    h_m = re.search(r'[?&]host=([^&#\s]+)', config, re.I)
+    if not h_m:
+        return None
+    domain = h_m.group(1)
+    if not domain or is_valid_ipv4(domain):
+        return domain if domain else None
+    try:
+        result = socket.getaddrinfo(domain, None, socket.AF_INET)
+        if result:
+            return result[0][4][0]
+    except (socket.gaierror, OSError):
+        pass
+    return None
+
+
 def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if stop_event.is_set():
         _inc_stat('stopped')
@@ -1031,8 +1073,6 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_technically_broken(config):
         if is_unique:
             _inc_stat('broken')
-            with lock:
-                vlm3_results.append(config)
         return
 
     host, port, sni, cid = get_config_details(config)
@@ -1053,6 +1093,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     is_xhttp = "xhttp" in config.lower()
+    is_ws_host = "host=" in config.lower() and "type=ws" in config.lower()
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
 
@@ -1089,14 +1130,19 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     # Проверка ISP
-    ip_cc, ip_h_stat = check_isp_info(host)
+    # Для WS конфигов с host= резолвим домен для определения реальной страны
+    check_ip = host
+    if is_ws_host:
+        resolved = resolve_ws_host(config)
+        if resolved and resolved != host:
+            check_ip = resolved
+    ip_cc, ip_h_stat = check_isp_info(check_ip, is_ws_host=is_ws_host)
     if stop_event.is_set():
         return
     if not ip_cc:
         _inc_stat('isp_no_response')
         return
     if ip_h_stat == "BANNED":
-        # banned_hosting и banned_asname уже посчитаны внутри check_isp_info
         _inc_stat('isp_banned')
         return
     # RU принимаем только если SNI-RU
@@ -1185,6 +1231,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             "white_sni": is_white,
             "is_hosting": ip_h_stat,
             "is_xhttp": is_xhttp,
+            "is_ws_host": is_ws_host,
         }
 
         if try_add_to_lists(entry):
@@ -1636,21 +1683,6 @@ def main() -> None:
     print_statistics()
 
     if gh_repo:
-        # Загружаем vlm3 — технически битые конфиги (без finalize_list)
-        with lock:
-            vlm3_content = "\n".join(vlm3_results)
-        vlm3_path = f"githubmirror/{FILENAME_VLM3}"
-        try:
-            sha = gh_repo.get_contents(vlm3_path).sha
-            gh_repo.update_file(vlm3_path, f"🚀 {FILENAME_VLM3} | {len(vlm3_results)} | {offset}", vlm3_content, sha)
-            print(f"✅ Обновлен {FILENAME_VLM3}: {len(vlm3_results)} конфигов", flush=True)
-        except Exception:
-            try:
-                gh_repo.create_file(vlm3_path, f"🚀 {FILENAME_VLM3} | {len(vlm3_results)} | {offset}", vlm3_content)
-                print(f"✅ Создан {FILENAME_VLM3}: {len(vlm3_results)} конфигов", flush=True)
-            except Exception as e:
-                print(f"❌ Ошибка записи {FILENAME_VLM3}: {e}", flush=True)
-
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
             path, content = f"githubmirror/{fn}", "\n".join(output)
@@ -1670,3 +1702,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+                                        
