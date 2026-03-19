@@ -26,6 +26,7 @@ GITHUB_TOKEN = os.environ.get("MY_TOKEN")
 REPO_NAME = "MrSaid173/golden-paths_configs"
 FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
+FILENAME_VLM3 = "vlm3"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
 
@@ -222,6 +223,7 @@ sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 
 vlm_results = []
 vlm2_results = []
+vlm3_results = []  # технически битые конфиги
 
 # Токен-бакет для rate limiting ip-api
 _api_token_lock = threading.Lock()
@@ -1029,6 +1031,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_technically_broken(config):
         if is_unique:
             _inc_stat('broken')
+            with lock:
+                vlm3_results.append(config)
         return
 
     host, port, sni, cid = get_config_details(config)
@@ -1632,6 +1636,21 @@ def main() -> None:
     print_statistics()
 
     if gh_repo:
+        # Загружаем vlm3 — технически битые конфиги (без finalize_list)
+        with lock:
+            vlm3_content = "\n".join(vlm3_results)
+        vlm3_path = f"githubmirror/{FILENAME_VLM3}"
+        try:
+            sha = gh_repo.get_contents(vlm3_path).sha
+            gh_repo.update_file(vlm3_path, f"🚀 {FILENAME_VLM3} | {len(vlm3_results)} | {offset}", vlm3_content, sha)
+            print(f"✅ Обновлен {FILENAME_VLM3}: {len(vlm3_results)} конфигов", flush=True)
+        except Exception:
+            try:
+                gh_repo.create_file(vlm3_path, f"🚀 {FILENAME_VLM3} | {len(vlm3_results)} | {offset}", vlm3_content)
+                print(f"✅ Создан {FILENAME_VLM3}: {len(vlm3_results)} конфигов", flush=True)
+            except Exception as e:
+                print(f"❌ Ошибка записи {FILENAME_VLM3}: {e}", flush=True)
+
         for fn, res in [(FILENAME_VLM, vlm_results), (FILENAME_VLM2, vlm2_results)]:
             output = finalize_list(res, is_vlm2=(fn == FILENAME_VLM2))
             path, content = f"githubmirror/{fn}", "\n".join(output)
@@ -1651,4 +1670,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-                                        
