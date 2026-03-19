@@ -1038,21 +1038,39 @@ def check_completion() -> bool:
 
 
 
+_dns_cache: dict = {}
+_dns_cache_lock = threading.Lock()
+
+
 def resolve_ws_host(config: str) -> str | None:
-    """Резолвит домен из параметра host= WS конфига, возвращает IP или None."""
+    """Резолвит домен из параметра host= WS конфига, возвращает IP или None.
+    Результат кэшируется чтобы не делать повторные DNS запросы для одного домена."""
     h_m = re.search(r'[?&]host=([^&#\s]+)', config, re.I)
     if not h_m:
         return None
-    domain = h_m.group(1)
+    domain = h_m.group(1).lower()
     if not domain or is_valid_ipv4(domain):
         return domain if domain else None
+
+    # Проверяем кэш
+    with _dns_cache_lock:
+        if domain in _dns_cache:
+            return _dns_cache[domain]
+
+    # Делаем DNS запрос
+    result_ip = None
     try:
         result = socket.getaddrinfo(domain, None, socket.AF_INET)
         if result:
-            return result[0][4][0]
+            result_ip = result[0][4][0]
     except (socket.gaierror, OSError):
         pass
-    return None
+
+    # Сохраняем в кэш (даже None — чтобы не повторять неудачные запросы)
+    with _dns_cache_lock:
+        _dns_cache[domain] = result_ip
+
+    return result_ip
 
 
 def validate(config: str, is_priority: bool, is_white: bool) -> None:
