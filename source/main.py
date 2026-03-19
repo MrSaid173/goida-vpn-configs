@@ -28,8 +28,8 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
-FILENAME_IP_CACHE = "ip_cache"
-IP_CACHE_TTL_DAYS = 3
+FILENAME_IP_CACHE = "ip_cache"     # имя файла кэша IP на GitHub
+IP_CACHE_TTL_DAYS = 3              # сколько дней хранить данные об IP
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
@@ -37,13 +37,11 @@ MAX_XHTTP = 3
 MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
-MAX_HOST_NOWS_CONFIGS = MAX_RU_CONFIGS // 2   # лимит HOST конфигов (обычных)
+MAX_HOST_NOWS_CONFIGS = 3   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS = 0     # лимит WS конфигов с host= параметром
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
-
-BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "oracle", "leaseweb",
@@ -55,7 +53,6 @@ HOST_TAG_KEYWORDS = [
     "vps", "host", "baykov", "dataforest", "work", "servers"
 ]
 
-BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
@@ -67,13 +64,17 @@ BANNED_ASNAME_PATTERNS = [
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn",
 ]
 
-BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
 BAD_HOSTING_KEYWORDS_WS = [
     # Слова для бана WS конфигов с host= (cloudflare здесь НЕ добавляем)
     "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "oracle", "leaseweb",
     "m247", "akamai",
 ]
+
+# Включатели/выключатели фильтров
+BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
+BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
+BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
 RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
@@ -618,8 +619,8 @@ def is_valid_ipv4(ip: str) -> bool:
         return False
 
 
-def is_technically_broken(link: str) -> bool:
-    l = link.lower()
+def is_technically_broken(link: str, _lower: str | None = None) -> bool:
+    l = _lower if _lower is not None else link.lower()
     if "type=" not in l:
         return True
     if "type=http" in l and "type=httpupgrade" not in l:
@@ -765,7 +766,7 @@ def save_persistent_ip_cache(gh_repo) -> None:
         return
     try:
         path = f"githubmirror/{FILENAME_IP_CACHE}.json"
-        content_str = json.dumps(persistent_ip_cache, ensure_ascii=False)
+        content_str = json.dumps(persistent_ip_cache, ensure_ascii=False, indent=2)
         try:
             sha = gh_repo.get_contents(path).sha
             gh_repo.update_file(path, f"ip_cache update", content_str, sha)
@@ -1138,21 +1139,19 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if is_white and sni_ru_done_event.is_set():
         return
 
-    # Определяем уникальность конфига для статистики
-    config_base = config.split('#')[0]
+    # Определяем уникальность конфига для статистики + проверка повторов
+    config_lower = config.lower()
+    config_base = config_lower.split('#')[0]
+    config_raw_key = (config_base, is_white)
     with lock:
         is_unique = config_base not in seen_configs
         if is_unique:
             seen_configs.add(config_base)
-
-    # Быстрая проверка повторов по (config_base, is_white)
-    config_raw_key = (config_base, is_white)
-    with lock:
         if config_raw_key in checked_configs_raw:
             return
         checked_configs_raw.add(config_raw_key)
 
-    if is_technically_broken(config):
+    if is_technically_broken(config, config_lower):
         if is_unique:
             _inc_stat('broken')
         return
@@ -1174,8 +1173,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             _inc_stat('blocked_rkn')
         return
 
-    is_xhttp = "xhttp" in config.lower()
-    is_ws_host = "host=" in config.lower() and "type=ws" in config.lower()
+    is_xhttp = "xhttp" in config_lower
+    is_ws_host = "host=" in config_lower and "type=ws" in config_lower
     if is_ws_host and MAX_WS_HOST_CONFIGS == 0:
         return
     subnet = ".".join(host.split(".")[:3])
