@@ -32,7 +32,7 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 3
-MIN_RU_CONFIGS = 6
+MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_CONFIGS = 3
@@ -66,8 +66,8 @@ BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
 BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
-RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
-RU_RETRY_WAIT       = 480  # секунд ожидания перед каждой повторной попыткой
+RU_RETRY_ENABLED    = True # включить/выключить повтор SNI-RU
+RU_RETRY_WAIT       = 240  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
 
