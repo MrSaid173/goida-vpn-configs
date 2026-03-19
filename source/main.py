@@ -258,12 +258,12 @@ def _partial_cache_reset() -> None:
         return
 
     with lock:
-        working_ips = {
-            re.search(r'@([^:/?#\s]+):', r['link']).group(1)
-            for r in vlm_results + vlm2_results
-            if re.search(r'@([^:/?#\s]+):', r['link'])
-        }
-        non_working_failed = list(failed_ips - working_ips)
+        working_ip_ports = set()
+        for r in vlm_results + vlm2_results:
+            m = re.search(r'@([^:/?#\s]+):(\d+)', r['link'])
+            if m:
+                working_ip_ports.add(f"{m.group(1)}:{m.group(2)}")
+        non_working_failed = list(failed_ips - working_ip_ports)
         working_raw = set()
         for r in vlm_results + vlm2_results:
             base = r['link'].split('#')[0]
@@ -1037,7 +1037,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             _inc_stat('no_details')
         return
 
-    if host in failed_ips:
+    if f"{host}:{port}" in failed_ips:
         if is_unique:
             _inc_stat('failed_ip_cache')
         return
@@ -1080,7 +1080,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if not p1 or p1 > initial_max_p:
         with lock:
             failed_subnets[subnet] += 1
-            failed_ips.add(host)
+            failed_ips.add(f"{host}:{port}")
         _inc_stat('first_ping_failed')
         return
 
@@ -1651,4 +1651,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
+                                        
