@@ -66,7 +66,7 @@ BAD_HOSTING_ENABLED   = True  # банить плохой хостинг
 BANNED_ASNAME_ENABLED = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
-RU_RETRY_ENABLED    = True # включить/выключить повтор SNI-RU
+RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
 RU_RETRY_WAIT       = 240  # секунд ожидания перед каждой повторной попыткой
 RU_RETRY_MAX        = 1    # максимум попыток добора SNI-RU
 CACHE_RESET_MODE    = 1    # 0 - не очищать, 1 - очищать наполовину, 2 - очищать полностью
