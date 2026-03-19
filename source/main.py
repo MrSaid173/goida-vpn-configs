@@ -1094,6 +1094,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
     is_xhttp = "xhttp" in config.lower()
     is_ws_host = "host=" in config.lower() and "type=ws" in config.lower()
+    if is_ws_host and MAX_WS_HOST_CONFIGS == 0:
+        return
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
 
@@ -1702,4 +1704,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-                                        
