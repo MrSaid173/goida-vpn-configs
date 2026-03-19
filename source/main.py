@@ -1088,6 +1088,13 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if is_unique:
             seen_configs.add(config_base)
 
+    # Быстрая проверка повторов по (config_base, is_white)
+    config_raw_key = (config_base, is_white)
+    with lock:
+        if config_raw_key in checked_configs_raw:
+            return
+        checked_configs_raw.add(config_raw_key)
+
     if is_technically_broken(config):
         if is_unique:
             _inc_stat('broken')
@@ -1637,6 +1644,14 @@ def main() -> None:
         non_sni_thread.join()
 
         _partial_cache_reset()
+
+        # Очищаем белые записи из checked_configs_raw чтобы повтор мог проверить те же конфиги
+        with lock:
+            working_raw = set()
+            for r in vlm_results + vlm2_results:
+                base = r['link'].split('#')[0]
+                working_raw.add((base, True))
+            checked_configs_raw -= {k for k in checked_configs_raw if k[1] is True and k not in working_raw}
 
         raw_extra_retry = fetch_group_data(extra_urls)
         raw_std_retry   = fetch_group_data(std_urls)
