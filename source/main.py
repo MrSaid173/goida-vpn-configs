@@ -1121,6 +1121,25 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             _inc_stat('id_limit')
             return
 
+        # Предварительные лимитные проверки до пинга
+        # ws_host лимит
+        if is_ws_host and ws_host_vlm_count >= MAX_WS_HOST_CONFIGS and ws_host_vlm2_count >= MAX_WS_HOST_CONFIGS:
+            _inc_stat('ws_host_limit')
+            return
+
+        # SNI-RU лимит (в обычном режиме страна не нужна)
+        if not sni_ru_retry_mode and is_white:
+            if sni_vlm_count >= MAX_TOTAL_SNI_RU and sni_vlm2_count >= MAX_TOTAL_SNI_RU:
+                _inc_stat('sni_ru_limit_early')
+                return
+
+        # Общий лимит MAX_CONFIGS
+        if len(vlm_results) >= MAX_CONFIGS and len(vlm2_results) >= MAX_CONFIGS:
+            _inc_stat('no_space_early')
+            return
+            _inc_stat('id_limit')
+            return
+
     # Первый пинг
     p1 = fast_ping(host, port, sni)
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
