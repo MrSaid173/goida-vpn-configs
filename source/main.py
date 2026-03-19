@@ -28,6 +28,8 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
+FILENAME_IP_CACHE = "ip_cache"
+IP_CACHE_TTL_DAYS = 3
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
@@ -35,11 +37,13 @@ MAX_XHTTP = 3
 MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
-MAX_HOST_NOWS_CONFIGS = 5   # лимит HOST конфигов (обычных)
+MAX_HOST_NOWS_CONFIGS = MAX_RU_CONFIGS // 2   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS = 0     # лимит WS конфигов с host= параметром
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
+
+BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
 BAD_HOSTING_KEYWORDS = [
     "cloudflare", "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "oracle", "leaseweb",
@@ -51,6 +55,7 @@ HOST_TAG_KEYWORDS = [
     "vps", "host", "baykov", "dataforest", "work", "servers"
 ]
 
+BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 BANNED_ASNAME_PATTERNS = [
     "-ru", "-ua", "-by", "-kz", "-uz", "-ge", "-am", "-az", "-md", "-tj", "-kg", "-tm",
     "-us", "-ca", "-mx", "-br", "-ar", "-cl", "-co", "-pe", "-ve",
@@ -62,17 +67,13 @@ BANNED_ASNAME_PATTERNS = [
     "-au", "-nz", "-za", "-ng", "-eg", "-ke", "-ma", "-dz", "-tn",
 ]
 
+BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
 BAD_HOSTING_KEYWORDS_WS = [
     # Слова для бана WS конфигов с host= (cloudflare здесь НЕ добавляем)
     "hetzner", "digitalocean", "vultr", "amazon", "google",
     "microsoft", "ovh", "linode", "oracle", "leaseweb",
     "m247", "akamai",
 ]
-
-# Включатели/выключатели фильтров
-BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
-BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
-BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
 RU_RETRY_ENABLED    = False # включить/выключить повтор SNI-RU
@@ -242,6 +243,9 @@ _api_retry_after = 0.0      # время до которого нельзя де
 # Статистика для отладки (защищена stats_lock)
 stats = defaultdict(int)
 api_calls_count = 0
+
+# Персистентный кэш IP из GitHub (ip -> {cc, hosting, expires})
+persistent_ip_cache: dict = {}
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ ---
 blocked_networks = []       # список IPv4Network из antifilter
@@ -732,6 +736,45 @@ def get_subnet16_limit(config_type: str) -> int:
     return limits.get(config_type, MAX_PER_SUBNET16_OTHERS)
 
 
+
+def load_persistent_ip_cache(gh_repo) -> None:
+    """Загружает персистентный кэш IP с GitHub и очищает устаревшие записи."""
+    global persistent_ip_cache
+    if not gh_repo:
+        return
+    try:
+        path = f"githubmirror/{FILENAME_IP_CACHE}.json"
+        content = gh_repo.get_contents(path)
+        data = json.loads(content.decoded_content.decode('utf-8'))
+        now = time.time()
+        ttl_seconds = IP_CACHE_TTL_DAYS * 86400
+        # Фильтруем устаревшие записи
+        persistent_ip_cache = {
+            ip: v for ip, v in data.items()
+            if now - v.get('ts', 0) < ttl_seconds
+        }
+        print(f"📦 Загружен IP кэш: {len(persistent_ip_cache)} записей", flush=True)
+    except Exception:
+        persistent_ip_cache = {}
+        print("📦 IP кэш пуст или не найден", flush=True)
+
+
+def save_persistent_ip_cache(gh_repo) -> None:
+    """Сохраняет персистентный кэш IP на GitHub."""
+    if not gh_repo or not persistent_ip_cache:
+        return
+    try:
+        path = f"githubmirror/{FILENAME_IP_CACHE}.json"
+        content_str = json.dumps(persistent_ip_cache, ensure_ascii=False)
+        try:
+            sha = gh_repo.get_contents(path).sha
+            gh_repo.update_file(path, f"ip_cache update", content_str, sha)
+        except Exception:
+            gh_repo.create_file(path, f"ip_cache create", content_str)
+        print(f"💾 IP кэш сохранён: {len(persistent_ip_cache)} записей", flush=True)
+    except Exception as e:
+        print(f"⚠️  Не удалось сохранить IP кэш: {e}", flush=True)
+
 def _api_wait_for_token() -> None:
     """Токен-бакет: выдаёт токен строго раз в API_RATE_LIMIT_INTERVAL секунд.
     Также учитывает Retry-After от 429 ответов."""
@@ -755,6 +798,14 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     with lock:
         if ip_str in ip_cache:
             return ip_cache[ip_str]
+
+    # Проверяем персистентный кэш
+    if ip_str in persistent_ip_cache:
+        v = persistent_ip_cache[ip_str]
+        res = (v['cc'], v['hosting'])
+        with lock:
+            ip_cache[ip_str] = res
+        return res
 
     with api_semaphore:
         for attempt in range(3):
@@ -799,6 +850,12 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                     res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
                         ip_cache[ip_str] = res
+                    # Сохраняем в персистентный кэш
+                    persistent_ip_cache[ip_str] = {
+                        'cc': r.get("countryCode"),
+                        'hosting': "BANNED" if is_banned else is_hosting_flag,
+                        'ts': time.time()
+                    }
                     return res
             except (requests.RequestException, ValueError):
                 if attempt < 2:
@@ -808,9 +865,9 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
 
 
 def apply_clean_params(config_link: str) -> str:
-    """Удаляет fp/udp443 параметры и выставляет fp=random. Нормализует URL."""
+    """Удаляет fp/udp443/note параметры и выставляет fp=random. Нормализует URL."""
     parts = config_link.split("#", 1)
-    base = re.sub(r'[&?](?:fp|udp443)=[^&?#]+', '', parts[0])
+    base = re.sub(r'[&?](?:fp|udp443|note)=[^&?#]+', '', parts[0])
 
     # Нормализация: убираем дублирование разделителей и слешей в пути
     # Сохраняем схему (://) нетронутой, нормализуем остальное
@@ -1516,6 +1573,7 @@ def main() -> None:
     print(f"Загружено SNI доменов: {len(sni_domains)}", flush=True)
     print(f"Extra URLs: {len(extra_urls)}, Standard URLs: {len(std_urls)}", flush=True)
 
+    load_persistent_ip_cache(gh_repo)
     load_ru_blocklist()
 
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
@@ -1728,6 +1786,7 @@ def main() -> None:
                 except Exception as e:
                     print(f"❌ Ошибка записи {fn}: {e}", flush=True)
 
+    save_persistent_ip_cache(gh_repo)
     print(f"--- 🏁 ГОТОВО за {time.perf_counter() - start_total:.1f}с ---")
 
 
