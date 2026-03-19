@@ -250,15 +250,7 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 
 def _partial_cache_reset() -> None:
-    """
-    Сброс failed_ips и части checked_configs перед повторным поиском SNI-RU конфигов.
-    Поведение определяется CACHE_RESET_MODE:
-      0 - не очищать
-      1 - очищать failed_ips наполовину
-      2 - очищать failed_ips полностью
-    Принятые конфиги не трогаются никогда.
-    """
-    global failed_ips, checked_configs
+    global failed_ips, checked_configs_raw
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
@@ -270,27 +262,23 @@ def _partial_cache_reset() -> None:
             for r in vlm_results + vlm2_results
             if re.search(r'@([^:/?#\s]+):', r['link'])
         }
-        # Ключи принятых конфигов — не трогаем в checked_configs
-        working_keys = set()
-        for r in vlm_results + vlm2_results:
-            m = re.search(r'@([^:/?#\s]+):(\d+)', r['link'])
-            s = re.search(r'[?&]sni=([^&#\s]*)', r['link'], re.I)
-            cid = re.search(r'://([^@]+)@', r['link'])
-            if m:
-                working_keys.add(f"{m.group(1)}:{m.group(2)}:{cid.group(1) if cid else ''}:{s.group(1).lower() if s else ''}")
-
         non_working_failed = list(failed_ips - working_ips)
-        non_working_checked = list(checked_configs - working_keys)
+        working_raw = set()
+        for r in vlm_results + vlm2_results:
+            base = r['link'].split('#')[0]
+            working_raw.add((base, True))
+            working_raw.add((base, False))
+        non_working_raw = list({k for k in checked_configs_raw if k not in working_raw})
 
         if CACHE_RESET_MODE == 1:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
-            for k in random.sample(non_working_checked, len(non_working_checked) // 2):
-                checked_configs.discard(k)
-            print("🔄 Кэши сброшены (failed_ips и checked_configs наполовину)", flush=True)
+            for k in random.sample(non_working_raw, len(non_working_raw) // 2):
+                checked_configs_raw.discard(k)
+            print("🔄 Кэши сброшены (failed_ips и checked_configs_raw наполовину)", flush=True)
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
-            checked_configs -= set(non_working_checked)
-            print("🔄 Кэши сброшены (failed_ips и checked_configs полностью)", flush=True)
+            checked_configs_raw -= set(non_working_raw)
+            print("🔄 Кэши сброшены (failed_ips и checked_configs_raw полностью)", flush=True)
 
 
 # ============================================================
