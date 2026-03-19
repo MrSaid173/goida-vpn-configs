@@ -1389,8 +1389,7 @@ def _restore_non_ru_sni_buffer() -> None:
                 else:
                     sni_vlm_count += 1
                     if r['is_hosting'] is True: host_vlm_count += 1
-            if to_restore:
-                print(f"♻️  Восстановлено {len(to_restore)} не-RU SNI-RU из буфера", flush=True)
+
 
 def print_statistics() -> None:
     with stats_lock:
@@ -1405,8 +1404,6 @@ def print_statistics() -> None:
         vlm2_host = host_vlm2_count
     with stats_lock:
         _api = api_calls_count
-
-    with stats_lock:
         _sni_extra = stats['sni_ru_from_extra']
         _sni_std   = stats['sni_ru_from_std']
 
@@ -1499,7 +1496,13 @@ def main() -> None:
     raw_extra, raw_std = fetch_group_data(extra_urls), fetch_group_data(std_urls)
     print(f"Уникальных конфигов: Extra={len(raw_extra)}, Std={len(raw_std)}", flush=True)
 
-    raw_nonwhite = list(set(raw_extra + raw_std))
+    def _has_white_sni(config: str) -> bool:
+        s_m = re.search(r'[?&]sni=([^&#\s]*)', config, re.I)
+        if not s_m:
+            return False
+        return s_m.group(1).lower() in sni_domains
+
+    raw_nonwhite = list(set(c for c in raw_extra + raw_std if not _has_white_sni(c)))
     random.shuffle(raw_nonwhite)
     print(f"Не SNI-RU (объединённая корзина): {len(raw_nonwhite)}", flush=True)
 
@@ -1624,32 +1627,13 @@ def main() -> None:
             flush=True,
         )
 
-        # Собираем новые SNI-RU конфиги отдельно
-        new_sni_ru_found = []
-        sni_ru_retry_mode = True
-
-        def _collect_sni_ru(config, priority, white):
-            """Валидирует конфиг и если принят — добавляет в new_sni_ru_found."""
-            host_m = re.search(r'@([^:/?#\s]+):', config)
-            if not host_m:
-                return
-            # Временно убираем из seen_ips чтобы дать шанс — нет, просто проверяем
-            # через validate, но перехватываем добавление отдельно
-            pass
-
+        global sni_ru_retry_mode
         # Сбрасываем sni_ru_done_event
         sni_ru_done_event.clear()
-
-        # Временно подменяем vlm_results/vlm2_results на временные списки
-        # чтобы собрать только новые SNI-RU конфиги
-        temp_vlm  = []
-        temp_vlm2 = []
 
         with lock:
             orig_vlm_len  = len(vlm_results)
             orig_vlm2_len = len(vlm2_results)
-            # Освобождаем место — убираем лимит на время повтора
-            # (sni_ru_retry_mode уже True — can_add_sni_ru пропустит RU)
 
         sni_ru_retry_mode = True
         _run_sni_ru_phase(raw_extra_retry, raw_std_retry)
