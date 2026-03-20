@@ -112,7 +112,7 @@ FAST_PING_TIMEOUT = 3.0
 
 # Настройки полного анализа пинга (TCP)
 MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.3
+MAX_JITTER_RATIO = 0.5
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
@@ -145,7 +145,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
