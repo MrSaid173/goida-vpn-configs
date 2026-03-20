@@ -38,7 +38,7 @@ MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_NOWS_CONFIGS = 3   # лимит HOST конфигов (обычных)
-MAX_WS_HOST_CONFIGS = 5     # лимит WS конфигов с host= параметром
+MAX_WS_HOST_CONFIGS = 0     # лимит WS конфигов с host= параметром
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
