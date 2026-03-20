@@ -112,7 +112,7 @@ FAST_PING_TIMEOUT = 3.0
 
 # Настройки полного анализа пинга (TCP)
 MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.35
+MAX_JITTER_RATIO = 0.3
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
@@ -145,7 +145,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.35  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER_RATIO = 0.2  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -818,17 +818,15 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     with lock:
         if ip_str in ip_cache:
             return ip_cache[ip_str]
-
-    # Проверяем персистентный кэш — применяем текущие правила к сырым данным
-    if ip_str in persistent_ip_cache:
-        v = persistent_ip_cache[ip_str]
-        if 'isp' in v:  # новый формат с сырыми данными
-            res = _process_isp_data(v, is_ws_host)
-        else:  # старый формат — используем как есть
-            res = (v['cc'], v['hosting'])
-        with lock:
+        # Проверяем персистентный кэш — применяем текущие правила к сырым данным
+        if ip_str in persistent_ip_cache:
+            v = persistent_ip_cache[ip_str]
+            if 'isp' in v:  # новый формат с сырыми данными
+                res = _process_isp_data(v, is_ws_host)
+            else:  # старый формат — используем как есть
+                res = (v['cc'], v['hosting'])
             ip_cache[ip_str] = res
-        return res
+            return res
 
     with api_semaphore:
         for attempt in range(3):
@@ -1803,4 +1801,3 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-    
