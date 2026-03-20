@@ -38,7 +38,7 @@ MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_NOWS_CONFIGS = 3   # лимит HOST конфигов (обычных)
-MAX_WS_HOST_CONFIGS = 0     # лимит WS конфигов с host= параметром
+MAX_WS_HOST_CONFIGS = 5     # лимит WS конфигов с host= параметром
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -793,6 +793,25 @@ def _api_wait_for_token() -> None:
         _api_last_token_time = time.perf_counter()
 
 
+def _process_isp_data(raw: dict, is_ws_host: bool = False) -> tuple:
+    """Применяет текущие правила фильтрации к сырым данным ip-api."""
+    full_info = f"{raw.get('isp','')} {raw.get('org','')} {raw.get('as','')} {raw.get('asname','')}".lower()
+    if is_ws_host:
+        is_bad_hosting = BAD_HOSTING_WS_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS_WS)
+    else:
+        is_bad_hosting = BAD_HOSTING_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS)
+    is_banned_pattern = BANNED_ASNAME_ENABLED and any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
+    is_banned = is_bad_hosting or is_banned_pattern
+    if is_bad_hosting:
+        _inc_stat('banned_hosting')
+    if is_banned_pattern:
+        _inc_stat('banned_asname')
+    is_api_hosting = raw.get("hosting", False) and not is_bad_hosting
+    is_kw_hosting = any(word in full_info for word in HOST_TAG_KEYWORDS)
+    is_hosting_flag = is_api_hosting or is_kw_hosting
+    return (raw.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
+
+
 def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     global api_calls_count, _api_retry_after
 
@@ -800,10 +819,13 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
         if ip_str in ip_cache:
             return ip_cache[ip_str]
 
-    # Проверяем персистентный кэш
+    # Проверяем персистентный кэш — применяем текущие правила к сырым данным
     if ip_str in persistent_ip_cache:
         v = persistent_ip_cache[ip_str]
-        res = (v['cc'], v['hosting'])
+        if 'isp' in v:  # новый формат с сырыми данными
+            res = _process_isp_data(v, is_ws_host)
+        else:  # старый формат — используем как есть
+            res = (v['cc'], v['hosting'])
         with lock:
             ip_cache[ip_str] = res
         return res
@@ -833,28 +855,17 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                 resp.raise_for_status()
                 r = resp.json()
                 if r.get("status") == "success":
-                    full_info = f"{r.get('isp')} {r.get('org')} {r.get('as')} {r.get('asname')}".lower()
-                    if is_ws_host:
-                        is_bad_hosting = BAD_HOSTING_WS_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS_WS)
-                    else:
-                        is_bad_hosting = BAD_HOSTING_ENABLED and any(word in full_info for word in BAD_HOSTING_KEYWORDS)
-                    is_banned_pattern = BANNED_ASNAME_ENABLED and any(pattern.lower() in full_info for pattern in BANNED_ASNAME_PATTERNS)
-                    is_banned = is_bad_hosting or is_banned_pattern
-                    if is_bad_hosting:
-                        _inc_stat('banned_hosting')
-                    if is_banned_pattern:
-                        _inc_stat('banned_asname')
-                    # HOST тег: либо ip-api пометил как hosting, либо совпал HOST_TAG_KEYWORDS
-                    is_api_hosting = r.get("hosting", False) and not is_bad_hosting
-                    is_kw_hosting = any(word in full_info for word in HOST_TAG_KEYWORDS)
-                    is_hosting_flag = is_api_hosting or is_kw_hosting
-                    res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
+                    res = _process_isp_data(r, is_ws_host)
                     with lock:
                         ip_cache[ip_str] = res
-                    # Сохраняем в персистентный кэш
+                    # Сохраняем сырые данные в персистентный кэш
                     persistent_ip_cache[ip_str] = {
                         'cc': r.get("countryCode"),
-                        'hosting': "BANNED" if is_banned else is_hosting_flag,
+                        'isp': r.get("isp", ""),
+                        'org': r.get("org", ""),
+                        'as': r.get("as", ""),
+                        'asname': r.get("asname", ""),
+                        'hosting': r.get("hosting", False),
                         'ts': time.time()
                     }
                     return res
@@ -1791,3 +1802,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+    
