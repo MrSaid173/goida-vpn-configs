@@ -960,7 +960,8 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                     time.sleep(1.0)
 
     return None, False
-    check_isp_info._current_domain = None
+
+check_isp_info._current_domain = None
 
 def apply_clean_params(config_link: str) -> str:
     """Удаляет fp/udp443/note параметры и выставляет fp=random. Нормализует URL."""
