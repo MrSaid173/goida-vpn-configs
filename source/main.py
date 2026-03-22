@@ -45,7 +45,7 @@ MAX_HOST_NOWS_CONFIGS = 5   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS   = 0   # лимит WS конфигов с host= параметром
 MAX_DOMAIN_HOST_CONFIGS = 5  # лимит конфигов вид 1 (домен вместо IPv4)
 MAX_DOMAIN_MID_CONFIGS  = 3  # лимит конфигов с одинаковой средней частью домена
-MAX_FAILED_PER_DOMAIN   = 3  # максимум провалов пинга для одного домен:порт
+MAX_FAILED_PER_DOMAIN   = 6  # максимум провалов пинга для одного домен:порт
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -95,7 +95,7 @@ MAX_TOTAL_SNI_RU = MAX_CONFIGS // 2
 MAX_TOP_RU_SNI = MAX_RU_CONFIGS
 
 MAX_PER_SUBNET = 3
-MAX_PER_SUBNET16_RU_SNI = 1
+MAX_PER_SUBNET16_RU_SNI = 2
 MAX_PER_SUBNET16_NONRU_SNI = 6
 MAX_PER_SUBNET16_OTHERS = 9
 
@@ -117,9 +117,14 @@ MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 # Таймауты (секунды)
 FAST_PING_TIMEOUT = 3.0
 
+# Настройки мониторинга сети
+NETWORK_FAIL_THRESHOLD = 5   # сколько последовательных провалов пинга считать падением сети
+NETWORK_CHECK_INTERVAL = 5  # секунд между проверками восстановления сети
+NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
+
 # Настройки полного анализа пинга (TCP)
 MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.5
+MAX_JITTER_RATIO = 0.3
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
@@ -152,7 +157,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3000.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 150     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
+MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
@@ -264,6 +269,11 @@ persistent_ws_cache: dict     = {}  # WS конфиги (вид 2)
 # Кэш резолвинга доменных хостов (домен -> IP)
 _domain_host_cache: dict = {}
 _domain_host_lock = threading.Lock()
+
+# Мониторинг состояния сети
+network_down = False           # флаг падения сети
+network_fail_counter = 0       # счётчик последовательных провалов
+network_lock = threading.Lock()
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ ---
 blocked_networks = []       # список IPv4Network из antifilter
@@ -1252,10 +1262,54 @@ def resolve_ws_host(config: str) -> str | None:
     return result_ip
 
 
+def _check_internet() -> bool:
+    """Проверяет базовое интернет соединение через TCP до 8.8.8.8:53."""
+    try:
+        with socket.create_connection(("8.8.8.8", 53), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_for_network() -> bool:
+    """Ждёт восстановления сети. Возвращает True если восстановилась, False если нет."""
+    global network_down, network_fail_counter
+    for attempt in range(1, NETWORK_MAX_RETRIES + 1):
+        time.sleep(NETWORK_CHECK_INTERVAL)
+        if _check_internet():
+            with network_lock:
+                network_down = False
+                network_fail_counter = 0
+            print(f"🌐 Сеть восстановлена (попытка {attempt}/{NETWORK_MAX_RETRIES})", flush=True)
+            return True
+        print(f"🔴 Сеть недоступна (попытка {attempt}/{NETWORK_MAX_RETRIES})", flush=True)
+    # Исчерпали попытки — останавливаем код
+    print("❌ Сеть не восстановилась — останавливаем прогон", flush=True)
+    stop_event.set()
+    return False
+
+
+def _register_ping_result(success: bool) -> None:
+    """Регистрирует результат пинга и при необходимости запускает проверку сети."""
+    global network_down, network_fail_counter
+    with network_lock:
+        if success:
+            network_fail_counter = 0
+            return
+        network_fail_counter += 1
+        if network_fail_counter >= NETWORK_FAIL_THRESHOLD and not network_down:
+            network_down = True
+            print(f"⚠️  Обнаружено падение сети ({NETWORK_FAIL_THRESHOLD} провалов подряд)", flush=True)
+
+
 def validate(config: str, is_priority: bool, is_white: bool) -> None:
     if stop_event.is_set():
         _inc_stat('stopped')
         return
+    # Ждём если сеть упала
+    if network_down:
+        if not _wait_for_network():
+            return
     # Во время фазы SNI-RU останавливаемся по sni_ru_done_event
     if is_white and sni_ru_done_event.is_set():
         return
