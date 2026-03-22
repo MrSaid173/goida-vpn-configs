@@ -958,8 +958,8 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
             except (requests.RequestException, ValueError):
                 if attempt < 2:
                     time.sleep(1.0)
-
     return None, False
+
 
 check_isp_info._current_domain = None
 
