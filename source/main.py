@@ -37,7 +37,7 @@ WS_CACHE_TTL_DAYS     = 1              # TTL для WS конфигов (дне�
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
-MAX_XHTTP = 3
+MAX_XHTTP = 5
 MIN_RU_CONFIGS = 2
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
