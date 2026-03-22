@@ -31,7 +31,9 @@ SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobil
 FILENAME_IP_CACHE = "ip_cache"        # кэш обычных IP
 FILENAME_DOMAIN_CACHE = "domain_cache" # кэш доменных конфигов (вид 1)
 FILENAME_WS_CACHE = "ws_cache"        # кэш WS конфигов (вид 2)
-IP_CACHE_TTL_DAYS = 3                  # сколько дней хранить данные об IP
+IP_CACHE_TTL_DAYS = 3                  # TTL для обычных IP
+DOMAIN_CACHE_TTL_DAYS = 3              # TTL для доменных конфигов
+WS_CACHE_TTL_DAYS = 1                  # TTL для WS конфигов (короче — Cloudflare меняет маршруты)
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
@@ -803,7 +805,7 @@ def get_subnet16_limit(config_type: str) -> int:
 
 
 
-def _load_cache_from_github(gh_repo, filename: str, label: str) -> dict:
+def _load_cache_from_github(gh_repo, filename: str, label: str, ttl_days: int = 3) -> dict:
     """Универсальная загрузка кэша с GitHub."""
     if not gh_repo:
         return {}
@@ -812,7 +814,7 @@ def _load_cache_from_github(gh_repo, filename: str, label: str) -> dict:
         file_content = gh_repo.get_contents(path)
         data = json.loads(file_content.decoded_content.decode('utf-8'))
         now = time.time()
-        ttl_seconds = IP_CACHE_TTL_DAYS * 86400
+        ttl_seconds = ttl_days * 86400
         filtered = {k: v for k, v in data.items() if now - v.get('ts', 0) < ttl_seconds}
         print(f"📦 Загружен {label}: {len(filtered)} записей", flush=True)
         return filtered
@@ -839,9 +841,9 @@ def _save_cache_to_github(gh_repo, cache: dict, filename: str, label: str) -> No
 
 def load_persistent_ip_cache(gh_repo) -> None:
     global persistent_ip_cache, persistent_domain_cache, persistent_ws_cache
-    persistent_ip_cache     = _load_cache_from_github(gh_repo, FILENAME_IP_CACHE,     "IP кэш")
-    persistent_domain_cache = _load_cache_from_github(gh_repo, FILENAME_DOMAIN_CACHE, "Domain кэш")
-    persistent_ws_cache     = _load_cache_from_github(gh_repo, FILENAME_WS_CACHE,     "WS кэш")
+    persistent_ip_cache     = _load_cache_from_github(gh_repo, FILENAME_IP_CACHE,     "IP кэш",     IP_CACHE_TTL_DAYS)
+    persistent_domain_cache = _load_cache_from_github(gh_repo, FILENAME_DOMAIN_CACHE, "Domain кэш", DOMAIN_CACHE_TTL_DAYS)
+    persistent_ws_cache     = _load_cache_from_github(gh_repo, FILENAME_WS_CACHE,     "WS кэш",     WS_CACHE_TTL_DAYS)
 
 
 def save_persistent_ip_cache(gh_repo) -> None:
