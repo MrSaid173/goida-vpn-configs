@@ -28,8 +28,10 @@ FILENAME_VLM = "vlm"
 FILENAME_VLM2 = "vlm2"
 REMOTE_SOURCE_URL = "https://raw.githubusercontent.com/AvenCores/goida-vpn-configs/main/source/main.py"
 SECONDARY_WHITELIST_URL = "https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt"
-FILENAME_IP_CACHE = "ip_cache"     # имя файла кэша IP на GitHub
-IP_CACHE_TTL_DAYS = 3              # сколько дней хранить данные об IP
+FILENAME_IP_CACHE = "ip_cache"        # кэш обычных IP
+FILENAME_DOMAIN_CACHE = "domain_cache" # кэш доменных конфигов (вид 1)
+FILENAME_WS_CACHE = "ws_cache"        # кэш WS конфигов (вид 2)
+IP_CACHE_TTL_DAYS = 3                  # сколько дней хранить данные об IP
 
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
@@ -39,6 +41,8 @@ MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_NOWS_CONFIGS = 5   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS = 0     # лимит WS конфигов с host= параметром
+MAX_DOMAIN_HOST_CONFIGS = 5  # лимит конфигов вид 1 (домен вместо IPv4)
+MAX_DOMAIN_MID_CONFIGS = 3   # лимит конфигов с одинаковой средней частью домена
 
 INTERLEAVE_STEP = 3
 EXCLUDED_SNI_DOMAINS = ["userapi", "splitter.wb.ru"]
@@ -228,8 +232,11 @@ ru_vlm2_count = 0
 xhttp_count = 0
 host_vlm_count = 0      # количество HOST конфигов в vlm
 host_vlm2_count = 0     # количество HOST конфигов в vlm2
-ws_host_vlm_count = 0   # количество WS host= конфигов в vlm
-ws_host_vlm2_count = 0  # количество WS host= конфигов в vlm2
+ws_host_vlm_count = 0      # количество WS host= конфигов в vlm
+ws_host_vlm2_count = 0     # количество WS host= конфигов в vlm2
+domain_host_vlm_count = 0  # количество domain host конфигов в vlm
+domain_host_vlm2_count = 0 # количество domain host конфигов в vlm2
+domain_mid_counts = defaultdict(int)  # счётчик по средней части домена
 sni_vlm_count = 0    # количество white_sni конфигов в vlm
 sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 
@@ -245,8 +252,14 @@ _api_retry_after = 0.0      # время до которого нельзя де
 stats = defaultdict(int)
 api_calls_count = 0
 
-# Персистентный кэш IP из GitHub (ip -> {cc, hosting, expires})
-persistent_ip_cache: dict = {}
+# Персистентный кэш IP из GitHub
+persistent_ip_cache: dict = {}    # обычные IP
+persistent_domain_cache: dict = {} # доменные конфиги (вид 1)
+persistent_ws_cache: dict = {}     # WS конфиги (вид 2)
+
+# Кэш резолвинга доменных хостов (домен -> IP)
+_domain_host_cache: dict = {}
+_domain_host_lock = threading.Lock()
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ RU-ПРОВЕРКИ ---
 blocked_networks = []       # список IPv4Network из antifilter
@@ -499,10 +512,11 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     return config
 
 
-def xray_test(config_link: str, is_ru: bool = False) -> tuple[int, int] | None:
+def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) -> tuple | None:
     """
     Запускает Xray с конфигом, делает XRAY_HTTP_ATTEMPTS HTTP запросов через туннель.
-    Возвращает (avg_ping, jitter) в мс если туннель работает и пинг в лимитах.
+    Если fetch_geo=True — дополнительно запрашивает ip-api через туннель для определения страны.
+    Возвращает (avg_ping, jitter) или (avg_ping, jitter, geo_data) если fetch_geo=True.
     Возвращает None если туннель не работает или пинг вне лимитов.
     Если xray недоступен — возвращает (0, 0) чтобы не блокировать.
     """
@@ -587,6 +601,20 @@ def xray_test(config_link: str, is_ru: bool = False) -> tuple[int, int] | None:
             if jit > MAX_XRAY_JITTER or (avg > 0 and jit > avg * MAX_XRAY_JITTER_RATIO):
                 _inc_stat('xray_jitter_failed')
                 return None
+
+            if fetch_geo:
+                # Запрашиваем ip-api через туннель для определения реальной страны
+                try:
+                    geo_resp = requests.get(
+                        "http://ip-api.com/json/?fields=status,countryCode,isp,org,as,asname,hosting",
+                        proxies=proxies,
+                        timeout=XRAY_HTTP_TIMEOUT,
+                        verify=False,
+                    )
+                    geo_data = geo_resp.json() if geo_resp.status_code == 200 else None
+                except Exception:
+                    geo_data = None
+                return (avg, jit, geo_data)
 
             return (avg, jit)
 
@@ -708,15 +736,51 @@ def full_ping_analysis(
         return None
 
 
+def get_domain_mid(domain: str) -> str:
+    """Возвращает предпоследнюю часть домена (основное имя без TLD и субдоменов)."""
+    parts = domain.lower().split('.')
+    return parts[-2] if len(parts) >= 2 else domain
+
+
+def resolve_domain_host(domain: str) -> str | None:
+    """Резолвит доменный хост конфига в IPv4.
+    Сначала проверяет persistent_domain_cache, затем делает DNS запрос."""
+    with _domain_host_lock:
+        if domain in _domain_host_cache:
+            return _domain_host_cache[domain]
+    # Проверяем персистентный кэш
+    if domain in persistent_domain_cache:
+        ip = persistent_domain_cache[domain].get('ip')
+        with _domain_host_lock:
+            _domain_host_cache[domain] = ip
+        return ip
+    # DNS запрос
+    try:
+        result = socket.getaddrinfo(domain, None, socket.AF_INET)
+        ip = result[0][4][0] if result else None
+    except (socket.gaierror, OSError):
+        ip = None
+    with _domain_host_lock:
+        _domain_host_cache[domain] = ip
+    return ip
+
+
 def get_config_details(link: str) -> tuple:
     try:
         clean_link = re.sub(r'[^\x20-\x7E]', '', link).strip()
         cid_match = re.search(r'://([^@]+)@', clean_link)
         h_m = re.search(r'@([^:/?#\s]+):(\d+)', clean_link)
         s_m = re.search(r'[?&]sni=([^&#\s]*)', clean_link)
-        if h_m and is_valid_ipv4(h_m.group(1)):
+        if h_m:
+            host_raw = h_m.group(1)
             sni = s_m.group(1).lower().split('?')[0].split('&')[0] if s_m else ""
-            return h_m.group(1), int(h_m.group(2)), sni, cid_match.group(1) if cid_match else ""
+            cid = cid_match.group(1) if cid_match else ""
+            if is_valid_ipv4(host_raw):
+                return host_raw, int(h_m.group(2)), sni, cid
+            # Доменный хост — резолвим
+            resolved = resolve_domain_host(host_raw)
+            if resolved:
+                return resolved, int(h_m.group(2)), sni, cid + f"|domain:{host_raw}"
     except (AttributeError, ValueError):
         pass
     return None, None, None, None
@@ -738,43 +802,52 @@ def get_subnet16_limit(config_type: str) -> int:
 
 
 
-def load_persistent_ip_cache(gh_repo) -> None:
-    """Загружает персистентный кэш IP с GitHub и очищает устаревшие записи."""
-    global persistent_ip_cache
+
+def _load_cache_from_github(gh_repo, filename: str, label: str) -> dict:
+    """Универсальная загрузка кэша с GitHub."""
     if not gh_repo:
-        return
+        return {}
     try:
-        path = f"githubmirror/{FILENAME_IP_CACHE}.json"
-        content = gh_repo.get_contents(path)
-        data = json.loads(content.decoded_content.decode('utf-8'))
+        path = f"githubmirror/{filename}.json"
+        file_content = gh_repo.get_contents(path)
+        data = json.loads(file_content.decoded_content.decode('utf-8'))
         now = time.time()
         ttl_seconds = IP_CACHE_TTL_DAYS * 86400
-        # Фильтруем устаревшие записи
-        persistent_ip_cache = {
-            ip: v for ip, v in data.items()
-            if now - v.get('ts', 0) < ttl_seconds
-        }
-        print(f"📦 Загружен IP кэш: {len(persistent_ip_cache)} записей", flush=True)
+        filtered = {k: v for k, v in data.items() if now - v.get('ts', 0) < ttl_seconds}
+        print(f"📦 Загружен {label}: {len(filtered)} записей", flush=True)
+        return filtered
     except Exception:
-        persistent_ip_cache = {}
-        print("📦 IP кэш пуст или не найден", flush=True)
+        print(f"📦 {label} пуст или не найден", flush=True)
+        return {}
+
+
+def _save_cache_to_github(gh_repo, cache: dict, filename: str, label: str) -> None:
+    """Универсальное сохранение кэша на GitHub."""
+    if not gh_repo or not cache:
+        return
+    try:
+        path = f"githubmirror/{filename}.json"
+        content_str = json.dumps(cache, ensure_ascii=False, indent=2)
+        try:
+            sha = gh_repo.get_contents(path).sha
+            gh_repo.update_file(path, f"{filename} update", content_str, sha)
+        except Exception:
+            gh_repo.create_file(path, f"{filename} create", content_str)
+        print(f"💾 {label} сохранён: {len(cache)} записей", flush=True)
+    except Exception as e:
+        print(f"⚠️  Не удалось сохранить {label}: {e}", flush=True)
+
+def load_persistent_ip_cache(gh_repo) -> None:
+    global persistent_ip_cache, persistent_domain_cache, persistent_ws_cache
+    persistent_ip_cache     = _load_cache_from_github(gh_repo, FILENAME_IP_CACHE,     "IP кэш")
+    persistent_domain_cache = _load_cache_from_github(gh_repo, FILENAME_DOMAIN_CACHE, "Domain кэш")
+    persistent_ws_cache     = _load_cache_from_github(gh_repo, FILENAME_WS_CACHE,     "WS кэш")
 
 
 def save_persistent_ip_cache(gh_repo) -> None:
-    """Сохраняет персистентный кэш IP на GitHub."""
-    if not gh_repo or not persistent_ip_cache:
-        return
-    try:
-        path = f"githubmirror/{FILENAME_IP_CACHE}.json"
-        content_str = json.dumps(persistent_ip_cache, ensure_ascii=False, indent=2)
-        try:
-            sha = gh_repo.get_contents(path).sha
-            gh_repo.update_file(path, f"ip_cache update", content_str, sha)
-        except Exception:
-            gh_repo.create_file(path, f"ip_cache create", content_str)
-        print(f"💾 IP кэш сохранён: {len(persistent_ip_cache)} записей", flush=True)
-    except Exception as e:
-        print(f"⚠️  Не удалось сохранить IP кэш: {e}", flush=True)
+    _save_cache_to_github(gh_repo, persistent_ip_cache,     FILENAME_IP_CACHE,     "IP кэш")
+    _save_cache_to_github(gh_repo, persistent_domain_cache, FILENAME_DOMAIN_CACHE, "Domain кэш")
+    _save_cache_to_github(gh_repo, persistent_ws_cache,     FILENAME_WS_CACHE,     "WS кэш")
 
 def _api_wait_for_token() -> None:
     """Токен-бакет: выдаёт токен строго раз в API_RATE_LIMIT_INTERVAL секунд.
@@ -791,6 +864,9 @@ def _api_wait_for_token() -> None:
         if next_token > now:
             time.sleep(next_token - now)
         _api_last_token_time = time.perf_counter()
+
+
+check_isp_info._current_domain = None
 
 
 def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
@@ -863,8 +939,7 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                     res = (r.get("countryCode"), "BANNED" if is_banned else is_hosting_flag)
                     with lock:
                         ip_cache[ip_str] = res
-                    # Сохраняем сырые данные в персистентный кэш
-                    persistent_ip_cache[ip_str] = {
+                    raw_data = {
                         'cc': r.get("countryCode"),
                         'isp': r.get("isp", ""),
                         'org': r.get("org", ""),
@@ -873,6 +948,13 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                         'hosting': r.get("hosting", False),
                         'ts': time.time()
                     }
+                    # Сохраняем в нужный кэш
+                    if getattr(check_isp_info, '_current_domain', None):
+                        domain = check_isp_info._current_domain
+                        persistent_domain_cache[domain] = dict(raw_data, ip=ip_str)
+                        check_isp_info._current_domain = None
+                    else:
+                        persistent_ip_cache[ip_str] = raw_data
                     return res
             except (requests.RequestException, ValueError):
                 if attempt < 2:
@@ -953,6 +1035,20 @@ def can_add_hosting(is_hosting, is_vlm2: bool) -> bool:
     return True
 
 
+def can_add_domain_host(is_domain_host: bool, domain_mid: str, is_vlm2: bool) -> bool:
+    """Проверяет лимиты для domain host конфигов."""
+    if not is_domain_host:
+        return True
+    # Общий лимит domain host конфигов
+    count = domain_host_vlm2_count if is_vlm2 else domain_host_vlm_count
+    if count >= MAX_DOMAIN_HOST_CONFIGS:
+        return False
+    # Лимит по средней части домена
+    if domain_mid and domain_mid_counts[domain_mid] >= MAX_DOMAIN_MID_CONFIGS:
+        return False
+    return True
+
+
 def can_add_ws_host(is_ws_host: bool, is_vlm2: bool) -> bool:
     if is_ws_host:
         count = ws_host_vlm2_count if is_vlm2 else ws_host_vlm_count
@@ -1029,65 +1125,73 @@ def _trim_excess_sni_ru() -> None:
 def try_add_to_lists(entry: dict) -> bool:
     global ru_vlm_count, ru_vlm2_count, xhttp_count
     global host_vlm_count, host_vlm2_count, sni_vlm_count, sni_vlm2_count
-    global ws_host_vlm_count, ws_host_vlm2_count
+    global ws_host_vlm_count, ws_host_vlm2_count, domain_host_vlm_count, domain_host_vlm2_count
 
     is_ru = (entry['country'] == 'RU')
     is_xhttp = entry['is_xhttp']
     is_hosting = entry['is_hosting']
     is_white = entry['white_sni']
     is_ws_host = entry.get('is_ws_host', False)
+    is_domain_host = entry.get('is_domain_host', False)
+    domain_mid = entry.get('domain_mid', "")
 
     added_vlm = False
     added_vlm2 = False
 
     if is_xhttp:
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
+            if ru_vlm2_count < MAX_RU_CONFIGS and xhttp_count < MAX_XHTTP and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True) and can_add_domain_host(is_domain_host, domain_mid, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 xhttp_count += 1
                 if is_hosting is True: host_vlm2_count += 1
                 if is_ws_host: ws_host_vlm2_count += 1
+                if is_domain_host: domain_host_vlm2_count += 1; domain_mid_counts[domain_mid] += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
         else:
-            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
+            if xhttp_count < MAX_XHTTP and len(vlm2_results) < MAX_CONFIGS and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True) and can_add_domain_host(is_domain_host, domain_mid, True):
                 vlm2_results.append(entry)
                 xhttp_count += 1
                 if is_hosting is True: host_vlm2_count += 1
                 if is_ws_host: ws_host_vlm2_count += 1
+                if is_domain_host: domain_host_vlm2_count += 1; domain_mid_counts[domain_mid] += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
     else:
         if is_ru:
-            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False):
+            if ru_vlm_count < MAX_RU_CONFIGS and len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False) and can_add_domain_host(is_domain_host, domain_mid, False):
                 vlm_results.append(entry)
                 ru_vlm_count += 1
                 if is_hosting is True: host_vlm_count += 1
                 if is_ws_host: ws_host_vlm_count += 1
+                if is_domain_host: domain_host_vlm_count += 1; domain_mid_counts[domain_mid] += 1
                 if is_white: sni_vlm_count += 1
                 added_vlm = True
-        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False):
+        elif len(vlm_results) < MAX_CONFIGS and can_add_hosting(is_hosting, False) and can_add_sni_ru(entry, False) and can_add_ws_host(is_ws_host, False) and can_add_domain_host(is_domain_host, domain_mid, False):
             vlm_results.append(entry)
             if is_hosting is True: host_vlm_count += 1
             if is_ws_host: ws_host_vlm_count += 1
+            if is_domain_host: domain_host_vlm_count += 1; domain_mid_counts[domain_mid] += 1
             if is_white: sni_vlm_count += 1
             added_vlm = True
 
         reserved_for_xhttp = max(0, MIN_XHTTP - xhttp_count)
         vlm2_space = MAX_CONFIGS - reserved_for_xhttp
         if is_ru:
-            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
+            if ru_vlm2_count < MAX_RU_CONFIGS and len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True) and can_add_domain_host(is_domain_host, domain_mid, True):
                 vlm2_results.append(entry)
                 ru_vlm2_count += 1
                 if is_hosting is True: host_vlm2_count += 1
                 if is_ws_host: ws_host_vlm2_count += 1
+                if is_domain_host: domain_host_vlm2_count += 1; domain_mid_counts[domain_mid] += 1
                 if is_white: sni_vlm2_count += 1
                 added_vlm2 = True
-        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True):
+        elif len(vlm2_results) < vlm2_space and can_add_hosting(is_hosting, True) and can_add_sni_ru(entry, True) and can_add_ws_host(is_ws_host, True) and can_add_domain_host(is_domain_host, domain_mid, True):
             vlm2_results.append(entry)
             if is_hosting is True: host_vlm2_count += 1
             if is_ws_host: ws_host_vlm2_count += 1
+            if is_domain_host: domain_host_vlm2_count += 1; domain_mid_counts[domain_mid] += 1
             if is_white: sni_vlm2_count += 1
             added_vlm2 = True
 
@@ -1193,6 +1297,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     is_ws_host = "host=" in config_lower and "type=ws" in config_lower
     if is_ws_host and MAX_WS_HOST_CONFIGS == 0:
         return
+    # Определяем domain host (домен вместо IPv4 в хосте)
+    is_domain_host = "|domain:" in (cid or "")
+    domain_mid = ""
+    if is_domain_host:
+        raw_domain = cid.split("|domain:")[-1] if cid else ""
+        domain_mid = get_domain_mid(raw_domain)
+        if MAX_DOMAIN_HOST_CONFIGS == 0:
+            return
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
 
@@ -1223,6 +1335,14 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if is_ws_host and ws_host_vlm_count >= MAX_WS_HOST_CONFIGS and ws_host_vlm2_count >= MAX_WS_HOST_CONFIGS:
             _inc_stat('ws_host_limit')
             return
+        # domain_host лимит
+        if is_domain_host:
+            if domain_host_vlm_count >= MAX_DOMAIN_HOST_CONFIGS and domain_host_vlm2_count >= MAX_DOMAIN_HOST_CONFIGS:
+                _inc_stat('domain_host_limit')
+                return
+            if domain_mid and domain_mid_counts[domain_mid] >= MAX_DOMAIN_MID_CONFIGS:
+                _inc_stat('domain_mid_limit')
+                return
 
         # SNI-RU лимит (в обычном режиме страна не нужна)
         if not sni_ru_retry_mode and is_white:
@@ -1261,27 +1381,26 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         _inc_stat('ru_without_white_sni')
         return
 
-    # Проверка лимита подсети /16
-    config_type = get_config_type(ip_cc, is_white)
-    subnet16_limit = get_subnet16_limit(config_type)
-
+    # Проверка лимита подсети /16 (для ws_geo_needed пропускаем — ip_cc неизвестен)
     subnet16_reserved = False
-    with lock:
-        if subnet16_counts[subnet16][config_type] >= subnet16_limit:
-            _inc_stat('subnet16_limit')
-            return
-        subnet16_counts[subnet16][config_type] += 1
-        subnet16_reserved = True
-
-    # Атомарная резервация SNI
     sni_reserved = False
-    with lock:
-        sni_limit = get_sni_limit(is_white, ip_cc)
-        if sni_usage_counts[sni] >= sni_limit:
-            _inc_stat('sni_limit')
-            return
-        sni_usage_counts[sni] += 1
-        sni_reserved = True
+    if not ws_geo_needed:
+        config_type = get_config_type(ip_cc, is_white)
+        subnet16_limit = get_subnet16_limit(config_type)
+        with lock:
+            if subnet16_counts[subnet16][config_type] >= subnet16_limit:
+                _inc_stat('subnet16_limit')
+                return
+            subnet16_counts[subnet16][config_type] += 1
+            subnet16_reserved = True
+
+        with lock:
+            sni_limit = get_sni_limit(is_white, ip_cc)
+            if sni_usage_counts[sni] >= sni_limit:
+                _inc_stat('sni_limit')
+                return
+            sni_usage_counts[sni] += 1
+            sni_reserved = True
 
     is_ru = (ip_cc == "RU")
     if is_xhttp:
@@ -1303,7 +1422,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля + измерение пинга via proxy get ──
-    xray_result = xray_test(config, is_ru=is_ru)
+    xray_result = xray_test(config, is_ru=(ip_cc == "RU"), fetch_geo=ws_geo_needed)
     if xray_result is None:
         if sni_reserved:
             with lock:
@@ -1312,7 +1431,75 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             with lock:
                 subnet16_counts[subnet16][config_type] -= 1
         return
-    xray_ping, xray_jitter = xray_result
+
+    if ws_geo_needed and len(xray_result) == 3:
+        xray_ping, xray_jitter, geo_data = xray_result
+        if geo_data and geo_data.get("status") == "success":
+            ip_cc = geo_data.get("countryCode", "")
+            full_info = f"{geo_data.get('isp','')} {geo_data.get('org','')} {geo_data.get('as','')} {geo_data.get('asname','')}".lower()
+            is_bad = BAD_HOSTING_WS_ENABLED and any(w in full_info for w in BAD_HOSTING_KEYWORDS_WS)
+            is_banned_p = BANNED_ASNAME_ENABLED and any(p.lower() in full_info for p in BANNED_ASNAME_PATTERNS)
+            is_banned = is_bad or is_banned_p
+            if is_bad: _inc_stat('banned_hosting')
+            if is_banned_p: _inc_stat('banned_asname')
+            is_api_h = geo_data.get("hosting", False) and not is_bad
+            is_kw_h = any(w in full_info for w in HOST_TAG_KEYWORDS)
+            ip_h_stat = "BANNED" if is_banned else (is_api_h or is_kw_h)
+            # Сохраняем в ws_cache
+            if ws_cache_key:
+                persistent_ws_cache[ws_cache_key] = {
+                    'cc': ip_cc,
+                    'isp': geo_data.get('isp', ''),
+                    'org': geo_data.get('org', ''),
+                    'as': geo_data.get('as', ''),
+                    'asname': geo_data.get('asname', ''),
+                    'hosting': geo_data.get('hosting', False),
+                    'ts': time.time()
+                }
+            if not ip_cc:
+                _inc_stat('isp_no_response')
+                if sni_reserved:
+                    with lock: sni_usage_counts[sni] -= 1
+                if subnet16_reserved:
+                    with lock: subnet16_counts[subnet16][config_type] -= 1
+                return
+            if ip_h_stat == "BANNED":
+                _inc_stat('isp_banned')
+                if sni_reserved:
+                    with lock: sni_usage_counts[sni] -= 1
+                if subnet16_reserved:
+                    with lock: subnet16_counts[subnet16][config_type] -= 1
+                return
+            if ip_cc == "RU" and not is_white:
+                _inc_stat('ru_without_white_sni')
+                return
+            # Теперь знаем ip_cc — делаем subnet16 и sni проверки
+            config_type = get_config_type(ip_cc, is_white)
+            subnet16_limit = get_subnet16_limit(config_type)
+            with lock:
+                if subnet16_counts[subnet16][config_type] >= subnet16_limit:
+                    _inc_stat('subnet16_limit')
+                    return
+                subnet16_counts[subnet16][config_type] += 1
+                subnet16_reserved = True
+            with lock:
+                sni_limit = get_sni_limit(is_white, ip_cc)
+                if sni_usage_counts[sni] >= sni_limit:
+                    _inc_stat('sni_limit')
+                    return
+                sni_usage_counts[sni] += 1
+                sni_reserved = True
+        else:
+            # Не удалось получить гео — пропускаем конфиг
+            _inc_stat('isp_no_response')
+            if sni_reserved:
+                with lock: sni_usage_counts[sni] -= 1
+            if subnet16_reserved:
+                with lock: subnet16_counts[subnet16][config_type] -= 1
+            return
+    else:
+        xray_ping, xray_jitter = xray_result[0], xray_result[1]
+
     # Если xray недоступен — используем TCP пинг как fallback
     display_ping = xray_ping if xray_ping > 0 else p1
 
@@ -1343,6 +1530,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             "is_hosting": ip_h_stat,
             "is_xhttp": is_xhttp,
             "is_ws_host": is_ws_host,
+            "is_domain_host": is_domain_host,
+            "domain_mid": domain_mid,
         }
 
         if try_add_to_lists(entry):
@@ -1535,8 +1724,11 @@ def print_statistics() -> None:
     print(f"Xray jitter провален: {s['xray_jitter_failed']}", flush=True)
 
     print("\n[Итог]", flush=True)
-    print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host})", flush=True)
-    print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host})", flush=True)
+    with lock:
+        _dh_vlm  = domain_host_vlm_count
+        _dh_vlm2 = domain_host_vlm2_count
+    print(f"VLM: {vlm_len} (RU: {_ru_vlm}, HOST: {vlm_host}, DOMAIN: {_dh_vlm})", flush=True)
+    print(f"VLM2: {vlm2_len} (RU: {_ru_vlm2}, XHTTP: {_xhttp}, HOST: {vlm2_host}, DOMAIN: {_dh_vlm2})", flush=True)
     print(f"SNI-RU из extra: {_sni_extra}, из std: {_sni_std}", flush=True)
 
 
@@ -1807,4 +1999,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
