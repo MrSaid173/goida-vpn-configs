@@ -213,6 +213,7 @@ COUNTRY_MAP = {
     "IN": {"aliases": ["INDIA", "ИНДИЯ", "🇮🇳"], "full": "India", "flag": "🇮🇳"},
     "IL": {"aliases": ["ISRAEL", "ИЗРАИЛЬ", "🇮🇱"], "full": "Izrael", "flag": "🇮🇱"},
     "BA": {"aliases": ["BOSNIA AND HERZEGOVINA", "БОСНИЯ И ГЕРЦЕГОВИНА", "🇧🇦"], "full": "B&H", "flag": "🇧🇦"},
+    "UY": {"aliases": ["URUGUAY", "УРУГВАЙ", "🇺🇾"], "full": "Uruguay", "flag": "🇺🇾"},
 }
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
