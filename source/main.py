@@ -868,9 +868,6 @@ def _api_wait_for_token() -> None:
         _api_last_token_time = time.perf_counter()
 
 
-check_isp_info._current_domain = None
-
-
 def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     global api_calls_count, _api_retry_after
 
@@ -963,7 +960,7 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
                     time.sleep(1.0)
 
     return None, False
-
+    check_isp_info._current_domain = None
 
 def apply_clean_params(config_link: str) -> str:
     """Удаляет fp/udp443/note параметры и выставляет fp=random. Нормализует URL."""
