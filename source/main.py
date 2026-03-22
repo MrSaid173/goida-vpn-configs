@@ -38,10 +38,10 @@ WS_CACHE_TTL_DAYS     = 1              # TTL для WS конфигов (дне�
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 3
-MIN_RU_CONFIGS = 0
+MIN_RU_CONFIGS = 2
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
-MAX_HOST_NOWS_CONFIGS = 5   # лимит HOST конфигов (обычных)
+MAX_HOST_NOWS_CONFIGS = 7   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS   = 0   # лимит WS конфигов с host= параметром
 MAX_DOMAIN_HOST_CONFIGS = 5  # лимит конфигов вид 1 (домен вместо IPv4)
 MAX_DOMAIN_MID_CONFIGS  = 3  # лимит конфигов с одинаковой средней частью домена
@@ -206,6 +206,12 @@ COUNTRY_MAP = {
     "AE": {"aliases": ["UAE", "UNITED ARAB EMIRATES", "ОАЭ", "🇦🇪"], "full": "UAE", "flag": "🇦🇪"},
     "SK": {"aliases": ["SLOVAKIA", "СЛОВАКИЯ", "🇸🇰"], "full": "Slovakia", "flag": "🇸🇰"},
     "GR": {"aliases": ["GREECE", "ГРЕЦИЯ", "🇬🇷"], "full": "Greece", "flag": "🇬🇷"},
+    "KE": {"aliases": ["KENYA", "КЕНИЯ", "🇰🇪"], "full": "Kenya", "flag": "🇰🇪"},
+    "AM": {"aliases": ["ARMENIA", "АРМЕНИЯ", "🇦🇲"], "full": "Armenia", "flag": "🇦🇲"},
+    "CY": {"aliases": ["CYPRUS", "КИПР", "🇨🇾"], "full": "Cyprus", "flag": "🇨🇾"},
+    "BE": {"aliases": ["BELGIUM", "БЕЛЬГИЯ", "🇧🇪"], "full": "Belgium", "flag": "🇧🇪"},
+    "IN": {"aliases": ["INDIA", "ИНДИЯ", "🇮🇳"], "full": "India", "flag": "🇮🇳"},
+    "IL": {"aliases": ["ISRAEL", "ИЗРАИЛЬ", "🇮🇱"], "full": "Izrael", "flag": "🇮🇱"},
 }
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
