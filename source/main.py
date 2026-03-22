@@ -100,6 +100,8 @@ MAX_PER_SUBNET16_OTHERS = 9
 
 MAX_PER_ID = 6
 MAX_FAILED_PER_SUBNET = 6
+MAX_FAILED_PER_DOMAIN = 3   # максимум провалов пинга для одного домена:порт
+MAX_FAILED_PER_DOMAIN = 3   # максимум неудачных пингов для одного домен:порт
 
 # Лимиты на повторение SNI
 MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
@@ -213,8 +215,10 @@ sni_ru_done_event = threading.Event()  # сигнал завершения фа�
 ip_cache = {}
 seen_configs = set()  # базовые части ссылок для подсчёта уникальных конфигов
 failed_ips = set()
+failed_domains = set()  # домен:порт которые провалили пинг
 checked_configs_raw = set()  # (config_base, is_white) для быстрой проверки повторов
 failed_subnets = defaultdict(int)
+failed_domains: set = set()  # домен:порт с неудачными пингами
 seen_ips = set()
 subnet_counts = defaultdict(int)
 subnet16_counts = defaultdict(lambda: defaultdict(int))
@@ -238,7 +242,8 @@ ws_host_vlm_count = 0      # количество WS host= конфигов в v
 ws_host_vlm2_count = 0     # количество WS host= конфигов в vlm2
 domain_host_vlm_count = 0  # количество domain host конфигов в vlm
 domain_host_vlm2_count = 0 # количество domain host конфигов в vlm2
-domain_mid_counts = defaultdict(int)  # счётчик по средней части домена
+domain_mid_counts = defaultdict(int)       # счётчик по средней части домена
+failed_domain_counts = defaultdict(int)    # счётчик провалов пинга по домену:порт
 sni_vlm_count = 0    # количество white_sni конфигов в vlm
 sni_vlm2_count = 0   # количество white_sni конфигов в vlm2
 
@@ -282,7 +287,7 @@ def _inc_stat(key: str, amount: int = 1) -> None:
 
 
 def _partial_cache_reset() -> None:
-    global failed_ips, checked_configs_raw
+    global failed_ips, failed_domain_counts, checked_configs_raw, failed_domains
 
     if CACHE_RESET_MODE == 0:
         print("🔄 Сброс кэшей пропущен (CACHE_RESET_MODE=0)", flush=True)
@@ -295,6 +300,7 @@ def _partial_cache_reset() -> None:
             if m:
                 working_ip_ports.add(f"{m.group(1)}:{m.group(2)}")
         non_working_failed = list(failed_ips - working_ip_ports)
+        failed_domains.clear()  # сбрасываем при повторе
         working_raw = set()
         for r in vlm_results + vlm2_results:
             base = r['link'].split('#')[0]
@@ -306,10 +312,14 @@ def _partial_cache_reset() -> None:
             failed_ips -= set(random.sample(non_working_failed, len(non_working_failed) // 2))
             for k in random.sample(non_working_raw, len(non_working_raw) // 2):
                 checked_configs_raw.discard(k)
+            # Сбрасываем половину счётчиков failed_domain_counts
+            for k in list(failed_domain_counts.keys()):
+                failed_domain_counts[k] = failed_domain_counts[k] // 2
             print("🔄 Кэши сброшены (failed_ips и checked_configs_raw наполовину)", flush=True)
         elif CACHE_RESET_MODE == 2:
             failed_ips -= set(non_working_failed)
             checked_configs_raw -= set(non_working_raw)
+            failed_domain_counts.clear()
             print("🔄 Кэши сброшены (failed_ips и checked_configs_raw полностью)", flush=True)
 
 
@@ -868,6 +878,9 @@ def _api_wait_for_token() -> None:
         _api_last_token_time = time.perf_counter()
 
 
+check_isp_info._current_domain = None
+
+
 def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     global api_calls_count, _api_retry_after
 
@@ -958,10 +971,9 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
             except (requests.RequestException, ValueError):
                 if attempt < 2:
                     time.sleep(1.0)
+
     return None, False
 
-
-check_isp_info._current_domain = None
 
 def apply_clean_params(config_link: str) -> str:
     """Удаляет fp/udp443/note параметры и выставляет fp=random. Нормализует URL."""
@@ -1300,10 +1312,17 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     # Определяем domain host (домен вместо IPv4 в хосте)
     is_domain_host = "|domain:" in (cid or "")
     domain_mid = ""
+    raw_domain = ""
     if is_domain_host:
         raw_domain = cid.split("|domain:")[-1] if cid else ""
         domain_mid = get_domain_mid(raw_domain)
         if MAX_DOMAIN_HOST_CONFIGS == 0:
+            return
+        # Проверка кэша неудачных доменов
+        domain_key = f"{raw_domain}:{port}"
+        if failed_domain_counts[domain_key] >= MAX_FAILED_PER_DOMAIN:
+            if is_unique:
+                _inc_stat('failed_domain_cache')
             return
     subnet = ".".join(host.split(".")[:3])
     subnet16 = ".".join(host.split(".")[:2])
@@ -1335,7 +1354,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if is_ws_host and ws_host_vlm_count >= MAX_WS_HOST_CONFIGS and ws_host_vlm2_count >= MAX_WS_HOST_CONFIGS:
             _inc_stat('ws_host_limit')
             return
-        # domain_host лимит
+        # domain_host лимит + резервирование domain_mid
         if is_domain_host:
             if domain_host_vlm_count >= MAX_DOMAIN_HOST_CONFIGS and domain_host_vlm2_count >= MAX_DOMAIN_HOST_CONFIGS:
                 _inc_stat('domain_host_limit')
@@ -1343,12 +1362,26 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             if domain_mid and domain_mid_counts[domain_mid] >= MAX_DOMAIN_MID_CONFIGS:
                 _inc_stat('domain_mid_limit')
                 return
+            # Резервируем слот domain_mid до пинга
+            if domain_mid:
+                domain_mid_counts[domain_mid] += 1
 
         # SNI-RU лимит (в обычном режиме страна не нужна)
         if not sni_ru_retry_mode and is_white:
             if sni_vlm_count >= MAX_TOTAL_SNI_RU and sni_vlm2_count >= MAX_TOTAL_SNI_RU:
                 _inc_stat('sni_ru_limit_early')
                 return
+
+    # Проверка кэша неудачных доменов
+    if is_domain_host:
+        raw_domain = cid.split("|domain:")[-1] if cid else ""
+        domain_port_key = f"{raw_domain}:{port}"
+        if domain_port_key in failed_domains:
+            if is_domain_host and domain_mid:
+                with lock:
+                    domain_mid_counts[domain_mid] -= 1
+            _inc_stat('failed_domain_cache')
+            return
 
     # Первый пинг
     p1 = fast_ping(host, port, sni)
@@ -1357,6 +1390,12 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         with lock:
             failed_subnets[subnet] += 1
             failed_ips.add(f"{host}:{port}")
+            if is_domain_host:
+                raw_domain = cid.split("|domain:")[-1] if cid else ""
+                domain_port_key = f"{raw_domain}:{port}"
+                failed_domains.add(domain_port_key)
+                if domain_mid:
+                    domain_mid_counts[domain_mid] -= 1
         _inc_stat('first_ping_failed')
         return
 
@@ -1419,6 +1458,9 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         if subnet16_reserved:
             with lock:
                 subnet16_counts[subnet16][config_type] -= 1
+        if is_domain_host and domain_mid:
+            with lock:
+                domain_mid_counts[domain_mid] -= 1
         return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля + измерение пинга via proxy get ──
@@ -1553,6 +1595,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             sni_usage_counts[sni] -= 1
             if subnet16_reserved:
                 subnet16_counts[subnet16][config_type] -= 1
+            if is_domain_host and domain_mid:
+                domain_mid_counts[domain_mid] -= 1
             _inc_stat('not_added')
 
 
@@ -1702,6 +1746,7 @@ def print_statistics() -> None:
     print(f"Заблокировано РКН: {s['blocked_rkn']}", flush=True)
     print(f"Дубликаты IP: {s['duplicate_ip']}", flush=True)
     print(f"Кэш неудачных IP: {s['failed_ip_cache']}", flush=True)
+    print(f"Кэш неудачных доменов: {s['failed_domain_cache']}", flush=True)
     print(f"Исключён по SNI домену: {s['excluded_sni']}", flush=True)
     print(f"Лимиты подсети: {s['subnet_limit']}", flush=True)
 
