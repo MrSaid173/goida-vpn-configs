@@ -196,5 +196,23 @@
     "asname": "CLOUDFLARENET",
     "hosting": false,
     "ts": 1774249400.5322201
+  },
+  "rivvers.info:rivvers.info": {
+    "cc": "DE",
+    "isp": "netcup GmbH",
+    "org": "Netcup KVM",
+    "as": "AS197540 netcup GmbH",
+    "asname": "netcup-AS",
+    "hosting": true,
+    "ts": 1774258653.4249277
+  },
+  "edge26-topnet.topnet1127.workers.dev:edge26-topnet.topnet1127.workers.dev": {
+    "cc": "US",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare WARP",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": false,
+    "ts": 1774258777.9644508
   }
 }
