@@ -214,6 +214,7 @@ COUNTRY_MAP = {
     "IL": {"aliases": ["ISRAEL", "ИЗРАИЛЬ", "🇮🇱"], "full": "Izrael", "flag": "🇮🇱"},
     "BA": {"aliases": ["BOSNIA AND HERZEGOVINA", "БОСНИЯ И ГЕРЦЕГОВИНА", "🇧🇦"], "full": "B&H", "flag": "🇧🇦"},
     "UY": {"aliases": ["URUGUAY", "УРУГВАЙ", "🇺🇾"], "full": "Uruguay", "flag": "🇺🇾"},
+    "TW": {"aliases": ["TAIWAN", "ТАЙВАНЬ", "🇹🇼"], "full": "Taiwan", "flag": "🇹🇼"},
 }
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
