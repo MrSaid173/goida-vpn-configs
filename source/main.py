@@ -1688,19 +1688,10 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
     while len(final) < MAX_CONFIGS:
         added_any = False
 
-        if is_vlm2 and xhttp_dq and len(final) == len(top_fixed):
-            count = 0
-            while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and xhttp_dq:
-                config = xhttp_dq.popleft()
-                if config['link'] not in final_links:
-                    final.append(config)
-                    final_links.add(config['link'])
-                    count += 1
-                    added_any = True
-
         count = 0
-        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and non_ru_dq:
-            config = non_ru_dq.popleft()
+        while count < INTERLEAVE_STEP and len(final) < MAX_CONFIGS and (non_ru_dq or xhttp_dq):
+            src = non_ru_dq if non_ru_dq else xhttp_dq
+            config = src.popleft()
             if config['link'] not in final_links:
                 final.append(config)
                 final_links.add(config['link'])
@@ -2081,4 +2072,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-        
