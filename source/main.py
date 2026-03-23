@@ -1678,6 +1678,9 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
     non_ru_dq = deque(non_ru_sni_configs)
     ru_sni_dq = deque(ru_sni_configs)
 
+    label = "VLM2" if is_vlm2 else "VLM"
+    print(f"[DEBUG finalize {label}] total={len(results)}, top_fixed={len(top_fixed)}, xhttp={len(xhttp_bucket)}, ru_sni={len(ru_sni_configs)}, non_ru={len(non_ru_sni_configs)}", flush=True)
+
     final = list(top_fixed)
     final_links = {r['link'] for r in final}
     current_ru_sni_total = len(top_fixed)
@@ -1717,8 +1720,10 @@ def finalize_list(results: list[dict], is_vlm2: bool = False) -> list[str]:
                 current_ru_sni_total += 1
 
         if not added_any:
+            print(f"[DEBUG finalize {label}] цикл остановился: final={len(final)}, non_ru_dq={len(non_ru_dq)}, ru_sni_dq={len(ru_sni_dq)}, xhttp_dq={len(xhttp_dq)}, current_ru_sni={current_ru_sni_total}/{MAX_TOTAL_SNI_RU}", flush=True)
             break
 
+    print(f"[DEBUG finalize {label}] итог={len(final)}", flush=True)
     speed_rating = {
         r['link']: rank + 1
         for rank, r in enumerate(sorted(final, key=lambda x: x['ping']))
@@ -2076,3 +2081,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+        
