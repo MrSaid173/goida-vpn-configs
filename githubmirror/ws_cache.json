@@ -151,5 +151,23 @@
     "asname": "THE",
     "hosting": false,
     "ts": 1774218336.390404
+  },
+  "g.sandesh.qzz.io:g.sandesh.qzz.io": {
+    "cc": "IN",
+    "isp": "Oracle Corporation",
+    "org": "Oracle Cloud Infrastructure (ap-mumbai-1)",
+    "as": "AS31898 Oracle Corporation",
+    "asname": "ORACLE-BMC-31898",
+    "hosting": true,
+    "ts": 1774239909.7972505
+  },
+  "octopusss4.com:octopusss4.com": {
+    "cc": "DE",
+    "isp": "netcup GmbH",
+    "org": "Netcup KVM",
+    "as": "AS197540 netcup GmbH",
+    "asname": "netcup-AS",
+    "hosting": true,
+    "ts": 1774240077.528681
   }
 }
