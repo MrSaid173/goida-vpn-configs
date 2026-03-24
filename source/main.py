@@ -901,7 +901,6 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
     if ip_str in persistent_ip_cache:
         v = persistent_ip_cache[ip_str]
         if 'isp' in v:
-            # Новый формат — применяем текущие правила
             full_info = f"{v.get('isp','')} {v.get('org','')} {v.get('as','')} {v.get('asname','')}".lower()
             if is_ws_host:
                 is_bad = BAD_HOSTING_WS_ENABLED and any(w in full_info for w in BAD_HOSTING_KEYWORDS_WS)
@@ -911,7 +910,9 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
             is_banned = is_bad or is_banned_p
             is_api_h = v.get("hosting", False) and not is_bad
             is_kw_h = any(w in full_info for w in HOST_TAG_KEYWORDS)
-            res = (v['cc'], "BANNED" if is_banned else (is_api_h or is_kw_h))
+            # Используем exit_cc если есть (страна выходного IP)
+            cc = v.get('exit_cc') or v['cc']
+            res = (cc, "BANNED" if is_banned else (is_api_h or is_kw_h))
         else:
             res = (v['cc'], v['hosting'])
         with lock:
@@ -1515,7 +1516,9 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     # ── XRAY-ТЕСТ: реальная проверка туннеля + измерение пинга via proxy get ──
-    xray_result = xray_test(config, is_ru=is_ru, fetch_geo=ws_geo_needed)
+    # fetch_geo только если hosting=True (для уточнения выходной страны) или WS конфиг
+    need_exit_geo = ws_geo_needed or (ip_h_stat is True)
+    xray_result = xray_test(config, is_ru=is_ru, fetch_geo=need_exit_geo)
     if xray_result is None:
         if sni_reserved:
             with lock:
@@ -1528,51 +1531,65 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
                 domain_mid_counts[domain_mid] -= 1
         return
 
-    if ws_geo_needed and len(xray_result) == 3:
+    if need_exit_geo and len(xray_result) == 3:
         xray_ping, xray_jitter, geo_data = xray_result
         if geo_data and geo_data.get("status") == "success":
-            ip_cc = geo_data.get("countryCode", "")
-            full_info = f"{geo_data.get('isp','')} {geo_data.get('org','')} {geo_data.get('as','')} {geo_data.get('asname','')}".lower()
-            is_bad = BAD_HOSTING_WS_ENABLED and any(w in full_info for w in BAD_HOSTING_KEYWORDS_WS)
-            is_banned_p = BANNED_ASNAME_ENABLED and any(p.lower() in full_info for p in BANNED_ASNAME_PATTERNS)
-            is_banned = is_bad or is_banned_p
-            if is_bad: _inc_stat('banned_hosting')
-            if is_banned_p: _inc_stat('banned_asname')
-            is_api_h = geo_data.get("hosting", False) and not is_bad
-            is_kw_h = any(w in full_info for w in HOST_TAG_KEYWORDS)
-            ip_h_stat = "BANNED" if is_banned else (is_api_h or is_kw_h)
-            if ws_cache_key:
-                persistent_ws_cache[ws_cache_key] = {
-                    'cc': ip_cc, 'isp': geo_data.get('isp',''),
-                    'org': geo_data.get('org',''), 'as': geo_data.get('as',''),
-                    'asname': geo_data.get('asname',''), 'hosting': geo_data.get('hosting', False),
-                    'ts': time.time()
-                }
-            if not ip_cc or ip_h_stat == "BANNED" or (ip_cc == "RU" and not is_white):
-                if not ip_cc: _inc_stat('isp_no_response')
-                elif ip_h_stat == "BANNED": _inc_stat('isp_banned')
-                else: _inc_stat('ru_without_white_sni')
-                return
-            # Теперь знаем ip_cc — делаем subnet16 и sni проверки
-            config_type = get_config_type(ip_cc, is_white)
-            subnet16_limit = get_subnet16_limit(config_type)
-            with lock:
-                if subnet16_counts[subnet16][config_type] >= subnet16_limit:
-                    _inc_stat('subnet16_limit')
-                    return
-                subnet16_counts[subnet16][config_type] += 1
-                subnet16_reserved = True
-            with lock:
-                sni_limit = get_sni_limit(is_white, ip_cc)
-                if sni_usage_counts[sni] >= sni_limit:
-                    _inc_stat('sni_limit')
-                    return
-                sni_usage_counts[sni] += 1
-                sni_reserved = True
-            is_ru = (ip_cc == "RU")
+            exit_cc = geo_data.get("countryCode", "")
+            if is_ws_host:
+                # WS конфиг — применяем все правила по выходному IP
+                full_info = f"{geo_data.get('isp','')} {geo_data.get('org','')} {geo_data.get('as','')} {geo_data.get('asname','')}".lower()
+                is_bad = BAD_HOSTING_WS_ENABLED and any(w in full_info for w in BAD_HOSTING_KEYWORDS_WS)
+                is_banned_p = BANNED_ASNAME_ENABLED and any(p.lower() in full_info for p in BANNED_ASNAME_PATTERNS)
+                is_banned = is_bad or is_banned_p
+                if is_bad: _inc_stat('banned_hosting')
+                if is_banned_p: _inc_stat('banned_asname')
+                is_api_h = geo_data.get("hosting", False) and not is_bad
+                is_kw_h = any(w in full_info for w in HOST_TAG_KEYWORDS)
+                ip_h_stat = "BANNED" if is_banned else (is_api_h or is_kw_h)
+                if ws_cache_key:
+                    persistent_ws_cache[ws_cache_key] = {
+                        'cc': exit_cc, 'isp': geo_data.get('isp',''),
+                        'org': geo_data.get('org',''), 'as': geo_data.get('as',''),
+                        'asname': geo_data.get('asname',''), 'hosting': geo_data.get('hosting', False),
+                        'ts': time.time()
+                    }
+                if exit_cc:
+                    ip_cc = exit_cc
+                is_ru = (ip_cc == "RU")
+                if ws_geo_needed:
+                    if not ip_cc or ip_h_stat == "BANNED" or (ip_cc == "RU" and not is_white):
+                        if not ip_cc: _inc_stat('isp_no_response')
+                        elif ip_h_stat == "BANNED": _inc_stat('isp_banned')
+                        else: _inc_stat('ru_without_white_sni')
+                        return
+                    config_type = get_config_type(ip_cc, is_white)
+                    subnet16_limit = get_subnet16_limit(config_type)
+                    with lock:
+                        if subnet16_counts[subnet16][config_type] >= subnet16_limit:
+                            _inc_stat('subnet16_limit')
+                            return
+                        subnet16_counts[subnet16][config_type] += 1
+                        subnet16_reserved = True
+                    with lock:
+                        sni_limit = get_sni_limit(is_white, ip_cc)
+                        if sni_usage_counts[sni] >= sni_limit:
+                            _inc_stat('sni_limit')
+                            return
+                        sni_usage_counts[sni] += 1
+                        sni_reserved = True
+            else:
+                # Обычный hosting конфиг — берём только страну с выходного IP
+                # Все остальные правила уже применены по входному IP
+                if exit_cc:
+                    ip_cc = exit_cc
+                    # Сохраняем exit_cc в ip_cache для следующего прогона
+                    if host in persistent_ip_cache:
+                        persistent_ip_cache[host]['exit_cc'] = exit_cc
+                is_ru = (ip_cc == "RU")
         else:
-            _inc_stat('isp_no_response')
-            return
+            if ws_geo_needed:
+                _inc_stat('isp_no_response')
+                return
     else:
         xray_ping, xray_jitter = xray_result[0], xray_result[1]
 
@@ -2068,3 +2085,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+            
