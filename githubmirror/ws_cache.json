@@ -15,7 +15,7 @@
     "as": "AS36352 HostPapa",
     "asname": "AS-COLOCROSSING",
     "hosting": true,
-    "ts": 1774371496.984857
+    "ts": 1774391112.4680307
   },
   "yousef.varzesh.dpdns.org:yousef.varzesh.dpdns.org": {
     "cc": "US",
@@ -47,11 +47,11 @@
   "vangoghhh.info:vangoghhh.info": {
     "cc": "DE",
     "isp": "netcup GmbH",
-    "org": "Netcup KVM",
+    "org": "NETCUP-GMBH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774384516.3376486
+    "ts": 1774391219.1153042
   },
   "free-server.techsonic.ggff.net:free-server.techsonic.ggff.net": {
     "cc": "US",
@@ -78,7 +78,7 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774384591.7830672
+    "ts": 1774391251.582609
   },
   "dabaius2.sylu.net:dabaius2.sylu.net": {
     "cc": "HK",
@@ -96,16 +96,16 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774384569.1522222
+    "ts": 1774391169.447231
   },
   "octopusss4.com:octopusss4.com": {
-    "cc": "AT",
+    "cc": "DE",
     "isp": "netcup GmbH",
-    "org": "ANX Holding GmbH",
+    "org": "Netcup KVM",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774371704.4365504
+    "ts": 1774391176.5099416
   },
   "vpn3.rnmcnm.com:vpn3.rnmcnm.com": {
     "cc": "HK",
@@ -151,5 +151,23 @@
     "asname": "AkileCloud",
     "hosting": false,
     "ts": 1774384572.9660847
+  },
+  "lk-cdn.deploy-assure.ru:lk-cdn.deploy-assure.ru": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1774391103.0317929
+  },
+  "639073677243249982.camry-perma.info:639073677243249982.camry-perma.info": {
+    "cc": "PL",
+    "isp": "STARK",
+    "org": "STARK INDUSTRIES SOLUTIONS LTD",
+    "as": "AS44477 STARK INDUSTRIES SOLUTIONS LTD",
+    "asname": "STARK-INDUSTRIES",
+    "hosting": false,
+    "ts": 1774391205.932251
   }
 }
