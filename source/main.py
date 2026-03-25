@@ -145,7 +145,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 3.0   # секунд на один HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 2.0   # секунд на один HTTP запрос через туннель
 XRAY_HTTP_ATTEMPTS = 3    # количество HTTP замеров для подсчёта пинга и jitter
 XRAY_HTTP_PAUSE = 0.15    # пауза между HTTP замерами (секунд)
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
@@ -215,6 +215,7 @@ COUNTRY_MAP = {
     "BA": {"aliases": ["BOSNIA AND HERZEGOVINA", "БОСНИЯ И ГЕРЦЕГОВИНА", "🇧🇦"], "full": "B&H", "flag": "🇧🇦"},
     "UY": {"aliases": ["URUGUAY", "УРУГВАЙ", "🇺🇾"], "full": "Uruguay", "flag": "🇺🇾"},
     "TW": {"aliases": ["TAIWAN", "ТАЙВАНЬ", "🇹🇼"], "full": "Taiwan", "flag": "🇹🇼"},
+    "PK": {"aliases": ["PAKISTAN", "ПАКИСТАН", "🇵🇰"], "full": "Pakistan", "flag": "🇵🇰"},
 }
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
