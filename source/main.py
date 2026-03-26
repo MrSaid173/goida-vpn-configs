@@ -216,6 +216,7 @@ COUNTRY_MAP = {
     "UY": {"aliases": ["URUGUAY", "УРУГВАЙ", "🇺🇾"], "full": "Uruguay", "flag": "🇺🇾"},
     "TW": {"aliases": ["TAIWAN", "ТАЙВАНЬ", "🇹🇼"], "full": "Taiwan", "flag": "🇹🇼"},
     "PK": {"aliases": ["PAKISTAN", "ПАКИСТАН", "🇵🇰"], "full": "Pakistan", "flag": "🇵🇰"},
+    "IQ": {"aliases": ["IRAQ", "ИРАК", "🇮🇶"], "full": "Iraq", "flag": "🇮🇶"},
 }
 
 # --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
