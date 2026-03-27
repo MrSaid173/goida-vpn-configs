@@ -436,7 +436,7 @@
     "as": "AS207713 GLOBAL INTERNET SOLUTIONS LLC",
     "asname": "GIR-AS",
     "hosting": false,
-    "ts": 1774563740.901373,
+    "ts": 1774574766.1887796,
     "ip": "193.233.49.120"
   },
   "cdn-gr-cf.barryvpn.com": {
@@ -1126,7 +1126,7 @@
     "as": "AS13335 Cloudflare, Inc.",
     "asname": "CLOUDFLARENET",
     "hosting": true,
-    "ts": 1774551543.4174683,
+    "ts": 1774574851.6655982,
     "ip": "188.114.98.18"
   },
   "ro-4.vpnd.io": {
@@ -1556,7 +1556,7 @@
     "as": "AS51202 NUXOA GmbH",
     "asname": "NUXOA",
     "hosting": false,
-    "ts": 1774557131.0579615,
+    "ts": 1774574759.9037442,
     "ip": "89.36.32.138"
   },
   "usv.vpnfreedom.tech": {
@@ -2210,14 +2210,14 @@
     "ip": "89.168.43.28"
   },
   "dan.xtrustnet.sbs": {
-    "cc": "DE",
-    "isp": "DigitalOcean, LLC",
-    "org": "DigitalOcean, LLC",
-    "as": "AS14061 DigitalOcean, LLC",
-    "asname": "DIGITALOCEAN-ASN",
-    "hosting": true,
-    "ts": 1774508638.0966287,
-    "ip": "142.93.167.87"
+    "cc": "PL",
+    "isp": "H2nexus LTD",
+    "org": "H2nexus LTD",
+    "as": "AS215730 H2NEXUS LTD",
+    "asname": "H2NEXUS-AS",
+    "hosting": false,
+    "ts": 1774574822.550523,
+    "ip": "144.31.4.172"
   },
   "ndt.fasti.win": {
     "cc": "FI",
@@ -2476,7 +2476,7 @@
     "as": "AS57043 HOSTKEY B.V.",
     "asname": "HOSTKEY-AS",
     "hosting": true,
-    "ts": 1774563805.7006803,
+    "ts": 1774574837.8074994,
     "ip": "107.181.151.39"
   },
   "nl1.jmivpn.pro": {
@@ -2571,13 +2571,13 @@
   },
   "nl2.vpn-club-service.ru": {
     "cc": "RU",
-    "isp": "Citytelecom LLC",
-    "org": "Filanco",
-    "as": "AS12616 Citytelecom LLC",
-    "asname": "HOSTING-MSK",
-    "hosting": true,
-    "ts": 1774390901.5013924,
-    "ip": "62.152.59.116"
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1774574658.6477005,
+    "ip": "109.120.181.74"
   },
   "rus.krasivovpn.ru": {
     "cc": "FI",
@@ -3350,14 +3350,14 @@
     "ip": "150.241.90.13"
   },
   "3unstopvpn.barabesta.is": {
-    "cc": "DE",
-    "isp": "Play2go International Limited",
-    "org": "Play2go International Limited",
-    "as": "AS215439 PLAY2GO INTERNATIONAL LIMITED",
-    "asname": "PLAY2GO-NET",
+    "cc": "PL",
+    "isp": "H2nexus LTD",
+    "org": "H2nexus LTD",
+    "as": "AS215730 H2NEXUS LTD",
+    "asname": "H2NEXUS-AS",
     "hosting": false,
-    "ts": 1774557086.1332612,
-    "ip": "94.156.237.99"
+    "ts": 1774574839.3015802,
+    "ip": "144.31.4.169"
   },
   "ee-2.ummavpn.com": {
     "cc": "EE",
@@ -3790,14 +3790,14 @@
     "ip": "172.245.232.11"
   },
   "catgifs.barabesta.is": {
-    "cc": "LV",
-    "isp": "Sia Nano IT",
-    "org": "NANO-ADTECH",
-    "as": "AS43513 Sia Nano IT",
-    "asname": "NANO-AS",
-    "hosting": false,
-    "ts": 1774529988.520947,
-    "ip": "188.92.78.248"
+    "cc": "NL",
+    "isp": "GTHost",
+    "org": "Cust88530 Network",
+    "as": "AS63023 GTHost",
+    "asname": "AS-GLOBALTELEHOST",
+    "hosting": true,
+    "ts": 1774574828.5566466,
+    "ip": "5.101.84.206"
   },
   "ru.vpn.quacktechgroup.com": {
     "cc": "RU",
@@ -3920,14 +3920,14 @@
     "ip": "146.185.240.91"
   },
   "s644.ccgfw.top": {
-    "cc": "SE",
-    "isp": "xorek.cloud International LTD",
-    "org": "xorek.cloud International LTD",
-    "as": "AS210644 AEZA INTERNATIONAL LTD",
-    "asname": "AEZA-AS",
+    "cc": "KR",
+    "isp": "Korea Telecom",
+    "org": "Kornet",
+    "as": "AS4766 Korea Telecom",
+    "asname": "KIXS-AS-KR",
     "hosting": false,
-    "ts": 1774442771.867186,
-    "ip": "150.241.79.118"
+    "ts": 1774574695.0560963,
+    "ip": "14.37.180.168"
   },
   "one.dash.cloudflare.com": {
     "cc": "RU",
@@ -4791,13 +4791,13 @@
   },
   "bs-3.ummapeople.online": {
     "cc": "RU",
-    "isp": "EdgeCenter LLC",
-    "org": "EdgeCenter LLC",
-    "as": "AS210756 EdgeCenter LLC",
-    "asname": "EdgeCenterLLC",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
     "hosting": false,
-    "ts": 1774563552.3829567,
-    "ip": "91.243.86.229"
+    "ts": 1774574570.165437,
+    "ip": "51.250.94.185"
   },
   "br0.mambo-jambo.ru": {
     "cc": "FR",
@@ -4850,14 +4850,14 @@
     "ip": "89.208.107.216"
   },
   "nl.goldobstervpn.com": {
-    "cc": "NL",
-    "isp": "GTHost",
-    "org": "Cust88530 Network",
-    "as": "AS63023 GTHost",
-    "asname": "AS-GLOBALTELEHOST",
-    "hosting": true,
-    "ts": 1774557184.086965,
-    "ip": "5.101.84.206"
+    "cc": "KR",
+    "isp": "LG DACOM Corporation",
+    "org": "Boranet",
+    "as": "AS3786 LG DACOM Corporation",
+    "asname": "LGDACOM",
+    "hosting": false,
+    "ts": 1774574827.05489,
+    "ip": "106.242.64.238"
   },
   "nll.scroogethebest.com": {
     "cc": "RU",
@@ -4906,7 +4906,7 @@
     "as": "AS212743 ETERNITY INTERNATIONAL LIMITED",
     "asname": "ETERNITY-AS",
     "hosting": false,
-    "ts": 1774499410.3614962,
+    "ts": 1774574662.1979356,
     "ip": "144.31.237.74"
   },
   "telegram.private-networks-zk.com": {
@@ -4936,7 +4936,7 @@
     "as": "AS207713 GLOBAL INTERNET SOLUTIONS LLC",
     "asname": "GIR-AS",
     "hosting": false,
-    "ts": 1774508348.338946,
+    "ts": 1774574609.3131106,
     "ip": "81.90.31.40"
   },
   "swn.vpnspacev.com": {
@@ -5020,14 +5020,14 @@
     "ip": "108.162.194.175"
   },
   "de12.frostbot.ru": {
-    "cc": "DE",
-    "isp": "Aeza International LTD",
-    "org": "Aeza International LTD",
-    "as": "AS210644 AEZA GROUP LLC",
-    "asname": "AEZA-AS",
+    "cc": "TW",
+    "isp": "SAKURA LTD.",
+    "org": "SAKURA LTD.",
+    "as": "AS57175 SAKURA LTD.",
+    "asname": "SAKURA-AS",
     "hosting": false,
-    "ts": 1774508669.7059891,
-    "ip": "176.124.204.251"
+    "ts": 1774574821.0494788,
+    "ip": "46.249.109.128"
   },
   "fa.gamingserverstream.ir": {
     "cc": "KZ",
@@ -5066,8 +5066,8 @@
     "as": "AS47764 LLC VK",
     "asname": "VK-AS",
     "hosting": false,
-    "ts": 1774551299.044378,
-    "ip": "146.185.243.232"
+    "ts": 1774574806.2844315,
+    "ip": "185.130.112.40"
   },
   "bs-1.ummavpn.com": {
     "cc": "RU",
@@ -5446,7 +5446,7 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1774544129.366613,
+    "ts": 1774574865.2747223,
     "ip": "185.231.205.236"
   },
   "store.ubi.com": {
@@ -5576,7 +5576,7 @@
     "as": "AS213535 YottaSrc",
     "asname": "YOTTASRC",
     "hosting": false,
-    "ts": 1774544095.678718,
+    "ts": 1774574705.9499419,
     "ip": "107.161.175.152"
   },
   "s244.ayxj.top": {
@@ -5620,14 +5620,14 @@
     "ip": "66.235.200.51"
   },
   "ee.stardevs.top": {
-    "cc": "NO",
-    "isp": "ServeTheWorld",
-    "org": "ServeTheWorld",
-    "as": "AS34989 ServeTheWorld AS",
-    "asname": "SERVETHEWORLD-AS",
+    "cc": "IR",
+    "isp": "NOAVARAN SHABAKEH SABZ MEHREGAN (Ltd.)",
+    "org": "NOAVARAN SHABAKEH SABZ MEHREGAN (Ltd.)",
+    "as": "AS59441 Hostiran Network",
+    "asname": "Hostiran-Network",
     "hosting": true,
-    "ts": 1774551493.648747,
-    "ip": "104.233.9.176"
+    "ts": 1774574860.6742198,
+    "ip": "62.60.212.199"
   },
   "dostupbypass6.suio.me": {
     "cc": "RU",
@@ -5780,14 +5780,14 @@
     "ip": "5.253.41.72"
   },
   "3.colorbox.space": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1774563543.3749566,
-    "ip": "51.250.94.185"
+    "cc": "PL",
+    "isp": "Hostkey B.V.",
+    "org": "Hostkey B.V",
+    "as": "AS57043 HOSTKEY B.V.",
+    "asname": "HOSTKEY-AS",
+    "hosting": true,
+    "ts": 1774574568.6651983,
+    "ip": "82.40.38.59"
   },
   "direct.illusion-vpn.ru": {
     "cc": "PL",
@@ -5821,13 +5821,13 @@
   },
   "bs-4.ummapeople.online": {
     "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
     "hosting": false,
-    "ts": 1774557154.3714893,
-    "ip": "95.163.208.203"
+    "ts": 1774574857.6714294,
+    "ip": "51.250.90.246"
   },
   "nl2.cvs-a.com": {
     "cc": "NL",
@@ -5856,7 +5856,7 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1774563582.9020326,
+    "ts": 1774574634.5309823,
     "ip": "45.82.251.48"
   },
   "n05.zqwerty.ru": {
@@ -5908,5 +5908,115 @@
     "hosting": true,
     "ts": 1774563855.6440012,
     "ip": "5.101.84.206"
+  },
+  "nt6.nimarko.ru": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1774574571.6671808,
+    "ip": "109.120.191.159"
+  },
+  "dex6.braidpro.online": {
+    "cc": "GB",
+    "isp": "EE Limited",
+    "org": "",
+    "as": "",
+    "asname": "",
+    "hosting": false,
+    "ts": 1774574660.70461,
+    "ip": "2.27.20.61"
+  },
+  "us.nitroo-tech.ru": {
+    "cc": "US",
+    "isp": "WorkTitans B.V.",
+    "org": "WorkTitans B.V",
+    "as": "AS209847 WorkTitans B.V.",
+    "asname": "THE",
+    "hosting": false,
+    "ts": 1774574761.40546,
+    "ip": "141.98.168.41"
+  },
+  "vleesvpn-app-ru02.gw-vpn.click": {
+    "cc": "RU",
+    "isp": "JSC \"TIMEWEB\"",
+    "org": "JSC \"TIMEWEB\"",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1774574768.191241,
+    "ip": "94.241.140.6"
+  },
+  "jp-1.vpnd.io": {
+    "cc": "DE",
+    "isp": "OVH SAS",
+    "org": "OVH GmbH",
+    "as": "AS16276 OVH SAS",
+    "asname": "OVH",
+    "hosting": true,
+    "ts": 1774574785.956086,
+    "ip": "54.37.75.187"
+  },
+  "n08.zqwerty.ru": {
+    "cc": "FI",
+    "isp": "WorkTitans B.V.",
+    "org": "WorkTitans B.V",
+    "as": "AS209847 WorkTitans B.V.",
+    "asname": "THE",
+    "hosting": false,
+    "ts": 1774574787.458434,
+    "ip": "185.156.108.135"
+  },
+  "ru.v2tunray.io": {
+    "cc": "NL",
+    "isp": "Green Floid LLC",
+    "org": "Green Floid LLC",
+    "as": "AS21100 GREEN FLOID LLC",
+    "asname": "ITLDC-EU",
+    "hosting": true,
+    "ts": 1774574788.9578817,
+    "ip": "195.123.218.254"
+  },
+  "s121.ccgfw.top": {
+    "cc": "DE",
+    "isp": "xTom GmbH",
+    "org": "Nebula Tech Limited",
+    "as": "AS3214 xTom GmbH",
+    "asname": "XTOM",
+    "hosting": true,
+    "ts": 1774574803.282539,
+    "ip": "23.165.200.85"
+  },
+  "white.energooblako.ru": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1774574847.1638005,
+    "ip": "158.160.168.92"
+  },
+  "de.whalon.top": {
+    "cc": "DE",
+    "isp": "ZAP-Hosting GmbH",
+    "org": "ZAP-Hosting GmbH & Co. KG",
+    "as": "AS206996 ZAP-Hosting GmbH",
+    "asname": "zap-hosting",
+    "hosting": false,
+    "ts": 1774574850.164474,
+    "ip": "109.230.238.150"
+  },
+  "H6.FASTSPEEDS.IR": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1774574853.1671548,
+    "ip": "213.219.213.106"
   }
 }
