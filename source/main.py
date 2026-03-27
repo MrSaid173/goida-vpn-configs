@@ -38,13 +38,13 @@ WS_CACHE_TTL_DAYS     = 1              # TTL для WS конфигов (дне�
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 2
+MIN_RU_CONFIGS = 3
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_NOWS_CONFIGS = 7   # лимит HOST конфигов (обычных)
 MAX_WS_HOST_CONFIGS   = 2   # лимит WS конфигов с host= параметром
-MAX_DOMAIN_HOST_CONFIGS = 5  # лимит конфигов вид 1 (домен вместо IPv4)
-MAX_DOMAIN_MID_CONFIGS  = 3  # лимит конфигов с одинаковой средней частью домена
+MAX_DOMAIN_HOST_CONFIGS = 6  # лимит конфигов вид 1 (домен вместо IPv4)
+MAX_DOMAIN_MID_CONFIGS  = 2  # лимит конфигов с одинаковой средней частью домена
 MAX_FAILED_PER_DOMAIN   = 6  # максимум провалов пинга для одного домен:порт
 
 INTERLEAVE_STEP = 3
