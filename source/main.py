@@ -107,15 +107,15 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 100.0, 2000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2000.0
+MIN_RU_PING, MAX_RU_PING = 100.0, 2500.0
+MIN_WORLD_PING, MAX_WORLD_PING = 25.0, 2500.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 2.0
+FAST_PING_TIMEOUT = 2.5
 
 # Настройки мониторинга сети
 NETWORK_FAIL_THRESHOLD = 5   # сколько последовательных провалов пинга считать падением сети
@@ -123,7 +123,7 @@ NETWORK_CHECK_INTERVAL = 5  # секунд между проверками во�
 NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
 
 # Настройки полного анализа пинга (TCP)
-MAX_JITTER = 100
+MAX_JITTER = 120
 MAX_JITTER_RATIO = 0.3
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
@@ -145,7 +145,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 2.0   # секунд на один HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 2.5   # секунд на один HTTP запрос через туннель
 XRAY_HTTP_ATTEMPTS = 3    # количество HTTP замеров для подсчёта пинга и jitter
 XRAY_HTTP_PAUSE = 0.15    # пауза между HTTP замерами (секунд)
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
@@ -155,7 +155,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
-MAX_XRAY_PING = 2000.0    # максимальный пинг через туннель (мс)
+MAX_XRAY_PING = 2500.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 120     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
 
