@@ -123,7 +123,7 @@ NETWORK_CHECK_INTERVAL = 5  # секунд между проверками во�
 NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
 
 # Настройки полного анализа пинга (TCP)
-MAX_JITTER = 120
+MAX_JITTER = 90
 MAX_JITTER_RATIO = 0.3
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
@@ -156,7 +156,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 2500.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 120     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER = 90     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
