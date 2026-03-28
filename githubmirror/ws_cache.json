@@ -24,7 +24,7 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774686752.373421
+    "ts": 1774693547.6488435
   },
   "terazhediii.info:terazhediii.info": {
     "cc": "DE",
@@ -33,7 +33,7 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774686689.5110338
+    "ts": 1774693595.061175
   },
   "octopusss4.com:octopusss4.com": {
     "cc": "DE",
@@ -106,15 +106,6 @@
     "asname": "ANSHENG-AS-AP",
     "hosting": false,
     "ts": 1774637224.0054216
-  },
-  "noisy-paper-6b70.grirbp.workers.dev:noisy-paper-6b70.grirbp.workers.dev": {
-    "cc": "US",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare WARP",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": false,
-    "ts": 1774601502.9930906
   },
   "nl4.maxriser.ir:nl4.maxriser.ir": {
     "cc": "DE",
@@ -223,5 +214,14 @@
     "asname": "CLOUDFLARENET",
     "hosting": false,
     "ts": 1774686663.4389555
+  },
+  "telegram.proxie1-tel.workers.dev:telegram.proxie1-tel.workers.dev": {
+    "cc": "US",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare WARP",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": false,
+    "ts": 1774693523.8308573
   }
 }
