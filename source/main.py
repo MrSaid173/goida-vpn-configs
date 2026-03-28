@@ -153,6 +153,11 @@ XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-п�
 XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, каждый тред берёт свой
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
+# Настройки теста скорости
+XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
+XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
+XRAY_SPEED_MIN_MBPS = 2.5       # минимальная скорость Мбит/с (0 = не фильтровать)
+
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 2500.0    # максимальный пинг через туннель (мс)
@@ -540,6 +545,32 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
     return config
 
 
+def _measure_speed(proxies: dict) -> float:
+    """Измеряет скорость через туннель. Скачивает XRAY_SPEED_TEST_DURATION секунд,
+    возвращает скорость в Мбит/с."""
+    try:
+        start = time.perf_counter()
+        total_bytes = 0
+        with requests.get(
+            XRAY_SPEED_TEST_URL,
+            proxies=proxies,
+            timeout=XRAY_SPEED_TEST_DURATION + 2,
+            stream=True,
+            verify=False,
+        ) as r:
+            for chunk in r.iter_content(chunk_size=8192):
+                total_bytes += len(chunk)
+                if time.perf_counter() - start >= XRAY_SPEED_TEST_DURATION:
+                    break
+        elapsed = time.perf_counter() - start
+        if elapsed > 0 and total_bytes > 0:
+            mbps = (total_bytes * 8) / (elapsed * 1_000_000)
+            return round(mbps, 2)
+    except Exception:
+        pass
+    return 0.0
+
+
 def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) -> tuple | None:
     """
     Запускает Xray с конфигом, делает XRAY_HTTP_ATTEMPTS HTTP запросов через туннель.
@@ -630,6 +661,12 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
                 _inc_stat('xray_jitter_failed')
                 return None
 
+            # Измеряем скорость
+            speed_mbps = _measure_speed(proxies)
+            if XRAY_SPEED_MIN_MBPS > 0 and speed_mbps < XRAY_SPEED_MIN_MBPS:
+                _inc_stat('xray_speed_too_low')
+                return None
+
             if fetch_geo:
                 try:
                     geo_resp = requests.get(
@@ -641,9 +678,9 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
                     geo_data = geo_resp.json() if geo_resp.status_code == 200 else None
                 except Exception:
                     geo_data = None
-                return (avg, jit, geo_data)
+                return (avg, jit, speed_mbps, geo_data)
 
-            return (avg, jit)
+            return (avg, jit, speed_mbps)
 
         except Exception:
             _inc_stat('xray_failed')
@@ -1533,8 +1570,12 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
                 domain_mid_counts[domain_mid] -= 1
         return
 
-    if need_exit_geo and len(xray_result) == 3:
-        xray_ping, xray_jitter, geo_data = xray_result
+    xray_ping = xray_result[0]
+    xray_jitter = xray_result[1]
+    xray_speed = xray_result[2] if len(xray_result) >= 3 and isinstance(xray_result[2], float) else 0.0
+    geo_data = xray_result[3] if len(xray_result) == 4 else (xray_result[2] if len(xray_result) == 3 and not isinstance(xray_result[2], float) else None)
+
+    if need_exit_geo and geo_data is not None:
         if geo_data and geo_data.get("status") == "success":
             exit_cc = geo_data.get("countryCode", "")
             if is_ws_host:
@@ -1592,9 +1633,6 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             if ws_geo_needed:
                 _inc_stat('isp_no_response')
                 return
-    else:
-        xray_ping, xray_jitter = xray_result[0], xray_result[1]
-
     # Если xray недоступен — используем TCP пинг как fallback
     display_ping = xray_ping if xray_ping > 0 else p1
 
@@ -1627,6 +1665,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             "is_ws_host": is_ws_host,
             "is_domain_host": is_domain_host,
             "domain_mid": domain_mid,
+            "speed_mbps": xray_speed,
         }
 
         if try_add_to_lists(entry):
@@ -1636,7 +1675,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
 
             host_tag = " (X)" if is_xhttp else ""
             sni_tag = " SNI-RU" if is_white else ""
-            print(f"[FOUND{host_tag}] {ip_cc} | {display_ping}ms | {host}{sni_tag}", flush=True)
+            speed_tag = f" | {xray_speed:.1f}Мбит/с" if xray_speed > 0 else ""
+            print(f"[FOUND{host_tag}] {ip_cc} | {display_ping}ms{speed_tag} | {host}{sni_tag}", flush=True)
             _inc_stat('added')
             if is_white:
                 if is_priority:
@@ -1810,6 +1850,7 @@ def print_statistics() -> None:
     print(f"Не прошло Xray-тест: {s['xray_failed']}", flush=True)
     print(f"Xray пинг вне диапазона: {s['xray_ping_out_of_range']}", flush=True)
     print(f"Xray jitter провален: {s['xray_jitter_failed']}", flush=True)
+    print(f"Xray скорость низкая: {s['xray_speed_too_low']}", flush=True)
 
     print("\n[Итог]", flush=True)
     with lock:
@@ -2087,4 +2128,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-            
+
