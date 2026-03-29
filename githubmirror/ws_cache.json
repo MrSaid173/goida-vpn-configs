@@ -20,11 +20,11 @@
   "octopusss5.info:octopusss5.info": {
     "cc": "DE",
     "isp": "netcup GmbH",
-    "org": "Netcup KVM",
+    "org": "netcup GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774767459.6219556
+    "ts": 1774787891.6098125
   },
   "terazhediii.info:terazhediii.info": {
     "cc": "DE",
@@ -33,16 +33,16 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774780171.0741637
+    "ts": 1774787757.2314026
   },
   "octopusss4.com:octopusss4.com": {
     "cc": "AT",
     "isp": "netcup GmbH",
-    "org": "ANX Holding GmbH",
+    "org": "netcup GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774780190.4634016
+    "ts": 1774787916.978485
   },
   "picassooo.info:picassooo.info": {
     "cc": "AT",
@@ -97,15 +97,6 @@
     "asname": "ANSHENG-AS-AP",
     "hosting": false,
     "ts": 1774701357.9980102
-  },
-  "telegram.proxie1-tel.workers.dev:telegram.proxie1-tel.workers.dev": {
-    "cc": "US",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare WARP",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": false,
-    "ts": 1774693523.8308573
   },
   "639073677243396643.camry-perma.info:639073677243396643.camry-perma.info": {
     "cc": "BE",
@@ -214,5 +205,23 @@
     "asname": "DIGITALOCEAN-ASN",
     "hosting": true,
     "ts": 1774780109.552484
+  },
+  "long-mode-2783.sepna114.workers.dev:long-mode-2783.sepna114.workers.dev": {
+    "cc": "US",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare WARP",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": false,
+    "ts": 1774787738.3562171
+  },
+  "8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online:8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online": {
+    "cc": "TR",
+    "isp": "Netlen Internet Hizmetleri Ltd. Sti.",
+    "org": "Netlen Internet Hizmetleri Ltd. Sti",
+    "as": "AS44620 Netlen Internet Hizmetleri Ltd. Sti.",
+    "asname": "NETLEN",
+    "hosting": false,
+    "ts": 1774787867.6443434
   }
 }
