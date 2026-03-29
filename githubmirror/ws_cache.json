@@ -33,25 +33,25 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774773310.5486104
+    "ts": 1774780171.0741637
   },
   "octopusss4.com:octopusss4.com": {
-    "cc": "DE",
+    "cc": "AT",
     "isp": "netcup GmbH",
-    "org": "NETCUP-KVM",
+    "org": "ANX Holding GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774773216.2506857
+    "ts": 1774780190.4634016
   },
   "picassooo.info:picassooo.info": {
-    "cc": "DE",
-    "isp": "powered by ANX",
+    "cc": "AT",
+    "isp": "netcup GmbH",
     "org": "netcup GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774758743.2025588
+    "ts": 1774780002.0598373
   },
   "rivvers.info:rivvers.info": {
     "cc": "AT",
@@ -97,15 +97,6 @@
     "asname": "ANSHENG-AS-AP",
     "hosting": false,
     "ts": 1774701357.9980102
-  },
-  "b577c283.sfree.cn.mt:b577c283.sfree.cn.mt": {
-    "cc": "US",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare WARP",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": false,
-    "ts": 1774686663.4389555
   },
   "telegram.proxie1-tel.workers.dev:telegram.proxie1-tel.workers.dev": {
     "cc": "US",
@@ -205,5 +196,23 @@
     "asname": "CLOUDFLARENET",
     "hosting": false,
     "ts": 1774773307.1977358
+  },
+  "g.sandesh.qzz.io:g.sandesh.qzz.io": {
+    "cc": "IN",
+    "isp": "Oracle Corporation",
+    "org": "Oracle Cloud Infrastructure (ap-mumbai-1)",
+    "as": "AS31898 Oracle Corporation",
+    "asname": "ORACLE-BMC-31898",
+    "hosting": true,
+    "ts": 1774780084.1360586
+  },
+  "free-server.techsonic.ggff.net:free-server.techsonic.ggff.net": {
+    "cc": "US",
+    "isp": "DigitalOcean",
+    "org": "DigitalOcean, LLC",
+    "as": "AS14061 DigitalOcean, LLC",
+    "asname": "DIGITALOCEAN-ASN",
+    "hosting": true,
+    "ts": 1774780109.552484
   }
 }
