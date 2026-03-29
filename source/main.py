@@ -107,15 +107,15 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 50.0, 2500.0
-MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 2500.0
+MIN_RU_PING, MAX_RU_PING = 50.0, 2000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 2000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 2.5
+FAST_PING_TIMEOUT = 2.0
 
 # Настройки мониторинга сети
 NETWORK_FAIL_THRESHOLD = 5   # сколько последовательных провалов пинга считать падением сети
@@ -123,9 +123,9 @@ NETWORK_CHECK_INTERVAL = 5  # секунд между проверками во�
 NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
 
 # Настройки полного анализа пинга (TCP)
-MAX_JITTER = 120
+MAX_JITTER = 100
 MAX_JITTER_RATIO = 0.3
-FULL_PING_PAUSE = 0.21
+FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
 
@@ -161,7 +161,7 @@ XRAY_SPEED_MIN_MBPS = 5.0       # минимальная скорость Мби
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 2500.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 120     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER = 100     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
