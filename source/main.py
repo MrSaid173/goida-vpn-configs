@@ -123,8 +123,8 @@ NETWORK_CHECK_INTERVAL = 5  # секунд между проверками во�
 NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
 
 # Настройки полного анализа пинга (TCP)
-MAX_JITTER = 100
-MAX_JITTER_RATIO = 0.3
+MAX_JITTER = 150
+MAX_JITTER_RATIO = 0.4
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 3
