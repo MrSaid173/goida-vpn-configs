@@ -60,7 +60,7 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774887406.9019496
+    "ts": 1774889345.767997
   },
   "639073677251729790.corolla-perma.info:639073677251729790.corolla-perma.info": {
     "cc": "ES",
@@ -79,15 +79,6 @@
     "asname": "THE",
     "hosting": false,
     "ts": 1774855080.4763088
-  },
-  "022.electrocellco-cf-022.workers.dev:022.electrocellco-cf-022.workers.dev": {
-    "cc": "US",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare WARP",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": false,
-    "ts": 1774800714.2340844
   },
   "639073677259599430.civic-perma.info:639073677259599430.civic-perma.info": {
     "cc": "GB",
@@ -151,5 +142,14 @@
     "asname": "CLOUDFLARENET",
     "hosting": false,
     "ts": 1774868583.899808
+  },
+  "639075478000711639.civic-perma.info:639075478000711639.civic-perma.info": {
+    "cc": "GB",
+    "isp": "DigitalOcean, LLC",
+    "org": "DigitalOcean, LLC",
+    "as": "AS14061 DigitalOcean, LLC",
+    "asname": "DIGITALOCEAN-ASN",
+    "hosting": true,
+    "ts": 1774889373.2722251
   }
 }
