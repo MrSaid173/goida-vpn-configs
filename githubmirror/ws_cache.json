@@ -20,20 +20,20 @@
   "octopusss4.com:octopusss4.com": {
     "cc": "AT",
     "isp": "netcup GmbH",
-    "org": "ANX Holding GmbH",
-    "as": "AS197540 netcup GmbH",
-    "asname": "netcup-AS",
-    "hosting": true,
-    "ts": 1774985416.4195282
-  },
-  "rivvers.info:rivvers.info": {
-    "cc": "DE",
-    "isp": "netcup GmbH",
     "org": "netcup GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774985262.3805132
+    "ts": 1774986793.642932
+  },
+  "rivvers.info:rivvers.info": {
+    "cc": "DE",
+    "isp": "netcup GmbH",
+    "org": "NETCUP-KVM",
+    "as": "AS197540 netcup GmbH",
+    "asname": "netcup-AS",
+    "hosting": true,
+    "ts": 1774986848.7805157
   },
   "639073677251729790.corolla-perma.info:639073677251729790.corolla-perma.info": {
     "cc": "ES",
@@ -142,5 +142,14 @@
     "asname": "NETLEN",
     "hosting": false,
     "ts": 1774985041.5926445
+  },
+  "g.sandesh.qzz.io:g.sandesh.qzz.io": {
+    "cc": "IN",
+    "isp": "Oracle Corporation",
+    "org": "Oracle Cloud Infrastructure (ap-mumbai-1)",
+    "as": "AS31898 Oracle Corporation",
+    "asname": "ORACLE-BMC-31898",
+    "hosting": true,
+    "ts": 1774986639.4269466
   }
 }
