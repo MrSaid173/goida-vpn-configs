@@ -6,7 +6,7 @@
     "as": "AS36352 HostPapa",
     "asname": "AS-COLOCROSSING",
     "hosting": true,
-    "ts": 1774976079.8544853
+    "ts": 1774985347.90039
   },
   "vangoghhh.info:vangoghhh.info": {
     "cc": "DE",
@@ -15,7 +15,7 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774976134.854612
+    "ts": 1774985251.268609
   },
   "octopusss4.com:octopusss4.com": {
     "cc": "AT",
@@ -24,16 +24,16 @@
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774976017.2179399
+    "ts": 1774985416.4195282
   },
   "rivvers.info:rivvers.info": {
     "cc": "DE",
     "isp": "netcup GmbH",
-    "org": "NETCUP-KVM",
+    "org": "netcup GmbH",
     "as": "AS197540 netcup GmbH",
     "asname": "netcup-AS",
     "hosting": true,
-    "ts": 1774975961.2654924
+    "ts": 1774985262.3805132
   },
   "639073677251729790.corolla-perma.info:639073677251729790.corolla-perma.info": {
     "cc": "ES",
@@ -42,7 +42,7 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1774969095.1766052
+    "ts": 1774985238.7095127
   },
   "639073677243396643.camry-perma.info:639073677243396643.camry-perma.info": {
     "cc": "BE",
@@ -52,42 +52,6 @@
     "asname": "THE",
     "hosting": false,
     "ts": 1774903345.277253
-  },
-  "639075478000711639.civic-perma.info:639075478000711639.civic-perma.info": {
-    "cc": "GB",
-    "isp": "DigitalOcean, LLC",
-    "org": "DigitalOcean, LLC",
-    "as": "AS14061 DigitalOcean, LLC",
-    "asname": "DIGITALOCEAN-ASN",
-    "hosting": true,
-    "ts": 1774889373.2722251
-  },
-  "639075478000710579.civic-perma.info:639075478000710579.civic-perma.info": {
-    "cc": "GB",
-    "isp": "DigitalOcean, LLC",
-    "org": "Digitalocean",
-    "as": "AS14061 DigitalOcean, LLC",
-    "asname": "DIGITALOCEAN-ASN",
-    "hosting": true,
-    "ts": 1774896523.1842368
-  },
-  "8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online:8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online": {
-    "cc": "TR",
-    "isp": "Netlen Internet Hizmetleri Ltd. Sti.",
-    "org": "Netlen Internet Hizmetleri Ltd. Sti",
-    "as": "AS44620 Netlen Internet Hizmetleri Ltd. Sti.",
-    "asname": "NETLEN",
-    "hosting": false,
-    "ts": 1774896530.8906481
-  },
-  "g.sandesh.qzz.io:g.sandesh.qzz.io": {
-    "cc": "IN",
-    "isp": "Oracle Corporation",
-    "org": "Oracle Cloud Infrastructure (ap-mumbai-1)",
-    "as": "AS31898 Oracle Corporation",
-    "asname": "ORACLE-BMC-31898",
-    "hosting": true,
-    "ts": 1774896569.036235
   },
   "639073677243791121.camry-perma.info:639073677243791121.camry-perma.info": {
     "cc": "HU",
@@ -169,5 +133,14 @@
     "asname": "CLOUDFLARENET",
     "hosting": false,
     "ts": 1774969052.366915
+  },
+  "8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online:8adeefa1-96b4-42d4-b163-1e0bf13bae5d.quadzero.online": {
+    "cc": "TR",
+    "isp": "Netlen Internet Hizmetleri Ltd. Sti.",
+    "org": "Netlen Internet Hizmetleri Ltd. Sti",
+    "as": "AS44620 Netlen Internet Hizmetleri Ltd. Sti.",
+    "asname": "NETLEN",
+    "hosting": false,
+    "ts": 1774985041.5926445
   }
 }
