@@ -126,7 +126,7 @@ NETWORK_MAX_RETRIES = 4      # максимум попыток проверки 
 MAX_JITTER = 150
 MAX_JITTER_RATIO = 0.4
 FULL_PING_PAUSE = 0.15
-FULL_PING_ATTEMPTS = 1
+FULL_PING_ATTEMPTS = 2
 FULL_PING_MIN_SAMPLES = 1
 
 # Rate-limit для ip-api.com
@@ -156,7 +156,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Настройки теста скорости
 XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
 XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
-XRAY_SPEED_MIN_MBPS = 4.0       # минимальная скорость Мбит/с (0 = не фильтровать)
+XRAY_SPEED_MIN_MBPS = 3.5       # минимальная скорость Мбит/с (0 = не фильтровать)
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
