@@ -145,7 +145,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 2.5   # секунд на один HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 3.5   # секунд на один HTTP запрос через туннель
 XRAY_HTTP_ATTEMPTS = 3    # количество HTTP замеров для подсчёта пинга и jitter
 XRAY_HTTP_PAUSE = 0.15    # пауза между HTTP замерами (секунд)
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
@@ -160,9 +160,9 @@ XRAY_SPEED_MIN_MBPS = 5.0       # минимальная скорость Мби
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
-MAX_XRAY_PING = 2500.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 100     # максимальный jitter через туннель (мс)
-MAX_XRAY_JITTER_RATIO = 0.3  # максимальный jitter как доля от среднего
+MAX_XRAY_PING = 3500.0    # максимальный пинг через туннель (мс)
+MAX_XRAY_JITTER = 120     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 session = requests.Session()
