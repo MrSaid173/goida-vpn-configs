@@ -38,7 +38,7 @@ WS_CACHE_TTL_DAYS     = 1              # TTL для WS конфигов (дне�
 # --- ЛИМИТЫ БРОНИРОВАНИЯ ---
 MIN_XHTTP = 0
 MAX_XHTTP = 5
-MIN_RU_CONFIGS = 3
+MIN_RU_CONFIGS = 0
 MAX_RU_CONFIGS = 6
 MIN_HOST_CONFIGS = 0
 MAX_HOST_NOWS_CONFIGS = 7   # лимит HOST конфигов (обычных)
@@ -107,15 +107,15 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 50.0, 3000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 3000.0
+MIN_RU_PING, MAX_RU_PING = 50.0, 5000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 5000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 3.0
+FAST_PING_TIMEOUT = 5.0
 
 # Настройки мониторинга сети
 NETWORK_FAIL_THRESHOLD = 5   # сколько последовательных провалов пинга считать падением сети
@@ -123,7 +123,7 @@ NETWORK_CHECK_INTERVAL = 5  # секунд между проверками во�
 NETWORK_MAX_RETRIES = 4      # максимум попыток проверки восстановления сети
 
 # Настройки полного анализа пинга (TCP)
-MAX_JITTER = 150
+MAX_JITTER = 200
 MAX_JITTER_RATIO = 0.4
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
@@ -145,7 +145,7 @@ XRAY_BINARY = os.environ.get("XRAY_BINARY", "/tmp/xray/xray")
 XRAY_TEST_URL_RU = "http://cp.cloudflare.com/" 
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
-XRAY_HTTP_TIMEOUT = 3.5   # секунд на один HTTP запрос через туннель
+XRAY_HTTP_TIMEOUT = 5.0   # секунд на один HTTP запрос через туннель
 XRAY_HTTP_ATTEMPTS = 3    # количество HTTP замеров для подсчёта пинга и jitter
 XRAY_HTTP_PAUSE = 0.15    # пауза между HTTP замерами (секунд)
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
@@ -156,11 +156,11 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Настройки теста скорости
 XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
 XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
-XRAY_SPEED_MIN_MBPS = 0       # минимальная скорость Мбит/с (0 = не фильтровать)
+XRAY_SPEED_MIN_MBPS = 3.0       # минимальная скорость Мбит/с (0 = не фильтровать)
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
-MAX_XRAY_PING = 3500.0    # максимальный пинг через туннель (мс)
+MAX_XRAY_PING = 5000.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 200     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
 
