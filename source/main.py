@@ -80,7 +80,7 @@ BAD_HOSTING_KEYWORDS_WS = [
 
 # Включатели/выключатели фильтров
 BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
-BAD_HOSTING_WS_ENABLED = True   # банить плохой хостинг (WS конфиги с host=)
+BAD_HOSTING_WS_ENABLED = False   # банить плохой хостинг (WS конфиги с host=)
 BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 
 # Настройки повтора SNI-RU
