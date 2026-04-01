@@ -272,7 +272,8 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1774822930.280746
+    "ts": 1774822930.280746,
+    "exit_cc": "LV"
   },
   "51.250.24.245": {
     "cc": "RU",
@@ -10456,7 +10457,8 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1774968987.817483
+    "ts": 1774968987.817483,
+    "exit_cc": "LV"
   },
   "91.132.142.69": {
     "cc": "MD",
@@ -14390,7 +14392,8 @@
     "as": "AS138195 MOACK.Co.LTD",
     "asname": "MOACKCOLTD-AS-AP",
     "hosting": false,
-    "ts": 1775048695.266812
+    "ts": 1775048695.266812,
+    "exit_cc": "KR"
   },
   "87.239.107.157": {
     "cc": "RU",
@@ -15173,7 +15176,8 @@
     "as": "AS63023 GTHost",
     "asname": "AS-GLOBALTELEHOST",
     "hosting": true,
-    "ts": 1775070404.1747098
+    "ts": 1775070404.1747098,
+    "exit_cc": "US"
   },
   "179.61.251.78": {
     "cc": "DE",
@@ -15255,5 +15259,95 @@
     "asname": "CLOUDFLARENET",
     "hosting": true,
     "ts": 1775070751.8679442
+  },
+  "158.160.117.149": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1775070905.6593778
+  },
+  "217.16.29.31": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775070907.1466591
+  },
+  "91.196.35.103": {
+    "cc": "RU",
+    "isp": "SERV.HOST GROUP LTD",
+    "org": "Russia, Moscow",
+    "as": "AS207957 SERV.HOST GROUP LTD",
+    "asname": "ServHost-AS",
+    "hosting": false,
+    "ts": 1775070914.7590325
+  },
+  "82.22.40.58": {
+    "cc": "PL",
+    "isp": "Newserverlife LLC",
+    "org": "3HCloud LLC",
+    "as": "AS49791 Newserverlife LLC",
+    "asname": "AS-3HCLOUD",
+    "hosting": false,
+    "ts": 1775070941.169698
+  },
+  "94.139.251.109": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS210656 Yandex.Cloud LLC",
+    "asname": "YACLOUDBMS",
+    "hosting": false,
+    "ts": 1775071256.1709495
+  },
+  "152.89.244.84": {
+    "cc": "DE",
+    "isp": "aurologic GmbH",
+    "org": "Aurologic Hel1",
+    "as": "AS30823 aurologic GmbH",
+    "asname": "AUROLOGIC",
+    "hosting": false,
+    "ts": 1775071289.9371955
+  },
+  "193.32.176.44": {
+    "cc": "GB",
+    "isp": "Global Connectivity Solutions LLP",
+    "org": "Global Connectivity Solutions LLP",
+    "as": "AS215540 GLOBAL CONNECTIVITY SOLUTIONS LLP",
+    "asname": "GCS-AS",
+    "hosting": false,
+    "ts": 1775071404.4907582
+  },
+  "69.84.182.179": {
+    "cc": "US",
+    "isp": "Health Market Science",
+    "org": "LexisNexis Risk Data Management Inc",
+    "as": "AS14197 HEALTH MARKET SCIENCE",
+    "asname": "HMS-ASN",
+    "hosting": false,
+    "ts": 1775071520.7288492
+  },
+  "95.85.251.182": {
+    "cc": "FI",
+    "isp": "OC NETWORKS LIMITED",
+    "org": "1Cent Host",
+    "as": "AS201988 VPSPay Networks LTD",
+    "asname": "VPSPay-ASN",
+    "hosting": false,
+    "ts": 1775071605.2726078
+  },
+  "185.254.96.142": {
+    "cc": "DE",
+    "isp": "dataforest GmbH",
+    "org": "dataforest GmbH",
+    "as": "AS58212 dataforest GmbH",
+    "asname": "DATAFOREST",
+    "hosting": false,
+    "ts": 1775071786.3581195
   }
 }
