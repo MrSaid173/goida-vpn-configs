@@ -161,7 +161,7 @@ XRAY_SPEED_MIN_MBPS = 0       # минимальная скорость Мбит
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 3500.0    # максимальный пинг через туннель (мс)
-MAX_XRAY_JITTER = 120     # максимальный jitter через туннель (мс)
+MAX_XRAY_JITTER = 200     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
