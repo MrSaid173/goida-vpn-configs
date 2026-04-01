@@ -107,15 +107,15 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 50.0, 2380.0
-MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 2380.0
+MIN_RU_PING, MAX_RU_PING = 50.0, 3000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 3000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
 MAX_WORLD_PING_XHTTP = MAX_WORLD_PING + 120
 
 # Таймауты (секунды)
-FAST_PING_TIMEOUT = 2.5
+FAST_PING_TIMEOUT = 3.0
 
 # Настройки мониторинга сети
 NETWORK_FAIL_THRESHOLD = 5   # сколько последовательных провалов пинга считать падением сети
@@ -127,7 +127,7 @@ MAX_JITTER = 150
 MAX_JITTER_RATIO = 0.4
 FULL_PING_PAUSE = 0.15
 FULL_PING_ATTEMPTS = 2
-FULL_PING_MIN_SAMPLES = 3
+FULL_PING_MIN_SAMPLES = 2
 
 # Rate-limit для ip-api.com
 API_RATE_LIMIT_INTERVAL = 1.5  # минимальный интервал между запросами
@@ -156,7 +156,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Настройки теста скорости
 XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
 XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
-XRAY_SPEED_MIN_MBPS = 3.5       # минимальная скорость Мбит/с (0 = не фильтровать)
+XRAY_SPEED_MIN_MBPS = 2.0       # минимальная скорость Мбит/с (0 = не фильтровать)
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
