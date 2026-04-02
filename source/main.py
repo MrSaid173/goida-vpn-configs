@@ -748,19 +748,17 @@ def is_technically_broken(link: str, _lower: str | None = None) -> bool:
 
     return False
 
-
 def fast_ping(host: str, port: int, sni: str) -> int | None:
     try:
         start = time.perf_counter()
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None):
-                return int((time.perf_counter() - start) * 1000)
-    except (socket.timeout, socket.error, ssl.SSLError, OSError):
+        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT):
+            return int((time.perf_counter() - start) * 1000)
+    except socket.timeout:
+        print(f"  [PING FAIL] {host}:{port} — таймаут ({FAST_PING_TIMEOUT}с)", flush=True)
         return None
-
+    except (socket.error, OSError) as e:
+        print(f"  [PING FAIL] {host}:{port} — ошибка: {e}", flush=True)
+        return None
 
 def full_ping_analysis(
     host: str, port: int, sni: str,
