@@ -79,7 +79,7 @@ BAD_HOSTING_KEYWORDS_WS = [
 ]
 
 # Включатели/выключатели фильтров
-BAD_HOSTING_ENABLED    = True   # банить плохой хостинг (обычные конфиги)
+BAD_HOSTING_ENABLED    = False   # банить плохой хостинг (обычные конфиги)
 BAD_HOSTING_WS_ENABLED = False   # банить плохой хостинг (WS конфиги с host=)
 BANNED_ASNAME_ENABLED  = False  # банить по ASN паттернам
 
@@ -156,7 +156,7 @@ XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 # Настройки теста скорости
 XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
 XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
-XRAY_SPEED_MIN_MBPS = 3.0       # минимальная скорость Мбит/с (0 = не фильтровать)
+XRAY_SPEED_MIN_MBPS = 1.5       # минимальная скорость Мбит/с (0 = не фильтровать)
 
 # Лимиты пинга через xray туннель (via proxy get)
 MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
