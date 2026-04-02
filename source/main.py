@@ -508,10 +508,10 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
             "security": security,
             tls_key: tls_settings,
             "grpcSettings": {
-            "serviceName": service_m.group(1) if service_m else "",
-            "multiMode": (mode_m.group(1).lower() == "multi") if mode_m else False,
-        },
-    }
+                "serviceName": service_m.group(1) if service_m else "",
+                "multiMode": (mode_m.group(1).lower() == "multi") if mode_m else False,
+            },
+        }
     else:
         # tcp (REALITY + Vision, обычный tcp)
         stream_settings = {
@@ -763,13 +763,13 @@ def is_technically_broken(link: str, _lower: str | None = None) -> bool:
 def fast_ping(host: str, port: int, sni: str) -> int | None:
     try:
         start = time.perf_counter()
-        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT):
-            return int((time.perf_counter() - start) * 1000)
-    except socket.timeout:
-        print(f"  [PING FAIL] {host}:{port} — таймаут ({FAST_PING_TIMEOUT}с)", flush=True)
-        return None
-    except (socket.error, OSError) as e:
-        print(f"  [PING FAIL] {host}:{port} — ошибка: {e}", flush=True)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT) as sock:
+            with context.wrap_socket(sock, server_hostname=sni if sni else None):
+                return int((time.perf_counter() - start) * 1000)
+    except (socket.timeout, socket.error, ssl.SSLError, OSError):
         return None
 
 def full_ping_analysis(
