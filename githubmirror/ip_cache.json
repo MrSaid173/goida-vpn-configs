@@ -5352,7 +5352,8 @@
     "as": "AS31898 Oracle Corporation",
     "asname": "ORACLE-BMC-31898",
     "hosting": true,
-    "ts": 1774903748.5904617
+    "ts": 1774903748.5904617,
+    "exit_cc": "AU"
   },
   "138.124.100.14": {
     "cc": "EE",
@@ -9465,7 +9466,8 @@
     "as": "AS31898 Oracle Corporation",
     "asname": "ORACLE-BMC-31898",
     "hosting": true,
-    "ts": 1774954651.7507396
+    "ts": 1774954651.7507396,
+    "exit_cc": "GB"
   },
   "166.88.180.226": {
     "cc": "NL",
@@ -13044,7 +13046,8 @@
     "as": "AS202015 HZ Hosting Ltd",
     "asname": "HZ-US-AS",
     "hosting": true,
-    "ts": 1775027688.8156743
+    "ts": 1775027688.8156743,
+    "exit_cc": "US"
   },
   "150.241.90.13": {
     "cc": "NL",
@@ -13826,7 +13829,8 @@
     "as": "AS209693 OC NETWORKS LIMITED",
     "asname": "OC-NETWORK",
     "hosting": false,
-    "ts": 1775048192.842255
+    "ts": 1775048192.842255,
+    "exit_cc": "EE"
   },
   "158.160.56.246": {
     "cc": "RU",
@@ -15458,5 +15462,122 @@
     "asname": "AS-GEOHOSTING",
     "hosting": false,
     "ts": 1775091551.6497405
+  },
+  "217.16.27.32": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092869.1865082
+  },
+  "109.120.181.142": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092870.6726806
+  },
+  "212.109.218.255": {
+    "cc": "RU",
+    "isp": "JSC IOT",
+    "org": "JSC Datacenter",
+    "as": "AS29182 JSC IOT",
+    "asname": "RU-JSCIOT",
+    "hosting": true,
+    "ts": 1775092872.1739635
+  },
+  "87.239.107.68": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092873.6756968
+  },
+  "84.23.54.51": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092876.9846706
+  },
+  "51.250.88.124": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1775092879.2498338
+  },
+  "217.16.27.235": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092883.354091
+  },
+  "185.86.146.204": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775092884.8517785
+  },
+  "188.225.36.144": {
+    "cc": "RU",
+    "isp": "JSC \"TIMEWEB\"",
+    "org": "JSC \"TIMEWEB\"",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1775092886.3519802
+  },
+  "5.188.115.23": {
+    "cc": "RU",
+    "isp": "Selectel",
+    "org": "Selectel Ltd.",
+    "as": "AS50340 JSC Selectel",
+    "asname": "SELECTEL-MSK",
+    "hosting": true,
+    "ts": 1775092893.3296394
+  },
+  "194.36.39.93": {
+    "cc": "LV",
+    "isp": "WorkTitans B.V.",
+    "org": "WorkTitans B.V",
+    "as": "AS209847 WorkTitans B.V.",
+    "asname": "THE",
+    "hosting": false,
+    "ts": 1775092932.305476
+  },
+  "2.59.135.112": {
+    "cc": "DE",
+    "isp": "dataforest GmbH",
+    "org": "dataforest GmbH",
+    "as": "AS58212 dataforest GmbH",
+    "asname": "DATAFOREST",
+    "hosting": false,
+    "ts": 1775093211.6924152
+  },
+  "5.255.107.115": {
+    "cc": "NL",
+    "isp": "The Infrastructure Group B.V.",
+    "org": "TIG",
+    "as": "AS60404 The Infrastructure Group B.V.",
+    "asname": "Liteserver",
+    "hosting": true,
+    "ts": 1775093588.130374
   }
 }
