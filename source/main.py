@@ -107,8 +107,8 @@ MAX_SAME_SNI_RU_RU = 2  # RU IP + white SNI
 MAX_SAME_SNI_RU = 8     # Не-RU IP + white SNI
 MAX_SAME_SNI_WORLD = 5  # Любой IP + не-white SNI
 
-MIN_RU_PING, MAX_RU_PING = 50.0, 5000.0
-MIN_WORLD_PING, MAX_WORLD_PING = 10.0, 5000.0
+MIN_RU_PING, MAX_RU_PING = 0.0, 5000.0
+MIN_WORLD_PING, MAX_WORLD_PING = 0.0, 5000.0
 
 # Расширенные лимиты для XHTTP
 MAX_RU_PING_XHTTP = MAX_RU_PING + 120
@@ -159,7 +159,7 @@ XRAY_SPEED_TEST_DURATION = 3.0  # секунд на скачивание
 XRAY_SPEED_MIN_MBPS = 1.5       # минимальная скорость Мбит/с (0 = не фильтровать)
 
 # Лимиты пинга через xray туннель (via proxy get)
-MIN_XRAY_PING = 50.0      # минимальный пинг через туннель (мс)
+MIN_XRAY_PING = 0.0      # минимальный пинг через туннель (мс)
 MAX_XRAY_PING = 5000.0    # максимальный пинг через туннель (мс)
 MAX_XRAY_JITTER = 200     # максимальный jitter через туннель (мс)
 MAX_XRAY_JITTER_RATIO = 0.4  # максимальный jitter как доля от среднего
@@ -763,13 +763,9 @@ def is_technically_broken(link: str, _lower: str | None = None) -> bool:
 def fast_ping(host: str, port: int, sni: str) -> int | None:
     try:
         start = time.perf_counter()
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT) as sock:
-            with context.wrap_socket(sock, server_hostname=sni if sni else None):
-                return int((time.perf_counter() - start) * 1000)
-    except (socket.timeout, socket.error, ssl.SSLError, OSError):
+        with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT):
+            return int((time.perf_counter() - start) * 1000)
+    except (socket.timeout, socket.error, OSError):
         return None
 
 def full_ping_analysis(
