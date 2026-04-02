@@ -500,6 +500,18 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
             tls_key: tls_settings,
             "xhttpSettings": {"path": path, "host": sni},
         }
+    elif net_type == "grpc":
+    service_m = re.search(r'[?&]serviceName=([^&#\s]*)', config_link, re.I)
+    mode_m = re.search(r'[?&]mode=([^&#\s]*)', config_link, re.I)
+    stream_settings = {
+        "network": "grpc",
+        "security": security,
+        tls_key: tls_settings,
+        "grpcSettings": {
+            "serviceName": service_m.group(1) if service_m else "",
+            "multiMode": (mode_m.group(1).lower() == "multi") if mode_m else False,
+        },
+    }
     else:
         # tcp (REALITY + Vision, обычный tcp)
         stream_settings = {
