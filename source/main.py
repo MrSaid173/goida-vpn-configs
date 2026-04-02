@@ -510,7 +510,7 @@ def _build_xray_config(config_link: str, socks_port: int) -> dict | None:
         "grpcSettings": {
             "serviceName": service_m.group(1) if service_m else "",
             "multiMode": (mode_m.group(1).lower() == "multi") if mode_m else False,
-        },
+        }
     }
     else:
         # tcp (REALITY + Vision, обычный tcp)
