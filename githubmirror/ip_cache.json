@@ -1,232 +1,4 @@
 {
-  "217.16.29.31": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775333971.4174328
-  },
-  "95.163.208.83": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775333972.918969
-  },
-  "212.192.14.163": {
-    "cc": "RU",
-    "isp": "Global Internet Solutions LLC",
-    "org": "Global Internet Solutions LLC",
-    "as": "AS207713 GLOBAL INTERNET SOLUTIONS LLC",
-    "asname": "GIR-AS",
-    "hosting": false,
-    "ts": 1775333974.4191477
-  },
-  "51.250.29.75": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1775333975.9213345
-  },
-  "51.250.105.10": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1775333981.6226392
-  },
-  "194.36.39.75": {
-    "cc": "US",
-    "isp": "WorkTitans B.V.",
-    "org": "WorkTitans B.V",
-    "as": "AS209847 WorkTitans B.V.",
-    "asname": "THE",
-    "hosting": false,
-    "ts": 1775334096.0907583
-  },
-  "15.237.155.59": {
-    "cc": "FR",
-    "isp": "Amazon Technologies Inc.",
-    "org": "AWS EC2 (eu-west-3)",
-    "as": "AS16509 Amazon.com, Inc.",
-    "asname": "AMAZON-02",
-    "hosting": true,
-    "ts": 1775334135.4125648,
-    "exit_cc": "FR"
-  },
-  "92.53.190.248": {
-    "cc": "CA",
-    "isp": "Cloudflare London, LLC",
-    "org": "Private Customer",
-    "as": "AS209242 Cloudflare London, LLC",
-    "asname": "CLOUDFLARESPECTRUM",
-    "hosting": true,
-    "ts": 1775334194.0180902
-  },
-  "193.32.176.44": {
-    "cc": "GB",
-    "isp": "Global Connectivity Solutions LLP",
-    "org": "Global Connectivity Solutions LLP",
-    "as": "AS215540 GLOBAL CONNECTIVITY SOLUTIONS LLP",
-    "asname": "GCS-AS",
-    "hosting": false,
-    "ts": 1775334200.3225799
-  },
-  "167.68.11.38": {
-    "cc": "US",
-    "isp": "Thomson Reuters (Legal) Inc.",
-    "org": "Thomson Reuters (Legal) Inc.",
-    "as": "AS209242 Cloudflare London, LLC",
-    "asname": "CLOUDFLARESPECTRUM",
-    "hosting": true,
-    "ts": 1775334230.3746145
-  },
-  "69.84.182.179": {
-    "cc": "US",
-    "isp": "Health Market Science",
-    "org": "LexisNexis Risk Data Management Inc",
-    "as": "AS14197 HEALTH MARKET SCIENCE",
-    "asname": "HMS-ASN",
-    "hosting": false,
-    "ts": 1775334337.762502
-  },
-  "104.17.147.22": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1775334443.2932053
-  },
-  "185.42.163.177": {
-    "cc": "FI",
-    "isp": "Global Connectivity Solutions LLP",
-    "org": "Global Connectivity Solutions LLP",
-    "as": "AS215540 GLOBAL CONNECTIVITY SOLUTIONS LLP",
-    "asname": "GCS-AS",
-    "hosting": false,
-    "ts": 1775334483.2069325
-  },
-  "89.105.204.155": {
-    "cc": "NL",
-    "isp": "NovoServe B.V.",
-    "org": "Avira B.V.",
-    "as": "AS24875 NovoServe B.V.",
-    "asname": "NOVOSERVE-AS",
-    "hosting": true,
-    "ts": 1775334485.4299788,
-    "exit_cc": "NL"
-  },
-  "104.21.224.5": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1775334524.1054199
-  },
-  "185.219.84.246": {
-    "cc": "DE",
-    "isp": "dataforest GmbH",
-    "org": "dataforest GmbH",
-    "as": "AS58212 dataforest GmbH",
-    "asname": "DATAFOREST",
-    "hosting": false,
-    "ts": 1775334558.619232
-  },
-  "85.192.49.141": {
-    "cc": "FI",
-    "isp": "H2nexus LTD",
-    "org": "H2nexus LTD",
-    "as": "AS215730 H2NEXUS LTD",
-    "asname": "H2NEXUS-AS",
-    "hosting": false,
-    "ts": 1775334583.8094246
-  },
-  "185.184.128.57": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS210656 Yandex.Cloud LLC",
-    "asname": "YACLOUDBMS",
-    "hosting": false,
-    "ts": 1775334589.3739026
-  },
-  "108.162.194.175": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1775334598.4471762
-  },
-  "104.167.199.138": {
-    "cc": "US",
-    "isp": "Newserverlife LLC",
-    "org": "3hcloud LLC",
-    "as": "AS49791 Newserverlife LLC",
-    "asname": "AS-3HCLOUD",
-    "hosting": false,
-    "ts": 1775334610.3755116
-  },
-  "89.105.212.139": {
-    "cc": "NL",
-    "isp": "NovoServe B.V.",
-    "org": "ISP Services",
-    "as": "AS24875 NovoServe B.V.",
-    "asname": "NOVOSERVE-AS",
-    "hosting": true,
-    "ts": 1775334612.2269788,
-    "exit_cc": "NL"
-  },
-  "87.120.107.5": {
-    "cc": "FI",
-    "isp": "Mykyta Skorobohatko",
-    "org": "OY Creanova Hosting Solutions LTD",
-    "as": "AS215428 Mykyta Skorobohatko",
-    "asname": "shinomiya",
-    "hosting": false,
-    "ts": 1775334632.2753725
-  },
-  "5.188.140.245": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775334635.0139792
-  },
-  "62.60.237.240": {
-    "cc": "FI",
-    "isp": "Aeza International LTD",
-    "org": "NetCrafters OU",
-    "as": "AS210644 AEZA GROUP LLC",
-    "asname": "AEZA-AS",
-    "hosting": false,
-    "ts": 1775334657.1601477
-  },
-  "222.167.202.45": {
-    "cc": "GB",
-    "isp": "PEG TECH INC",
-    "org": "PEG TECH INC",
-    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
-    "asname": "CAKEHOME-AS",
-    "hosting": false,
-    "ts": 1775334658.660963
-  },
   "87.239.110.26": {
     "cc": "RU",
     "isp": "LLC VK",
@@ -9294,7 +9066,8 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1775480381.6253607
+    "ts": 1775480381.6253607,
+    "exit_cc": "LV"
   },
   "104.17.162.123": {
     "cc": "CA",
@@ -12613,7 +12386,8 @@
     "as": "AS209207 Digital Hosting Provider LLC",
     "asname": "DHOST-AS",
     "hosting": false,
-    "ts": 1775559398.8388994
+    "ts": 1775559398.8388994,
+    "exit_cc": "NL"
   },
   "176.124.200.119": {
     "cc": "RU",
@@ -13297,7 +13071,8 @@
     "as": "AS62563 GLOBALTELEHOST Corp.",
     "asname": "AS-GLOBALTELEHOST",
     "hosting": true,
-    "ts": 1775574966.4259593
+    "ts": 1775574966.4259593,
+    "exit_cc": "CA"
   },
   "193.233.134.89": {
     "cc": "DE",
@@ -13554,7 +13329,8 @@
     "as": "AS216071 SERVERS TECH FZCO",
     "asname": "VDSINA",
     "hosting": false,
-    "ts": 1775581231.2011487
+    "ts": 1775581231.2011487,
+    "exit_cc": "NL"
   },
   "81.200.149.216": {
     "cc": "RU",
@@ -14008,5 +13784,288 @@
     "asname": "INFOTECH-GRUP",
     "hosting": true,
     "ts": 1775588556.412649
+  },
+  "217.16.31.243": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775594211.9913938
+  },
+  "130.193.37.15": {
+    "cc": "RU",
+    "isp": "Yandex enterprise network",
+    "org": "Yandex LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1775594213.528973
+  },
+  "217.16.28.27": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775594220.9770489
+  },
+  "217.16.29.31": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775594219.475461
+  },
+  "150.241.82.3": {
+    "cc": "SE",
+    "isp": "xorek.cloud International LTD",
+    "org": "xorek.cloud International LTD",
+    "as": "AS210644 AEZA INTERNATIONAL LTD",
+    "asname": "AEZA-AS",
+    "hosting": false,
+    "ts": 1775594222.47948
+  },
+  "109.68.212.158": {
+    "cc": "RU",
+    "isp": "JSC \"TIMEWEB\"",
+    "org": "TW VDS",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1775594223.9802246
+  },
+  "194.87.215.29": {
+    "cc": "RU",
+    "isp": "JSC \"TIMEWEB\"",
+    "org": "JSC \"TIMEWEB\"",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1775594225.4806697
+  },
+  "107.161.154.166": {
+    "cc": "DE",
+    "isp": "SEBEK sp. z o.o",
+    "org": "SEBEK sp. z o.o",
+    "as": "AS216129 SEBEK sp. z o.o",
+    "asname": "GuardNetwork-AS",
+    "hosting": false,
+    "ts": 1775594233.3476057,
+    "exit_cc": "DE"
+  },
+  "217.16.25.35": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1775594234.8487267
+  },
+  "45.13.119.233": {
+    "cc": "FR",
+    "isp": "Dyjix SAS",
+    "org": "Dyjix",
+    "as": "AS212815 Dyjix SAS",
+    "asname": "AS-DYJIX",
+    "hosting": false,
+    "ts": 1775594334.4072454
+  },
+  "222.167.202.22": {
+    "cc": "GB",
+    "isp": "PEG TECH INC",
+    "org": "PEG TECH INC",
+    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
+    "asname": "CAKEHOME-AS",
+    "hosting": false,
+    "ts": 1775594338.45584
+  },
+  "193.9.49.82": {
+    "cc": "RU",
+    "isp": "Cloudflare London, LLC",
+    "org": "CloudKleyer Frankfurt GmbH",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1775594350.1356127
+  },
+  "84.252.101.90": {
+    "cc": "RU",
+    "isp": "Delta Ltd",
+    "org": "delta ltd",
+    "as": "AS213220 Delta Ltd",
+    "asname": "DATA-DELTA-AS",
+    "hosting": false,
+    "ts": 1775594380.7950377
+  },
+  "222.167.202.33": {
+    "cc": "GB",
+    "isp": "PEG TECH INC",
+    "org": "PEG TECH INC",
+    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
+    "asname": "CAKEHOME-AS",
+    "hosting": false,
+    "ts": 1775594472.332588
+  },
+  "69.84.182.179": {
+    "cc": "US",
+    "isp": "Health Market Science",
+    "org": "LexisNexis Risk Data Management Inc",
+    "as": "AS14197 HEALTH MARKET SCIENCE",
+    "asname": "HMS-ASN",
+    "hosting": false,
+    "ts": 1775594495.8921766
+  },
+  "5.180.40.25": {
+    "cc": "NL",
+    "isp": "Fast GEO Hosting S.R.L.",
+    "org": "Fast GEO Hosting S.R.L",
+    "as": "AS41111 FAST GEO HOSTING S.R.L.",
+    "asname": "AS-GEOHOSTING",
+    "hosting": false,
+    "ts": 1775594519.1140404,
+    "exit_cc": "NL"
+  },
+  "80.96.58.177": {
+    "cc": "NL",
+    "isp": "Alexhost SRL",
+    "org": "AlexHost SRL",
+    "as": "AS200019 ALEXHOST SRL",
+    "asname": "AlexHost",
+    "hosting": true,
+    "ts": 1775594538.3638144
+  },
+  "158.160.17.238": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1775594675.137613
+  },
+  "104.17.147.22": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1775594690.1767251
+  },
+  "13.39.166.165": {
+    "cc": "FR",
+    "isp": "Amazon Technologies Inc.",
+    "org": "AWS EC2 (eu-west-3)",
+    "as": "AS16509 Amazon.com, Inc.",
+    "asname": "AMAZON-02",
+    "hosting": true,
+    "ts": 1775594695.4571161,
+    "exit_cc": "FR"
+  },
+  "193.202.10.135": {
+    "cc": "DE",
+    "isp": "Global Connectivity Solutions LLP",
+    "org": "Global Connectivity Solutions LLP",
+    "as": "AS215540 GLOBAL CONNECTIVITY SOLUTIONS LLP",
+    "asname": "GCS-AS",
+    "hosting": false,
+    "ts": 1775594722.1113057
+  },
+  "104.17.134.62": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1775594724.593529
+  },
+  "62.60.237.240": {
+    "cc": "FI",
+    "isp": "Aeza International LTD",
+    "org": "NetCrafters OU",
+    "as": "AS210644 AEZA GROUP LLC",
+    "asname": "AEZA-AS",
+    "hosting": false,
+    "ts": 1775594747.4701505
+  },
+  "222.167.202.60": {
+    "cc": "GB",
+    "isp": "PEG TECH INC",
+    "org": "PEG TECH INC",
+    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
+    "asname": "CAKEHOME-AS",
+    "hosting": false,
+    "ts": 1775594802.8733063
+  },
+  "2.59.42.204": {
+    "cc": "RU",
+    "isp": "JSC \"TIMEWEB\"",
+    "org": "TimeWeb Ltd",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1775594804.3650658
+  },
+  "70.34.201.81": {
+    "cc": "SE",
+    "isp": "The Constant Company",
+    "org": "Vultr",
+    "as": "AS20473 The Constant Company, LLC",
+    "asname": "AS-VULTR",
+    "hosting": true,
+    "ts": 1775594851.2546685,
+    "exit_cc": "SE"
+  },
+  "178.154.217.91": {
+    "cc": "RU",
+    "isp": "Yandex Cloud",
+    "org": "",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1775594867.3700047
+  },
+  "92.53.120.191": {
+    "cc": "RU",
+    "isp": "TimeWeb Co. LTD",
+    "org": "",
+    "as": "AS9123 JSC TIMEWEB",
+    "asname": "TimeWeb-AS",
+    "hosting": true,
+    "ts": 1775594891.325659
+  },
+  "167.68.11.38": {
+    "cc": "US",
+    "isp": "Thomson Reuters (Legal) Inc.",
+    "org": "Thomson Reuters (Legal) Inc.",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1775594897.4358397
+  },
+  "185.189.46.63": {
+    "cc": "SE",
+    "isp": "XT GLOBAL NETWORKS LTD.",
+    "org": "EliteWork LLC",
+    "as": "AS214159 UAB Cherry Servers",
+    "asname": "CHERRYSERVERS5-AS",
+    "hosting": false,
+    "ts": 1775594907.9758768
+  },
+  "62.152.59.245": {
+    "cc": "RU",
+    "isp": "Citytelecom LLC",
+    "org": "Filanco",
+    "as": "AS12616 Citytelecom LLC",
+    "asname": "HOSTING-MSK",
+    "hosting": true,
+    "ts": 1775594911.8302147
   }
 }
