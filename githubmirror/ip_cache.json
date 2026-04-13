@@ -1,186 +1,4 @@
 {
-  "45.128.235.211": {
-    "cc": "FI",
-    "isp": "WAIcore Ltd",
-    "org": "WAIcore Ltd",
-    "as": "AS207567 Intezio Worldwide Limited",
-    "asname": "INTEZIONET-AS",
-    "hosting": false,
-    "ts": 1775847746.4948895
-  },
-  "158.160.155.159": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1775852760.044085
-  },
-  "91.219.227.22": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Tech Kazakhstan LLP",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775852764.657326
-  },
-  "176.120.67.95": {
-    "cc": "LV",
-    "isp": "WorkTitans B.V.",
-    "org": "WorkTitans B.V",
-    "as": "AS209847 WorkTitans B.V.",
-    "asname": "THE",
-    "hosting": false,
-    "ts": 1775852835.5941043
-  },
-  "193.233.75.64": {
-    "cc": "DE",
-    "isp": "Hosting Telecom LTD",
-    "org": "Digital Hosting Provider LLC",
-    "as": "AS209207 Digital Hosting Provider LLC",
-    "asname": "DHOST-AS",
-    "hosting": false,
-    "ts": 1775852908.5324793
-  },
-  "144.31.243.161": {
-    "cc": "LT",
-    "isp": "SERV.HOST GROUP LTD",
-    "org": "SERV.HOST GROUP LTD",
-    "as": "AS207957 SERV.HOST GROUP LTD",
-    "asname": "ServHost-AS",
-    "hosting": false,
-    "ts": 1775852909.990755,
-    "exit_cc": "LT"
-  },
-  "91.99.106.117": {
-    "cc": "DE",
-    "isp": "Hetzner Online GmbH",
-    "org": "Hetzner",
-    "as": "AS24940 Hetzner Online GmbH",
-    "asname": "HETZNER-AS",
-    "hosting": true,
-    "ts": 1775852913.2390468,
-    "exit_cc": "DE"
-  },
-  "51.250.117.71": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1775852948.5451539
-  },
-  "5.188.141.143": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775853029.4775646
-  },
-  "72.56.75.169": {
-    "cc": "NL",
-    "isp": "Timeweb, LLP",
-    "org": "Timeweb, LLP",
-    "as": "AS210976 Timeweb, LLP",
-    "asname": "TWC-EU",
-    "hosting": false,
-    "ts": 1775853069.1515474
-  },
-  "45.136.125.216": {
-    "cc": "NL",
-    "isp": "Fast GEO Hosting S.R.L.",
-    "org": "Fast GEO Hosting S.R.L",
-    "as": "AS41111 FAST GEO HOSTING S.R.L.",
-    "asname": "AS-GEOHOSTING",
-    "hosting": false,
-    "ts": 1775853130.2522018
-  },
-  "104.26.7.205": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1775853230.5321496
-  },
-  "194.55.235.202": {
-    "cc": "RU",
-    "isp": "Kviktel LLC",
-    "org": "Procloud",
-    "as": "AS34959 PROCLOUD MSK",
-    "asname": "PROCLOUD",
-    "hosting": false,
-    "ts": 1775853241.8056014
-  },
-  "150.241.75.227": {
-    "cc": "SE",
-    "isp": "xorek.cloud International LTD",
-    "org": "xorek.cloud International LTD",
-    "as": "AS210644 AEZA INTERNATIONAL LTD",
-    "asname": "AEZA-AS",
-    "hosting": false,
-    "ts": 1775853243.3074176
-  },
-  "62.182.192.20": {
-    "cc": "SE",
-    "isp": "SIA VEESP",
-    "org": "SIA VEESP",
-    "as": "AS42532 SIA VEESP",
-    "asname": "VEESP-LV-AS",
-    "hosting": true,
-    "ts": 1775853244.8093317
-  },
-  "146.185.241.223": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775853408.412321
-  },
-  "222.167.202.4": {
-    "cc": "GB",
-    "isp": "PEG TECH INC",
-    "org": "PEG TECH INC",
-    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
-    "asname": "CAKEHOME-AS",
-    "hosting": false,
-    "ts": 1775853483.3217351
-  },
-  "162.159.40.83": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1775853546.4038029
-  },
-  "63.141.128.169": {
-    "cc": "US",
-    "isp": "Bigcommerce Inc.",
-    "org": "Bigcommerce Inc",
-    "as": "AS399566 Bigcommerce Inc.",
-    "asname": "BIGCOMMERCE",
-    "hosting": false,
-    "ts": 1775853615.6059341
-  },
-  "217.16.29.44": {
-    "cc": "RU",
-    "isp": "LLC VK",
-    "org": "VK Cloud Solutions",
-    "as": "AS47764 LLC VK",
-    "asname": "VK-AS",
-    "hosting": false,
-    "ts": 1775853654.0725293
-  },
   "198.41.202.29": {
     "cc": "CA",
     "isp": "Cloudflare, Inc.",
@@ -9771,7 +9589,7 @@
     "asname": "CLOUDFLARENET",
     "hosting": true,
     "ts": 1776004853.2055817,
-    "exit_cc": "DE"
+    "exit_cc": "US"
   },
   "45.8.144.198": {
     "cc": "NL",
@@ -15123,7 +14941,8 @@
     "as": "AS207461 HOSTING INDUSTRY LIMITED",
     "asname": "host-industry",
     "hosting": false,
-    "ts": 1776093051.3810954
+    "ts": 1776093051.3810954,
+    "exit_cc": "FI"
   },
   "80.90.188.56": {
     "cc": "RU",
@@ -15232,7 +15051,8 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1776093498.4472961
+    "ts": 1776093498.4472961,
+    "exit_cc": "NL"
   },
   "172.66.47.191": {
     "cc": "CA",
@@ -15269,7 +15089,8 @@
     "as": "AS57043 HOSTKEY B.V.",
     "asname": "HOSTKEY-AS",
     "hosting": true,
-    "ts": 1776093562.6156492
+    "ts": 1776093562.6156492,
+    "exit_cc": "FI"
   },
   "83.97.78.219": {
     "cc": "FI",
@@ -15890,7 +15711,8 @@
     "as": "AS209693 OC NETWORKS LIMITED",
     "asname": "OC-NETWORK",
     "hosting": false,
-    "ts": 1776107299.6947298
+    "ts": 1776107299.6947298,
+    "exit_cc": "DE"
   },
   "190.93.246.60": {
     "cc": "CR",
@@ -16083,5 +15905,233 @@
     "hosting": true,
     "ts": 1776108127.1139083,
     "exit_cc": "MX"
+  },
+  "158.160.244.203": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776112982.5511897
+  },
+  "91.219.227.22": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Tech Kazakhstan LLP",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1776112984.043998
+  },
+  "157.22.241.82": {
+    "cc": "RU",
+    "isp": "Global Internet Solutions LLC",
+    "org": "Global Internet Solutions LLC",
+    "as": "AS207713 GLOBAL INTERNET SOLUTIONS LLC",
+    "asname": "GIR-AS",
+    "hosting": false,
+    "ts": 1776113017.5830302
+  },
+  "95.85.226.64": {
+    "cc": "NL",
+    "isp": "OC NETWORKS LIMITED",
+    "org": "1Cent Host",
+    "as": "AS209693 OC NETWORKS LIMITED",
+    "asname": "OC-NETWORK",
+    "hosting": false,
+    "ts": 1776113089.459876,
+    "exit_cc": "NL"
+  },
+  "158.160.211.49": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776113203.5337775
+  },
+  "193.233.82.149": {
+    "cc": "NL",
+    "isp": "Hosting Telecom LTD",
+    "org": "Digital Hosting Provider LLC",
+    "as": "AS209207 Digital Hosting Provider LLC",
+    "asname": "DHOST-AS",
+    "hosting": false,
+    "ts": 1776113205.0161703
+  },
+  "84.201.169.55": {
+    "cc": "RU",
+    "isp": "Yandex enterprise network",
+    "org": "Yandex LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776113207.2167861
+  },
+  "62.182.192.20": {
+    "cc": "SE",
+    "isp": "SIA VEESP",
+    "org": "SIA VEESP",
+    "as": "AS42532 SIA VEESP",
+    "asname": "VEESP-LV-AS",
+    "hosting": true,
+    "ts": 1776113261.8467746
+  },
+  "84.252.132.3": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776113290.5558934
+  },
+  "108.162.192.75": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776113297.6830263
+  },
+  "72.56.75.169": {
+    "cc": "NL",
+    "isp": "Timeweb, LLP",
+    "org": "Timeweb, LLP",
+    "as": "AS210976 Timeweb, LLP",
+    "asname": "TWC-EU",
+    "hosting": false,
+    "ts": 1776113418.3909633
+  },
+  "52.47.89.66": {
+    "cc": "FR",
+    "isp": "Amazon Technologies Inc.",
+    "org": "AWS EC2 (eu-west-3)",
+    "as": "AS16509 Amazon.com, Inc.",
+    "asname": "AMAZON-02",
+    "hosting": true,
+    "ts": 1776113488.07868,
+    "exit_cc": "FR"
+  },
+  "89.168.43.28": {
+    "cc": "FR",
+    "isp": "Oracle Corporation",
+    "org": "Oracle Corporation",
+    "as": "AS31898 Oracle Corporation",
+    "asname": "ORACLE-BMC-31898",
+    "hosting": true,
+    "ts": 1776113494.265534
+  },
+  "162.159.40.83": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776113500.5726542
+  },
+  "144.31.219.98": {
+    "cc": "DE",
+    "isp": "SERV.HOST GROUP LTD",
+    "org": "SERV.HOST GROUP LTD",
+    "as": "AS207957 SERV.HOST GROUP LTD",
+    "asname": "ServHost-AS",
+    "hosting": false,
+    "ts": 1776113541.0699475
+  },
+  "144.31.243.161": {
+    "cc": "LT",
+    "isp": "SERV.HOST GROUP LTD",
+    "org": "SERV.HOST GROUP LTD",
+    "as": "AS207957 SERV.HOST GROUP LTD",
+    "asname": "ServHost-AS",
+    "hosting": false,
+    "ts": 1776113610.0656774
+  },
+  "159.112.235.155": {
+    "cc": "US",
+    "isp": "Cloudflare London, LLC",
+    "org": "Confluence Technologies",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1776113649.1396718
+  },
+  "173.245.59.104": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776113650.6231916
+  },
+  "188.114.98.10": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "CloudFlare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776113665.6096523
+  },
+  "154.211.8.227": {
+    "cc": "US",
+    "isp": "Cloudflare London, LLC",
+    "org": "Maxunity Technology Sdn Bhd",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1776113693.078658
+  },
+  "160.153.0.8": {
+    "cc": "US",
+    "isp": "Cloudflare London, LLC",
+    "org": "GoDaddy.com, LLC",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1776113716.6400764
+  },
+  "5.188.141.143": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1776113751.5117345
+  },
+  "222.167.202.4": {
+    "cc": "GB",
+    "isp": "PEG TECH INC",
+    "org": "PEG TECH INC",
+    "as": "AS199915 Iryna Maksymiv trading as Cake Home",
+    "asname": "CAKEHOME-AS",
+    "hosting": false,
+    "ts": 1776113764.1106331
+  },
+  "91.99.106.117": {
+    "cc": "DE",
+    "isp": "Hetzner Online GmbH",
+    "org": "Hetzner",
+    "as": "AS24940 Hetzner Online GmbH",
+    "asname": "HETZNER-AS",
+    "hosting": true,
+    "ts": 1776113776.9118488,
+    "exit_cc": "DE"
+  },
+  "198.41.214.179": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776113854.3368883
   }
 }
