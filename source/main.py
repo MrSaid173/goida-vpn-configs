@@ -146,7 +146,7 @@ XRAY_TEST_URL_RU = "http://cp.cloudflare.com/"
 XRAY_TEST_URL_WORLD = "http://cp.cloudflare.com/"
 XRAY_STARTUP_WAIT = 3.0   # максимум секунд ожидания старта xray
 XRAY_HTTP_TIMEOUT = 5.0   # секунд на один HTTP запрос через туннель
-XRAY_HTTP_ATTEMPTS = 3    # количество HTTP замеров для подсчёта пинга и jitter
+XRAY_HTTP_ATTEMPTS = 2    # количество HTTP замеров для подсчёта пинга и jitter
 XRAY_HTTP_PAUSE = 0.15    # пауза между HTTP замерами (секунд)
 XRAY_STARTUP_CHECK_INTERVAL = 0.1  # интервал проверки готовности xray (секунд)
 XRAY_MAX_PARALLEL = 4     # максимум одновременных xray-процессов
@@ -1945,7 +1945,7 @@ def main() -> None:
         for group, priority, white in [(extra, True, True), (std, False, True)]:
             if stop_event.is_set() or sni_ru_done_event.is_set():
                 break
-            workers = min(len(group), 40) if group else 1
+            workers = min(len(group), 4) if group else 1
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
                 for c in group:
                     if stop_event.is_set() or sni_ru_done_event.is_set():
@@ -1956,7 +1956,7 @@ def main() -> None:
         """Запускает NON SNI-RU поиск."""
         if stop_event.is_set():
             return
-        workers = min(len(raw_nonwhite), 40) if raw_nonwhite else 1
+        workers = min(len(raw_nonwhite), 4) if raw_nonwhite else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
             for c in raw_nonwhite:
                 if stop_event.is_set():
