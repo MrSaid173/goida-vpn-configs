@@ -2001,7 +2001,7 @@ def main() -> None:
         for group, priority, white in [(extra, True, True), (std, False, True)]:
             if stop_event.is_set() or sni_ru_done_event.is_set():
                 break
-            workers = min(len(group), 4) if group else 1
+            workers = min(len(group), 40) if group else 1
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
                 for c in group:
                     if stop_event.is_set() or sni_ru_done_event.is_set():
@@ -2012,7 +2012,7 @@ def main() -> None:
         """Запускает NON SNI-RU поиск."""
         if stop_event.is_set():
             return
-        workers = min(len(raw_nonwhite), 4) if raw_nonwhite else 1
+        workers = min(len(raw_nonwhite), 40) if raw_nonwhite else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as v:
             for c in raw_nonwhite:
                 if stop_event.is_set():
