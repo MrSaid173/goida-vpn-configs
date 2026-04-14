@@ -166,7 +166,7 @@ XRAY_PORT_BASE = 10000    # стартовый порт для SOCKS5, кажд�
 XRAY_PROCESS_TIMEOUT = 5  # таймаут на запуск xray version
 
 # Настройки теста скорости
-XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=5000000"  # 5MB файл
+XRAY_SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=3000000"  # 5MB файл
 XRAY_SPEED_TEST_DURATION = 1.5  # секунд на скачивание
 XRAY_SPEED_MIN_MBPS = 1.5       # минимальная скорость Мбит/с (0 = не фильтровать)
 
