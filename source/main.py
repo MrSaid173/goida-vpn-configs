@@ -1,4 +1,16 @@
 # mine mine mine mine mine mine mine
+# СТАБИЛИЗИРОВАННАЯ ВЕРСИЯ — патчи:
+#   1. seen_ips → ip:port (разрешает разные порты на одном IP)
+#   2. xray_test возвращает dict вместо хрупкого tuple с позиционными индексами
+#   3. fast_ping регистрирует результат в network_monitor
+#   4. full_ping_analysis: packet_loss не прерывает сбор остальных сэмплов
+#   5. fetch_raw_configs: 3 попытки, backoff, urlsafe_b64decode
+#   6. apply_clean_params: убирает trailing & / ?, не дублирует fp=
+#   7. check_isp_info: double-check кэша внутри api_semaphore (нет дублирующих API запросов)
+#   8. _restore_non_ru_sni_buffer: del buffer[:n] вместо remove() O(n)
+#   9. _get_xray_port: циклический диапазон, нет вечного роста счётчика
+#  10. Rollback subnet16 перед выходом по sni_limit в ws_geo_needed ветке
+#  11. stop_event проверка перед fast_ping и перед ISP-запросом
 
 import os
 import re
@@ -424,11 +436,15 @@ def is_blocked_in_ru(ip_str: str) -> bool:
 # ============================================================
 
 def _get_xray_port() -> int:
-    """Выдаёт уникальный порт для каждого потока."""
+    """Выдаёт уникальный порт для каждого потока. Циклически обходит диапазон портов."""
     global _xray_port_counter
+    max_port = XRAY_PORT_BASE + XRAY_MAX_PARALLEL * 20  # достаточный диапазон
     with _xray_port_lock:
         port = _xray_port_counter
         _xray_port_counter += 1
+        # Сбрасываем счётчик при достижении конца диапазона
+        if _xray_port_counter >= max_port:
+            _xray_port_counter = XRAY_PORT_BASE
     return port
 
 
@@ -583,21 +599,20 @@ def _measure_speed(proxies: dict) -> float:
     return 0.0
 
 
-def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) -> tuple | None:
+def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) -> dict | None:
     """
     Запускает Xray с конфигом, делает XRAY_HTTP_ATTEMPTS HTTP запросов через туннель.
-    Если fetch_geo=True — дополнительно запрашивает ip-api через туннель.
-    Возвращает (avg_ping, jitter) или (avg_ping, jitter, geo_data).
-    Возвращает None если туннель не работает.
-    Если xray недоступен — возвращает (0, 0).
+    Возвращает dict: {'ping': int, 'jitter': int, 'speed_mbps': float, 'geo': dict|None}
+    Возвращает None если туннель не работает / xray завалился.
+    Если xray недоступен — возвращает {'ping': 0, 'jitter': 0, 'speed_mbps': 0.0, 'geo': None}.
     """
     if not xray_available:
-        return (0, 0)
+        return {'ping': 0, 'jitter': 0, 'speed_mbps': 0.0, 'geo': None}
 
     socks_port = _get_xray_port()
     xray_cfg = _build_xray_config(config_link, socks_port)
     if not xray_cfg:
-        return (0, 0)
+        return {'ping': 0, 'jitter': 0, 'speed_mbps': 0.0, 'geo': None}
 
     proc = None
     tmp_path = None
@@ -616,10 +631,12 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
             )
 
             # Умное ожидание: проверяем готовность SOCKS5 порта
+            # Retry-логика: даём xray несколько попыток прослушать порт
             deadline = time.perf_counter() + XRAY_STARTUP_WAIT
             xray_ready = False
             while time.perf_counter() < deadline:
                 if proc.poll() is not None:
+                    # Процесс упал — сразу возвращаем None (не тратим время)
                     _inc_stat('xray_failed')
                     return None
                 try:
@@ -644,15 +661,18 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
             for i in range(XRAY_HTTP_ATTEMPTS):
                 if i > 0:
                     time.sleep(XRAY_HTTP_PAUSE)
+                # Прерываем если процесс xray умер между попытками
+                if proc.poll() is not None:
+                    break
                 try:
-                    start = time.perf_counter()
+                    t0 = time.perf_counter()
                     r = requests.get(
                         test_url,
                         proxies=proxies,
                         timeout=XRAY_HTTP_TIMEOUT,
                         verify=False,
                     )
-                    elapsed = int((time.perf_counter() - start) * 1000)
+                    elapsed = int((time.perf_counter() - t0) * 1000)
                     if r.status_code in (200, 204):
                         pings.append(elapsed)
                 except Exception:
@@ -673,13 +693,17 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
                 _inc_stat('xray_jitter_failed')
                 return None
 
-            # Измеряем скорость
-            speed_mbps = _measure_speed(proxies)
+            # Измеряем скорость (пока xray ещё жив)
+            speed_mbps = 0.0
+            if proc.poll() is None:
+                speed_mbps = _measure_speed(proxies)
             if XRAY_SPEED_MIN_MBPS > 0 and speed_mbps < XRAY_SPEED_MIN_MBPS:
                 _inc_stat('xray_speed_too_low')
                 return None
 
-            if fetch_geo:
+            # Geo-запрос через туннель (опционально)
+            geo_data = None
+            if fetch_geo and proc.poll() is None:
                 try:
                     geo_resp = requests.get(
                         "http://ip-api.com/json/?fields=status,countryCode,isp,org,as,asname,hosting",
@@ -690,9 +714,8 @@ def xray_test(config_link: str, is_ru: bool = False, fetch_geo: bool = False) ->
                     geo_data = geo_resp.json() if geo_resp.status_code == 200 else None
                 except Exception:
                     geo_data = None
-                return (avg, jit, speed_mbps, geo_data)
 
-            return (avg, jit, speed_mbps)
+            return {'ping': avg, 'jitter': jit, 'speed_mbps': speed_mbps, 'geo': geo_data}
 
         except Exception:
             _inc_stat('xray_failed')
@@ -762,21 +785,24 @@ def is_technically_broken(link: str, _lower: str | None = None) -> bool:
 
 def fast_ping(host: str, port: int, sni: str) -> int | None:
     try:
-        start = time.perf_counter()
+        t0 = time.perf_counter()
         with socket.create_connection((host, port), timeout=FAST_PING_TIMEOUT):
-            return int((time.perf_counter() - start) * 1000)
-    except (socket.timeout, socket.error, OSError):
+            ms = int((time.perf_counter() - t0) * 1000)
+        _register_ping_result(True)
+        return ms
+    except (socket.timeout, socket.error, OSError, ConnectionRefusedError):
+        _register_ping_result(False)
         return None
 
 def full_ping_analysis(
     host: str, port: int, sni: str,
     initial_ping: int, min_limit: float, max_limit: float
 ) -> tuple[int, int] | None:
-    pings = [initial_ping]
-
     if initial_ping < min_limit or initial_ping > max_limit:
         _inc_stat('ping_out_of_range')
         return None
+
+    pings = [initial_ping]
 
     try:
         for _ in range(FULL_PING_ATTEMPTS):
@@ -784,11 +810,14 @@ def full_ping_analysis(
                 return None
             time.sleep(FULL_PING_PAUSE)
             p = fast_ping(host, port, sni)
-            if p is not None:
-                if p < min_limit or p > max_limit:
-                    _inc_stat('ping_out_of_range')
-                    return None
-                pings.append(p)
+            if p is None:
+                # Считаем потерю пакета но не сразу падаем —
+                # продолжаем собирать оставшиеся сэмплы
+                continue
+            if p < min_limit or p > max_limit:
+                _inc_stat('ping_out_of_range')
+                return None
+            pings.append(p)
 
         if len(pings) < FULL_PING_MIN_SAMPLES:
             _inc_stat('packet_loss')
@@ -955,7 +984,6 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
             is_banned = is_bad or is_banned_p
             is_api_h = v.get("hosting", False) and not is_bad
             is_kw_h = any(w in full_info for w in HOST_TAG_KEYWORDS)
-            # Используем exit_cc если есть (страна выходного IP)
             cc = v.get('exit_cc') or v['cc']
             res = (cc, "BANNED" if is_banned else (is_api_h or is_kw_h))
         else:
@@ -965,6 +993,11 @@ def check_isp_info(ip_str: str, is_ws_host: bool = False) -> tuple:
         return res
 
     with api_semaphore:
+        # Двойная проверка кэша после захвата семафора — пока ждали, другой поток мог уже запросить этот IP
+        with lock:
+            if ip_str in ip_cache:
+                return ip_cache[ip_str]
+
         for attempt in range(3):
             if stop_event.is_set():
                 return None, False
@@ -1035,21 +1068,23 @@ check_isp_info._current_domain = None
 def apply_clean_params(config_link: str) -> str:
     """Удаляет fp/udp443/note параметры и выставляет fp=random. Нормализует URL."""
     parts = config_link.split("#", 1)
+    # Убираем fp= тоже — он будет добавлен заново как fp=random
     base = re.sub(r'[&?](?:fp|udp443|note)=[^&?#]+', '', parts[0])
 
     # Нормализация: убираем дублирование разделителей и слешей в пути
-    # Сохраняем схему (://) нетронутой, нормализуем остальное
     scheme_match = re.match(r'^([a-zA-Z][a-zA-Z0-9+\-.]*://)', base)
     if scheme_match:
         scheme = scheme_match.group(1)
         rest = base[len(scheme):]
-        # Убираем дублирующиеся & и ? внутри query
         rest = re.sub(r'\?&', '?', rest)
         rest = re.sub(r'&&+', '&', rest)
+        # Убираем trailing & или ? после удаления параметров
+        rest = re.sub(r'[?&]+$', '', rest)
         base = scheme + rest
     else:
         base = re.sub(r'\?&', '?', base)
         base = re.sub(r'&&+', '&', base)
+        base = re.sub(r'[?&]+$', '', base)
 
     sep = "&" if "?" in base else "?"
     base = f"{base}{sep}fp=random"
@@ -1071,22 +1106,32 @@ def rename_config(link: str, country_code: str, index: int,
 
 
 def fetch_raw_configs(url: str) -> list[str]:
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            resp = session.get(url, timeout=7, verify=False).text
-            if "://" not in resp[:50]:
-                try:
-                    resp = base64.b64decode(resp).decode('utf-8', errors='ignore')
-                except (ValueError, UnicodeDecodeError):
-                    pass
-            result = [l.strip() for l in re.findall(r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp)]
+            resp = session.get(url, timeout=10, verify=False).text.strip()
+            # Пробуем декодировать base64 если нет протокола в первых байтах
+            if "://" not in resp[:100]:
+                for decode_fn in (
+                    lambda s: base64.b64decode(s + "==").decode('utf-8', errors='ignore'),
+                    lambda s: base64.urlsafe_b64decode(s + "==").decode('utf-8', errors='ignore'),
+                ):
+                    try:
+                        decoded = decode_fn(resp)
+                        if "://" in decoded:
+                            resp = decoded
+                            break
+                    except Exception:
+                        pass
+            result = [l.strip() for l in re.findall(
+                r'(?:vless|ssr|tuic|hysteria|hysteria2)://[^\s]+', resp
+            )]
             if result:
                 return result
-            if attempt == 0:
-                time.sleep(1.5)
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
         except requests.RequestException:
-            if attempt == 0:
-                time.sleep(1.5)
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
     return []
 
 
@@ -1416,7 +1461,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
     subnet16 = ".".join(host.split(".")[:2])
 
     with lock:
-        if host in seen_ips:
+        if f"{host}:{port}" in seen_ips:
             if is_unique:
                 _inc_stat('duplicate_ip')
             return
@@ -1464,6 +1509,8 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
                 return
 
     # Первый пинг
+    if stop_event.is_set():
+        return
     p1 = fast_ping(host, port, sni)
     initial_max_p = MAX_WORLD_PING_XHTTP if is_xhttp else MAX_WORLD_PING
     if not p1 or p1 > initial_max_p:
@@ -1478,6 +1525,11 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         return
 
     # Проверка ISP
+    if stop_event.is_set():
+        if is_domain_host and domain_mid:
+            with lock:
+                domain_mid_counts[domain_mid] -= 1
+        return
     ws_cache_key = None
     ws_geo_needed = False
     config_type = "others"  # будет переопределено после получения ip_cc
@@ -1576,10 +1628,10 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
                 domain_mid_counts[domain_mid] -= 1
         return
 
-    xray_ping = xray_result[0]
-    xray_jitter = xray_result[1]
-    xray_speed = xray_result[2] if len(xray_result) >= 3 and isinstance(xray_result[2], float) else 0.0
-    geo_data = xray_result[3] if len(xray_result) == 4 else (xray_result[2] if len(xray_result) == 3 and not isinstance(xray_result[2], float) else None)
+    xray_ping = xray_result['ping']
+    xray_jitter = xray_result['jitter']
+    xray_speed = xray_result['speed_mbps']
+    geo_data = xray_result['geo']
 
     if need_exit_geo and geo_data is not None:
         if geo_data and geo_data.get("status") == "success":
@@ -1622,6 +1674,9 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
                     with lock:
                         sni_limit = get_sni_limit(is_white, ip_cc)
                         if sni_usage_counts[sni] >= sni_limit:
+                            # Rollback subnet16 которую только что зарезервировали
+                            with lock:
+                                subnet16_counts[subnet16][config_type] -= 1
                             _inc_stat('sni_limit')
                             return
                         sni_usage_counts[sni] += 1
@@ -1639,12 +1694,13 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
             if ws_geo_needed:
                 _inc_stat('isp_no_response')
                 return
-    # Если xray недоступен — используем TCP пинг как fallback
-    display_ping = xray_ping if xray_ping > 0 else p1
+    # Если xray недоступен или ping=0 — используем TCP пинг как fallback
+    display_ping = xray_ping if (xray_ping is not None and xray_ping > 0) else (p1 or 0)
 
     # Финальное добавление
+    ip_port_key = f"{host}:{port}"
     with lock:
-        if host in seen_ips:
+        if ip_port_key in seen_ips:
             if sni_reserved:
                 sni_usage_counts[sni] -= 1
             if subnet16_reserved:
@@ -1675,7 +1731,7 @@ def validate(config: str, is_priority: bool, is_white: bool) -> None:
         }
 
         if try_add_to_lists(entry):
-            seen_ips.add(host)
+            seen_ips.add(f"{host}:{port}")
             subnet_counts[subnet] += 1
             id_counts[cid] += 1
 
@@ -1796,13 +1852,13 @@ def _restore_non_ru_sni_buffer() -> None:
         ]:
             ru_count  = ru_vlm2_count if is_vlm2 else ru_vlm_count
             ru_needed = max(0, MIN_RU_CONFIGS - ru_count)
-            # Возвращаем столько конфигов из буфера сколько слотов свободно
             slots_free = MAX_TOTAL_SNI_RU - (sni_vlm2_count if is_vlm2 else sni_vlm_count)
             can_restore = max(0, slots_free - ru_needed)
             to_restore = buffer[:can_restore]
+            # Удаляем из буфера через срез (O(1) вместо O(n) remove)
+            del buffer[:can_restore]
             for r in to_restore:
                 results.append(r)
-                buffer.remove(r)
                 if is_vlm2:
                     sni_vlm2_count += 1
                     if r['is_hosting'] is True: host_vlm2_count += 1
