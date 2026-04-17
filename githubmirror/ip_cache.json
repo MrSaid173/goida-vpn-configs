@@ -4799,7 +4799,8 @@
     "as": "AS200019 ALEXHOST SRL",
     "asname": "AlexHost",
     "hosting": true,
-    "ts": 1776228819.6754415
+    "ts": 1776228819.6754415,
+    "exit_cc": "CH"
   },
   "51.91.249.154": {
     "cc": "FR",
@@ -6521,7 +6522,7 @@
     "asname": "CLOUDFLARENET",
     "hosting": true,
     "ts": 1776244459.771779,
-    "exit_cc": "FR"
+    "exit_cc": "DE"
   },
   "94.131.86.204": {
     "cc": "KZ",
@@ -17352,7 +17353,8 @@
     "as": "AS13335 Cloudflare, Inc.",
     "asname": "CLOUDFLARENET",
     "hosting": true,
-    "ts": 1776423560.8381782
+    "ts": 1776423560.8381782,
+    "exit_cc": "FI"
   },
   "95.163.211.119": {
     "cc": "RU",
@@ -17563,5 +17565,61 @@
     "asname": "LAMHOSTING",
     "hosting": false,
     "ts": 1776424469.5504448
+  },
+  "89.208.210.40": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1776430656.662614
+  },
+  "91.236.230.57": {
+    "cc": "US",
+    "isp": "BlueVPS OU",
+    "org": "BlueVPS OU",
+    "as": "AS62005 BlueVPS OU",
+    "asname": "BV-EU-AS",
+    "hosting": false,
+    "ts": 1776430663.5563304,
+    "exit_cc": "US"
+  },
+  "84.54.39.183": {
+    "cc": "RU",
+    "isp": "LLC Vpsville",
+    "org": "LLC Vpsville",
+    "as": "AS59504 LLC Vpsville",
+    "asname": "vpsville-AS",
+    "hosting": true,
+    "ts": 1776430665.057873
+  },
+  "37.49.227.172": {
+    "cc": "NL",
+    "isp": "PUSHPKT OU",
+    "org": "ESTOXY OU",
+    "as": "AS3920 PUSHPKT OU",
+    "asname": "PUSHPKT",
+    "hosting": false,
+    "ts": 1776431384.6753976
+  },
+  "212.34.142.81": {
+    "cc": "NL",
+    "isp": "Servers Tech Fzco",
+    "org": "Servers Tech Fzco",
+    "as": "AS216071 SERVERS TECH FZCO",
+    "asname": "VDSINA",
+    "hosting": false,
+    "ts": 1776431845.697231
+  },
+  "15.188.2.109": {
+    "cc": "FR",
+    "isp": "Amazon.com, Inc.",
+    "org": "AWS EC2 (eu-west-3)",
+    "as": "AS16509 Amazon.com, Inc.",
+    "asname": "AMAZON-02",
+    "hosting": true,
+    "ts": 1776432278.419443,
+    "exit_cc": "FR"
   }
 }
