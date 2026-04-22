@@ -1,105 +1,4 @@
 {
-  "81.163.20.9": {
-    "cc": "RU",
-    "isp": "Selectel",
-    "org": "",
-    "as": "AS50340 JSC Selectel",
-    "asname": "SELECTEL-MSK",
-    "hosting": true,
-    "ts": 1776551535.2513149
-  },
-  "104.21.97.154": {
-    "cc": "CA",
-    "isp": "Cloudflare, Inc.",
-    "org": "Cloudflare, Inc.",
-    "as": "AS13335 Cloudflare, Inc.",
-    "asname": "CLOUDFLARENET",
-    "hosting": true,
-    "ts": 1776551565.648483
-  },
-  "178.130.57.33": {
-    "cc": "RU",
-    "isp": "JSC Selectel",
-    "org": "Selectel",
-    "as": "AS50340 JSC Selectel",
-    "asname": "SELECTEL-MSK",
-    "hosting": true,
-    "ts": 1776551608.6442063
-  },
-  "185.175.44.39": {
-    "cc": "RU",
-    "isp": "Selectel",
-    "org": "",
-    "as": "AS50340 JSC Selectel",
-    "asname": "SELECTEL-MSK",
-    "hosting": true,
-    "ts": 1776551646.42479
-  },
-  "45.136.126.116": {
-    "cc": "NL",
-    "isp": "Fast GEO Hosting S.R.L.",
-    "org": "Fast GEO Hosting S.R.L",
-    "as": "AS41111 FAST GEO HOSTING S.R.L.",
-    "asname": "AS-GEOHOSTING",
-    "hosting": false,
-    "ts": 1776551672.3282027,
-    "exit_cc": "NL"
-  },
-  "90.156.225.239": {
-    "cc": "RU",
-    "isp": "JSC \"TIMEWEB\"",
-    "org": "JSC \"TIMEWEB\"",
-    "as": "AS9123 JSC TIMEWEB",
-    "asname": "TimeWeb-AS",
-    "hosting": true,
-    "ts": 1776551679.068095
-  },
-  "83.222.25.62": {
-    "cc": "RU",
-    "isp": "Beget LLC",
-    "org": "Beget LLC",
-    "as": "AS198610 Beget LLC",
-    "asname": "BEGET-AS",
-    "hosting": true,
-    "ts": 1776551704.0411894
-  },
-  "87.242.110.103": {
-    "cc": "RU",
-    "isp": "Selectel",
-    "org": "",
-    "as": "AS50340 JSC Selectel",
-    "asname": "SELECTEL-MSK",
-    "hosting": true,
-    "ts": 1776551774.960921
-  },
-  "158.160.241.163": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1776551785.2171893
-  },
-  "5.182.36.56": {
-    "cc": "CH",
-    "isp": "WorkTitans B.V.",
-    "org": "WorkTitans B.V",
-    "as": "AS209847 WorkTitans B.V.",
-    "asname": "THE",
-    "hosting": false,
-    "ts": 1776551851.9966936,
-    "exit_cc": "CH"
-  },
-  "77.110.123.253": {
-    "cc": "US",
-    "isp": "Aeza International LTD",
-    "org": "Aeza International LTD",
-    "as": "AS210644 AEZA GROUP LLC",
-    "asname": "AEZA-AS",
-    "hosting": false,
-    "ts": 1776552034.4981313
-  },
   "51.250.65.79": {
     "cc": "RU",
     "isp": "Yandex.Cloud LLC",
@@ -10291,7 +10190,8 @@
     "as": "AS207567 Intezio Worldwide Limited",
     "asname": "INTEZIONET-AS",
     "hosting": false,
-    "ts": 1776736267.058112
+    "ts": 1776736267.058112,
+    "exit_cc": "EE"
   },
   "69.84.182.97": {
     "cc": "US",
@@ -15179,7 +15079,7 @@
     "asname": "CLOUDFLARENET",
     "hosting": true,
     "ts": 1776790371.5603747,
-    "exit_cc": "US"
+    "exit_cc": "CA"
   },
   "185.153.181.118": {
     "cc": "FI",
@@ -17132,5 +17032,105 @@
     "asname": "TimeWeb-AS",
     "hosting": true,
     "ts": 1776812107.840339
+  },
+  "147.45.49.244": {
+    "cc": "JP",
+    "isp": "Global Connectivity Solutions LLP",
+    "org": "Global Connectivity Solutions LLP",
+    "as": "AS215540 GLOBAL CONNECTIVITY SOLUTIONS LLP",
+    "asname": "GCS-AS",
+    "hosting": false,
+    "ts": 1776821578.882758
+  },
+  "158.160.98.211": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776821596.6168034
+  },
+  "83.222.25.62": {
+    "cc": "RU",
+    "isp": "Beget LLC",
+    "org": "Beget LLC",
+    "as": "AS198610 Beget LLC",
+    "asname": "BEGET-AS",
+    "hosting": true,
+    "ts": 1776821648.1132133
+  },
+  "192.144.15.205": {
+    "cc": "RU",
+    "isp": "\"Cloud Technologies\" LLC trading as Cloud.ru",
+    "org": "Cloud.ru",
+    "as": "AS208677 Cloud Technologies LLC trading as Cloud.ru",
+    "asname": "CLOUDRU-AS",
+    "hosting": false,
+    "ts": 1776821661.7758498
+  },
+  "104.21.97.154": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1776821712.6385536
+  },
+  "5.182.36.56": {
+    "cc": "CH",
+    "isp": "WorkTitans B.V.",
+    "org": "WorkTitans B.V",
+    "as": "AS209847 WorkTitans B.V.",
+    "asname": "THE",
+    "hosting": false,
+    "ts": 1776821926.1553557,
+    "exit_cc": "CH"
+  },
+  "178.72.181.81": {
+    "cc": "RU",
+    "isp": "JSC Selectel",
+    "org": "Selectel",
+    "as": "AS49505 JSC Selectel",
+    "asname": "SELECTEL",
+    "hosting": true,
+    "ts": 1776821985.599289
+  },
+  "178.72.181.89": {
+    "cc": "RU",
+    "isp": "JSC Selectel",
+    "org": "Selectel",
+    "as": "AS49505 JSC Selectel",
+    "asname": "SELECTEL",
+    "hosting": true,
+    "ts": 1776822018.0371487
+  },
+  "158.160.111.171": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776822126.589791
+  },
+  "158.160.97.228": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1776822194.529061
+  },
+  "82.202.157.24": {
+    "cc": "RU",
+    "isp": "\"Cloud Technologies\" LLC trading as Cloud.ru",
+    "org": "Cloud.ru",
+    "as": "AS208677 Cloud Technologies LLC trading as Cloud.ru",
+    "asname": "CLOUDRU-AS",
+    "hosting": false,
+    "ts": 1776822459.4045413
   }
 }
