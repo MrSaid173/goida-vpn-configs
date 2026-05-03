@@ -1,86 +1,4 @@
 {
-  "5.188.224.166": {
-    "cc": "RU",
-    "isp": "EdgeCenter LLC",
-    "org": "EdgeCenter LLC",
-    "as": "AS210756 EdgeCenter LLC",
-    "asname": "EdgeCenterLLC",
-    "hosting": false,
-    "ts": 1777548389.472262
-  },
-  "51.250.27.233": {
-    "cc": "RU",
-    "isp": "Yandex.Cloud LLC",
-    "org": "Yandex.Cloud LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1777548393.981915
-  },
-  "5.188.224.69": {
-    "cc": "RU",
-    "isp": "EdgeCenter LLC",
-    "org": "EdgeCenter LLC",
-    "as": "AS210756 EdgeCenter LLC",
-    "asname": "EdgeCenterLLC",
-    "hosting": false,
-    "ts": 1777548396.979521
-  },
-  "84.201.167.122": {
-    "cc": "RU",
-    "isp": "Yandex enterprise network",
-    "org": "Yandex LLC",
-    "as": "AS200350 Yandex.Cloud LLC",
-    "asname": "YandexCloud",
-    "hosting": false,
-    "ts": 1777548401.8565478
-  },
-  "94.228.219.41": {
-    "cc": "NL",
-    "isp": "Netrouting Object",
-    "org": "Netrouting B.V",
-    "as": "AS6206 Netrouting B.V.",
-    "asname": "NETROUTING-AS",
-    "hosting": false,
-    "ts": 1777548676.7567582
-  },
-  "45.139.27.86": {
-    "cc": "RU",
-    "isp": "Kviktel LLC",
-    "org": "Procloud",
-    "as": "AS34959 PROCLOUD MSK",
-    "asname": "PROCLOUD",
-    "hosting": false,
-    "ts": 1777548781.2620952
-  },
-  "45.136.125.216": {
-    "cc": "NL",
-    "isp": "Fast GEO Hosting S.R.L.",
-    "org": "Fast GEO Hosting S.R.L",
-    "as": "AS41111 FAST GEO HOSTING S.R.L.",
-    "asname": "AS-GEOHOSTING",
-    "hosting": false,
-    "ts": 1777549007.3525035
-  },
-  "5.255.118.62": {
-    "cc": "NL",
-    "isp": "The Infrastructure Group B.V.",
-    "org": "TIG",
-    "as": "AS60404 The Infrastructure Group B.V.",
-    "asname": "Liteserver",
-    "hosting": true,
-    "ts": 1777549372.613531,
-    "exit_cc": "NL"
-  },
-  "185.219.84.246": {
-    "cc": "DE",
-    "isp": "dataforest GmbH",
-    "org": "dataforest GmbH",
-    "as": "AS58212 dataforest GmbH",
-    "asname": "DATAFOREST",
-    "hosting": false,
-    "ts": 1777549522.1967554
-  },
   "62.60.233.178": {
     "cc": "TR",
     "isp": "Global Connectivity Solutions LLP",
@@ -10083,7 +10001,7 @@
     "asname": "TANGRAM-CANADA-INC",
     "hosting": false,
     "ts": 1777686991.1703992,
-    "exit_cc": "NL"
+    "exit_cc": "CA"
   },
   "188.214.129.172": {
     "cc": "LT",
@@ -19089,7 +19007,8 @@
     "as": "AS12876 Scaleway SAS",
     "asname": "AS12876",
     "hosting": true,
-    "ts": 1777805381.8338337
+    "ts": 1777805381.8338337,
+    "exit_cc": "NL"
   },
   "51.158.206.103": {
     "cc": "NL",
@@ -19382,7 +19301,8 @@
     "as": "AS209847 WorkTitans B.V.",
     "asname": "THE",
     "hosting": false,
-    "ts": 1777805997.5608735
+    "ts": 1777805997.5608735,
+    "exit_cc": "US"
   },
   "212.64.199.79": {
     "cc": "TR",
@@ -19428,5 +19348,204 @@
     "asname": "KuzeyDC",
     "hosting": false,
     "ts": 1777806326.9077868
+  },
+  "51.250.27.233": {
+    "cc": "RU",
+    "isp": "Yandex.Cloud LLC",
+    "org": "Yandex.Cloud LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1777812398.5847142
+  },
+  "84.201.167.122": {
+    "cc": "RU",
+    "isp": "Yandex enterprise network",
+    "org": "Yandex LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1777812411.0685318
+  },
+  "84.201.132.188": {
+    "cc": "RU",
+    "isp": "Yandex enterprise network",
+    "org": "Yandex LLC",
+    "as": "AS200350 Yandex.Cloud LLC",
+    "asname": "YandexCloud",
+    "hosting": false,
+    "ts": 1777812501.700719
+  },
+  "217.16.23.174": {
+    "cc": "RU",
+    "isp": "LLC VK",
+    "org": "VK Cloud Solutions",
+    "as": "AS47764 LLC VK",
+    "asname": "VK-AS",
+    "hosting": false,
+    "ts": 1777812647.2759418
+  },
+  "173.245.58.75": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1777812702.5466003
+  },
+  "94.228.219.41": {
+    "cc": "NL",
+    "isp": "Netrouting Object",
+    "org": "Netrouting B.V",
+    "as": "AS6206 Netrouting B.V.",
+    "asname": "NETROUTING-AS",
+    "hosting": false,
+    "ts": 1777812703.7489648
+  },
+  "94.26.249.65": {
+    "cc": "RU",
+    "isp": "JSC Selectel",
+    "org": "",
+    "as": "AS49505 JSC Selectel",
+    "asname": "SELECTEL",
+    "hosting": true,
+    "ts": 1777812808.2967408
+  },
+  "198.41.204.45": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1777812846.948182
+  },
+  "31.7.60.250": {
+    "cc": "CH",
+    "isp": "Ripe",
+    "org": "",
+    "as": "AS51852 Private Layer INC",
+    "asname": "PLI-AS",
+    "hosting": true,
+    "ts": 1777812897.3225946
+  },
+  "46.28.68.119": {
+    "cc": "IT",
+    "isp": "GF-MXP",
+    "org": "",
+    "as": "AS21100 GREEN FLOID LLC",
+    "asname": "ITLDC-EU",
+    "hosting": true,
+    "ts": 1777812908.475522
+  },
+  "5.255.118.62": {
+    "cc": "NL",
+    "isp": "The Infrastructure Group B.V.",
+    "org": "TIG",
+    "as": "AS60404 The Infrastructure Group B.V.",
+    "asname": "Liteserver",
+    "hosting": true,
+    "ts": 1777813007.4321692
+  },
+  "35.181.72.23": {
+    "cc": "FR",
+    "isp": "Amazon.com, Inc.",
+    "org": "AWS EC2 (eu-west-3)",
+    "as": "AS16509 Amazon.com, Inc.",
+    "asname": "AMAZON-02",
+    "hosting": true,
+    "ts": 1777813013.3050714,
+    "exit_cc": "FR"
+  },
+  "69.84.182.175": {
+    "cc": "US",
+    "isp": "Health Market Science",
+    "org": "LexisNexis Risk Data Management Inc",
+    "as": "AS14197 HEALTH MARKET SCIENCE",
+    "asname": "HMS-ASN",
+    "hosting": false,
+    "ts": 1777813082.1206892
+  },
+  "193.23.201.133": {
+    "cc": "FI",
+    "isp": "Play2go International Limited",
+    "org": "Play2go International Limited",
+    "as": "AS215439 PLAY2GO INTERNATIONAL LIMITED",
+    "asname": "PLAY2GO-NET",
+    "hosting": false,
+    "ts": 1777813227.723035
+  },
+  "212.118.40.140": {
+    "cc": "NL",
+    "isp": "Servers Tech Fzco",
+    "org": "Servers Tech Fzco",
+    "as": "AS216071 SERVERS TECH FZCO",
+    "asname": "VDSINA",
+    "hosting": false,
+    "ts": 1777813276.1209743
+  },
+  "188.42.145.142": {
+    "cc": "NL",
+    "isp": "Cloudflare London, LLC",
+    "org": "Servers COM",
+    "as": "AS209242 Cloudflare London, LLC",
+    "asname": "CLOUDFLARESPECTRUM",
+    "hosting": true,
+    "ts": 1777813369.6096482
+  },
+  "104.18.23.142": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1777813528.699685
+  },
+  "104.18.24.9": {
+    "cc": "CA",
+    "isp": "Cloudflare, Inc.",
+    "org": "Cloudflare, Inc.",
+    "as": "AS13335 Cloudflare, Inc.",
+    "asname": "CLOUDFLARENET",
+    "hosting": true,
+    "ts": 1777813648.4833875
+  },
+  "144.31.235.75": {
+    "cc": "SE",
+    "isp": "Play2go International Limited",
+    "org": "Play2go Customers Network",
+    "as": "AS215439 PLAY2GO INTERNATIONAL LIMITED",
+    "asname": "PLAY2GO-NET",
+    "hosting": false,
+    "ts": 1777813817.2636702
+  },
+  "145.223.68.231": {
+    "cc": "FR",
+    "isp": "Regxa Company for Information Technology Ltd",
+    "org": "",
+    "as": "AS215311 Regxa Company for Information Technology Ltd",
+    "asname": "REGXA-CLOUD",
+    "hosting": false,
+    "ts": 1777813887.2189527
+  },
+  "155.117.87.197": {
+    "cc": "US",
+    "isp": "ZMTO Technologies OU",
+    "org": "ZMTO",
+    "as": "AS210661 ZMTO Technologies OU",
+    "asname": "ZMTO",
+    "hosting": false,
+    "ts": 1777814051.5115094
+  },
+  "146.185.197.91": {
+    "cc": "RU",
+    "isp": "EdgeCenter",
+    "org": "",
+    "as": "AS210756 EdgeCenter LLC",
+    "asname": "EdgeCenterLLC",
+    "hosting": false,
+    "ts": 1777814221.5011544
   }
 }
